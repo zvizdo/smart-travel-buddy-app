@@ -11,6 +11,7 @@ interface NodeMarkerProps {
   arrivalTime?: string;
   selected?: boolean;
   isMergeNode?: boolean;
+  isStartNode?: boolean;
   pathColor?: string;
   dimmed?: boolean;
   /** Scale factor (0-1) for when nodes are too close together. Defaults to 1. */
@@ -88,6 +89,7 @@ export function NodeMarker({
   lng,
   selected,
   isMergeNode,
+  isStartNode,
   dimmed,
   proximityScale = 1,
   fannedOut,
@@ -119,9 +121,10 @@ export function NodeMarker({
             ? "Activity"
             : "Place";
 
-  // Whether the label/tail/merge dot should be visible
+  // Whether the label/tail/merge dot/start pip should be visible
   const labelVisible = !dimmed && !isCompact && !fannedOut;
   const mergeVisible = isMergeNode && !dimmed && !isCompact;
+  const startVisible = isStartNode && !dimmed && !isCompact;
 
   return (
     <AdvancedMarker position={{ lat, lng }} zIndex={selected ? 110 : 100} onClick={() => onClick?.(id)}>
@@ -138,7 +141,7 @@ export function NodeMarker({
         }}
         role="button"
         tabIndex={0}
-        aria-label={`${name}, ${typeLabel}${isMergeNode ? ", junction point" : ""}`}
+        aria-label={`${name}, ${typeLabel}${isStartNode ? ", starting point" : ""}${isMergeNode ? ", junction point" : ""}`}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -194,6 +197,37 @@ export function NodeMarker({
           }}
         >
           <NodeIcon type={type} dimmed={dimmed} size={iconSize} />
+
+          {/* Start indicator pip — top-left badge (green chevron).
+              Always rendered; opacity transition drives show/hide. */}
+          <div
+            style={{
+              position: "absolute",
+              top: -4,
+              left: -4,
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              background: "#16a34a",
+              border: "2px solid #fff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              opacity: startVisible ? 1 : 0,
+              transition: "opacity 0.35s ease",
+              pointerEvents: "none",
+            }}
+          >
+            <svg width="7" height="7" viewBox="0 0 8 8" fill="none">
+              <path
+                d="M2.5 1.5L5.5 4L2.5 6.5"
+                stroke="#fff"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </div>
 
           {/* Merge indicator dot — top-right badge.
               Always rendered; opacity transition drives show/hide. */}

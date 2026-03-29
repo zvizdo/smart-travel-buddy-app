@@ -1,9 +1,10 @@
 from typing import Any
 
-from backend.src.repositories.base_repository import BaseRepository
 from google.cloud.firestore import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from shared.models import ApiKey, User
+from shared.repositories.base_repository import BaseRepository
 
 
 class UserRepository(BaseRepository):
@@ -46,8 +47,8 @@ class UserRepository(BaseRepository):
         """Find an active API key by its hash."""
         docs = (
             self._db.collection(f"users/{user_id}/api_keys")
-            .where("key_hash", "==", key_hash)
-            .where("is_active", "==", True)
+            .where(filter=FieldFilter("key_hash", "==", key_hash))
+            .where(filter=FieldFilter("is_active", "==", True))
             .stream()
         )
         async for doc in docs:

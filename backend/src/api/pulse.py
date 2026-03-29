@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 
 from backend.src.auth.firebase_auth import get_current_user
 from backend.src.deps import get_location_repo, get_trip_service, get_user_service
-from backend.src.repositories.location_repository import LocationRepository
 from backend.src.services.trip_service import TripService
 from backend.src.services.user_service import UserService
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from shared.models import Location
+from shared.repositories.location_repository import LocationRepository
 
 router = APIRouter(tags=["pulse"])
 

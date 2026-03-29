@@ -4,9 +4,9 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from backend.src.repositories.invite_link_repository import InviteLinkRepository
-from backend.src.repositories.trip_repository import TripRepository
 
 from shared.models import InviteLink, Participant, TripRole
+from shared.repositories.trip_repository import TripRepository
 
 
 class InviteService:

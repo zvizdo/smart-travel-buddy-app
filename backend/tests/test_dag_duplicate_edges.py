@@ -1,14 +1,12 @@
 """Tests for duplicate edge prevention across all DAG manipulation methods."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from backend.src.services.dag_service import DAGService
 
 from shared.models import Node
-
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -170,6 +168,9 @@ class TestCreateStandaloneEdgeDuplicates:
         svc = _make_service()
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
         svc._edge_repo.create_edge = AsyncMock()
+        mock_node = Node(**_make_node_dict("A", "NodeA", "2026-06-01T10:00:00+00:00"))
+        mock_node.lat_lng = None
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=mock_node)
 
         result = await svc.create_standalone_edge(
             "trip1", "plan1", "A", "B", "drive", 2, 100,
@@ -185,6 +186,9 @@ class TestCreateStandaloneEdgeDuplicates:
         svc = _make_service()
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[existing])
         svc._edge_repo.create_edge = AsyncMock()
+        mock_node = Node(**_make_node_dict("A", "NodeA", "2026-06-01T10:00:00+00:00"))
+        mock_node.lat_lng = None
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=mock_node)
 
         result = await svc.create_standalone_edge(
             "trip1", "plan1", "A", "B", "flight", 1, 500,

@@ -25,7 +25,7 @@
     },
     {
       "collectionGroup": "api_keys",
-      "queryScope": "COLLECTION",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
         { "fieldPath": "key_hash", "order": "ASCENDING" },
         { "fieldPath": "is_active", "order": "ASCENDING" }

@@ -1,9 +1,9 @@
 from typing import Any
 
-from backend.src.repositories.base_repository import BaseRepository
 from google.cloud.firestore import AsyncClient
 
 from shared.models import Trip
+from shared.repositories.base_repository import BaseRepository
 
 
 class TripRepository(BaseRepository):
@@ -27,8 +27,10 @@ class TripRepository(BaseRepository):
 
     async def list_by_user(self, user_id: str) -> list[dict[str, Any]]:
         """List all trips where the user is a participant."""
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
         docs = self._collection().where(
-            f"participants.{user_id}.role", ">=", ""
+            filter=FieldFilter(f"participants.{user_id}.role", ">=", "")
         ).stream()
         return [doc.to_dict() async for doc in docs]
 

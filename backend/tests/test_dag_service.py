@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from backend.src.services.dag_service import DAGService, _parse_dt
+from backend.src.services.dag_service import DAGService
+from shared.dag.cascade import parse_dt as _parse_dt
 
 
 # ── _parse_dt helper ──────────────────────────────────────────────

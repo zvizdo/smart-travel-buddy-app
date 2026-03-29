@@ -1,0 +1,28 @@
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+# Install shared package first (changes less frequently)
+COPY shared/ /app/shared/
+RUN pip install --no-cache-dir /app/shared/
+
+COPY mcpserver/requirements.txt /app/mcpserver/requirements.txt
+RUN pip install --no-cache-dir -r /app/mcpserver/requirements.txt
+
+# Copy mcpserver source maintaining package structure
+COPY mcpserver/src/ /app/mcpserver/src/
+RUN touch /app/mcpserver/__init__.py
+
+# --- Runner ---
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /app/mcpserver /app/mcpserver
+
+# Cloud Run injects PORT (default 8080)
+ENV PORT=8080
+
+CMD exec python -m mcpserver.src.main --port ${PORT}

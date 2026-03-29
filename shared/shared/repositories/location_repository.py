@@ -1,9 +1,9 @@
 from typing import Any
 
-from backend.src.repositories.base_repository import BaseRepository
 from google.cloud.firestore import AsyncClient
 
 from shared.models import Location
+from shared.repositories.base_repository import BaseRepository
 
 
 class LocationRepository(BaseRepository):

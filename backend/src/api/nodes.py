@@ -12,8 +12,6 @@ from backend.src.deps import (
     get_notification_service,
     get_trip_service,
 )
-from backend.src.repositories.action_repository import ActionRepository
-from backend.src.repositories.node_repository import NodeRepository
 from backend.src.services.dag_service import DAGService
 from backend.src.services.notification_service import NotificationService
 from backend.src.services.trip_service import TripService
@@ -21,6 +19,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from shared.models import Action, ActionType, PlaceData, TripRole
+from shared.repositories.action_repository import ActionRepository
+from shared.repositories.node_repository import NodeRepository
 
 router = APIRouter(tags=["nodes"])
 

@@ -3,11 +3,6 @@
 import uuid
 from datetime import UTC, datetime
 
-from backend.src.repositories.action_repository import ActionRepository
-from backend.src.repositories.edge_repository import EdgeRepository
-from backend.src.repositories.node_repository import NodeRepository
-from backend.src.repositories.plan_repository import PlanRepository
-from backend.src.repositories.trip_repository import TripRepository
 from backend.src.services.notification_service import NotificationService
 
 from shared.models import (
@@ -19,6 +14,11 @@ from shared.models import (
     PlanStatus,
     RelatedEntity,
 )
+from shared.repositories.action_repository import ActionRepository
+from shared.repositories.edge_repository import EdgeRepository
+from shared.repositories.node_repository import NodeRepository
+from shared.repositories.plan_repository import PlanRepository
+from shared.repositories.trip_repository import TripRepository
 
 
 class PlanService:

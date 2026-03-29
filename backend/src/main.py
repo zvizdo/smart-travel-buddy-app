@@ -7,7 +7,18 @@ import httpx
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-from backend.src.api import agent, edges, invites, nodes, notifications, paths, plans, pulse, trips, users
+from backend.src.api import (
+    agent,
+    edges,
+    invites,
+    nodes,
+    notifications,
+    paths,
+    plans,
+    pulse,
+    trips,
+    users,
+)
 from backend.src.services.route_service import RouteService
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware

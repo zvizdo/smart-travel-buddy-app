@@ -3,9 +3,6 @@
 import pytest
 
 from shared.dag.paths import (
-    DivergencePoint,
-    MergeNode,
-    PathResult,
     build_adjacency,
     compute_participant_paths,
     detect_divergence_points,

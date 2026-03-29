@@ -4,9 +4,9 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from backend.src.repositories.action_repository import ActionRepository
 
 from shared.models import Action, ActionType
+from shared.repositories.action_repository import ActionRepository
 
 
 class TestActionRepository:

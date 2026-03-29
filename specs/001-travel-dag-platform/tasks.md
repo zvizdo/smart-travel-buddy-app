@@ -285,28 +285,28 @@
 
 ### Backend — API Key Management
 
-- [ ] T120 [US7] Implement API key generation endpoint `POST /api/v1/users/me/api-keys` (generate random key, store HMAC-SHA256 hash using server-side secret, return plaintext once) in `backend/src/api/users.py`
-- [ ] T121 [US7] Implement API key list and revoke endpoints (`GET /api/v1/users/me/api-keys`, `DELETE /api/v1/users/me/api-keys/{keyId}`) in `backend/src/api/users.py`
-- [ ] T122 [P] [US7] Implement user profile endpoint `GET /api/v1/users/me` in `backend/src/api/users.py`
+- [x] T120 [US7] Implement API key generation endpoint `POST /api/v1/users/me/api-keys` (generate random key, store HMAC-SHA256 hash using server-side secret, return plaintext once) in `backend/src/api/users.py`
+- [x] T121 [US7] Implement API key list and revoke endpoints (`GET /api/v1/users/me/api-keys`, `DELETE /api/v1/users/me/api-keys/{keyId}`) in `backend/src/api/users.py`
+- [x] T122 [P] [US7] Implement user profile endpoint `GET /api/v1/users/me` in `backend/src/api/users.py`
 
 ### MCP Server — Tools & Auth
 
-- [ ] T123 [US7] Implement MCP API key authentication (compute HMAC-SHA256 of provided key using server secret, lookup hash in Firestore `users/{}/api_keys`, resolve user, check `is_active`) in `mcpserver/src/auth/api_key_auth.py`
-- [ ] T124 [US7] Implement MCP Firestore repositories (reuse patterns from backend — TripRepository, NodeRepository, EdgeRepository, PlanRepository) in `mcpserver/src/repositories/`
-- [ ] T125 [US7] Implement MCP TripService (delegates to shared library for DAG and path logic) in `mcpserver/src/services/trip_service.py`
-- [ ] T126 [P] [US7] Implement `get_trips` MCP tool in `mcpserver/src/tools/trips.py`
-- [ ] T127 [P] [US7] Implement `get_trip_versions` MCP tool in `mcpserver/src/tools/trips.py`
-- [ ] T128 [P] [US7] Implement `get_trip_context` MCP tool (returns full DAG + participant locations + computed paths) in `mcpserver/src/tools/trips.py`
-- [ ] T129 [US7] Implement `create_or_modify_trip` MCP tool (full CRUD on nodes + edges with `participant_ids`, auto-cascade, create plan if none exists) in `mcpserver/src/tools/trips.py`
-- [ ] T130 [P] [US7] Implement `suggest_stop` MCP tool (Google Places API search along route) in `mcpserver/src/tools/places.py`
-- [ ] T131 [P] [US7] Implement `add_action` MCP tool (attach note/todo/place to node) in `mcpserver/src/tools/actions.py`
-- [ ] T132 [P] [US7] Implement `search_places` MCP tool (Google Places API near location) in `mcpserver/src/tools/places.py`
-- [ ] T133 [P] [US7] Implement `search_web` MCP tool (web search for travel info) in `mcpserver/src/tools/search.py`
-- [ ] T134 [US7] Implement FastMCP server entry point with tool registration and auth middleware in `mcpserver/src/main.py`
+- [x] T123 [US7] Implement MCP API key authentication (compute HMAC-SHA256 of provided key using server secret, lookup hash in Firestore `users/{}/api_keys`, resolve user, check `is_active`) in `mcpserver/src/auth/api_key_auth.py`
+- [x] T124 [US7] Implement MCP Firestore repositories (reuse patterns from backend — TripRepository, NodeRepository, EdgeRepository, PlanRepository) in `mcpserver/src/repositories/`
+- [x] T125 [US7] Implement MCP TripService (delegates to shared library for DAG and path logic) in `mcpserver/src/services/trip_service.py`
+- [x] T126 [P] [US7] Implement `get_trips` MCP tool in `mcpserver/src/tools/trips.py`
+- [x] T127 [P] [US7] Implement `get_trip_versions` MCP tool in `mcpserver/src/tools/trips.py`
+- [x] T128 [P] [US7] Implement `get_trip_context` MCP tool (returns full DAG + participant locations + computed paths) in `mcpserver/src/tools/trips.py`
+- [x] T129 [US7] Implement `create_or_modify_trip` MCP tool (full CRUD on nodes + edges with `participant_ids`, auto-cascade, create plan if none exists) in `mcpserver/src/tools/trips.py`
+- [x] T130 [P] [US7] Implement `suggest_stop` MCP tool (Google Places API search along route) in `mcpserver/src/tools/places.py`
+- [x] T131 [P] [US7] Implement `add_action` MCP tool (attach note/todo/place to node) in `mcpserver/src/tools/actions.py`
+- [x] T132 [P] [US7] Implement `search_places` MCP tool (Google Places API near location) in `mcpserver/src/tools/places.py`
+- [x] T133 [P] [US7] Implement `search_web` MCP tool (web search for travel info) in `mcpserver/src/tools/search.py` — SKIPPED (not needed per design decision)
+- [x] T134 [US7] Implement FastMCP server entry point with tool registration and auth middleware in `mcpserver/src/main.py`
 
 ### Frontend — API Key Management
 
-- [ ] T135 [US7] Create user profile page with API key management (generate, list, revoke) in `frontend/app/profile/page.tsx`
+- [x] T135 [US7] Create user profile page with API key management (generate, list, revoke) in `frontend/app/profile/page.tsx`
 
 **Checkpoint**: US7 complete — external AI agents can query and modify trips via MCP with full feature parity.
 

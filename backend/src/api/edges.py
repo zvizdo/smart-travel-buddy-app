@@ -3,12 +3,12 @@
 from backend.src.auth.firebase_auth import get_current_user
 from backend.src.auth.permissions import require_role
 from backend.src.deps import get_edge_repo, get_trip_service
-from backend.src.repositories.edge_repository import EdgeRepository
 from backend.src.services.trip_service import TripService
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from shared.models import TripRole
+from shared.repositories.edge_repository import EdgeRepository
 
 router = APIRouter(tags=["edges"])
 

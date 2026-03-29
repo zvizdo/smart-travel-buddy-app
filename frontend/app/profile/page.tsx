@@ -26,6 +26,25 @@ export default function ProfilePage() {
   const [savingName, setSavingName] = useState(false);
   const [savingLocation, setSavingLocation] = useState(false);
 
+  // API Key state
+  const [apiKeys, setApiKeys] = useState<
+    {
+      id: string;
+      name: string;
+      key_prefix: string;
+      is_active: boolean;
+      created_at: string;
+      last_used_at: string | null;
+    }[]
+  >([]);
+  const [loadingKeys, setLoadingKeys] = useState(false);
+  const [creatingKey, setCreatingKey] = useState(false);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [createdKeyValue, setCreatedKeyValue] = useState<string | null>(null);
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [showKeyForm, setShowKeyForm] = useState(false);
+  const [copiedKey, setCopiedKey] = useState(false);
+
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
@@ -40,6 +59,14 @@ export default function ProfilePage() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    // Fetch API keys
+    setLoadingKeys(true);
+    api
+      .get<{ api_keys: typeof apiKeys }>("/users/me/api-keys")
+      .then((data) => setApiKeys(data.api_keys.filter((k) => k.is_active)))
+      .catch(() => {})
+      .finally(() => setLoadingKeys(false));
   }, [user, authLoading, router]);
 
   if (authLoading || !user) {
@@ -87,6 +114,56 @@ export default function ProfilePage() {
       // Error handled by api client
     } finally {
       setSavingLocation(false);
+    }
+  }
+
+  async function handleCreateApiKey() {
+    if (!newKeyName.trim()) return;
+    setCreatingKey(true);
+    try {
+      const result = await api.post<{
+        id: string;
+        name: string;
+        key_prefix: string;
+        key: string;
+        created_at: string;
+      }>("/users/me/api-keys", { name: newKeyName.trim() });
+      setCreatedKeyValue(result.key);
+      setApiKeys((prev) => [
+        ...prev,
+        {
+          id: result.id,
+          name: result.name,
+          key_prefix: result.key_prefix,
+          is_active: true,
+          created_at: result.created_at,
+          last_used_at: null,
+        },
+      ]);
+      setNewKeyName("");
+      setShowKeyForm(false);
+    } catch {
+      // Error handled by api client
+    } finally {
+      setCreatingKey(false);
+    }
+  }
+
+  async function handleRevokeKey(keyId: string) {
+    try {
+      await api.delete(`/users/me/api-keys/${keyId}`);
+      setApiKeys((prev) => prev.filter((k) => k.id !== keyId));
+      setConfirmRevokeId(null);
+    } catch {
+      // Error handled by api client
+    }
+  }
+
+  function handleCopyKey() {
+    if (createdKeyValue) {
+      navigator.clipboard.writeText(createdKeyValue);
+      setCopiedKey(true);
+      setTimeout(() => setCopiedKey(false), 2000);
     }
   }
 
@@ -266,6 +343,131 @@ export default function ProfilePage() {
                   />
                 </button>
               </div>
+            </div>
+          </section>
+
+          {/* API Keys */}
+          <section>
+            <h3 className="text-xs font-semibold text-primary tracking-wide uppercase mb-4">
+              API Keys
+            </h3>
+            <div className="rounded-2xl bg-surface-lowest p-5 shadow-soft space-y-4">
+              <p className="text-xs text-on-surface-variant">
+                Connect external AI assistants (like Claude Desktop) to your
+                trips via the MCP server.
+              </p>
+
+              {/* Created key alert — shown once */}
+              {createdKeyValue && (
+                <div className="rounded-xl bg-primary/10 p-4 space-y-2">
+                  <p className="text-xs font-semibold text-primary">
+                    Key created — copy it now. It won&apos;t be shown again.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 rounded-lg bg-surface-high px-3 py-2 text-xs text-on-surface font-mono break-all select-all">
+                      {createdKeyValue}
+                    </code>
+                    <button
+                      onClick={handleCopyKey}
+                      className="shrink-0 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-on-primary transition-all active:scale-[0.98]"
+                    >
+                      {copiedKey ? "Copied!" : "Copy"}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => setCreatedKeyValue(null)}
+                    className="text-xs text-on-surface-variant underline"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              {/* Existing keys */}
+              {loadingKeys ? (
+                <div className="h-8 rounded bg-surface-high animate-pulse" />
+              ) : apiKeys.length > 0 ? (
+                <div className="space-y-3">
+                  {apiKeys.map((key) => (
+                    <div
+                      key={key.id}
+                      className="flex items-center justify-between gap-3 rounded-xl bg-surface-high p-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-on-surface truncate">
+                          {key.name}
+                        </p>
+                        <p className="text-xs text-on-surface-variant font-mono">
+                          {key.key_prefix}...
+                        </p>
+                      </div>
+                      {confirmRevokeId === key.id ? (
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => handleRevokeKey(key.id)}
+                            className="rounded-lg bg-error px-3 py-1.5 text-xs font-semibold text-on-primary"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            onClick={() => setConfirmRevokeId(null)}
+                            className="rounded-lg bg-surface-low px-3 py-1.5 text-xs text-on-surface-variant"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmRevokeId(key.id)}
+                          className="shrink-0 rounded-lg bg-surface-low px-3 py-1.5 text-xs text-error transition-colors active:bg-surface-container"
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-on-surface-variant italic">
+                  No API keys yet.
+                </p>
+              )}
+
+              {/* Create key form */}
+              {showKeyForm ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newKeyName}
+                    onChange={(e) => setNewKeyName(e.target.value)}
+                    placeholder="Key name (e.g., Claude Desktop)"
+                    maxLength={100}
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleCreateApiKey();
+                      if (e.key === "Escape") {
+                        setShowKeyForm(false);
+                        setNewKeyName("");
+                      }
+                    }}
+                    className="flex-1 rounded-xl bg-surface-high px-4 py-2.5 text-sm text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  />
+                  <button
+                    onClick={handleCreateApiKey}
+                    disabled={creatingKey || !newKeyName.trim()}
+                    className="rounded-xl gradient-primary px-4 py-2.5 text-sm font-semibold text-on-primary shadow-soft transition-all active:scale-[0.98] disabled:opacity-40"
+                  >
+                    {creatingKey ? "..." : "Create"}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowKeyForm(true)}
+                  className="w-full rounded-xl bg-surface-high px-4 py-3 text-sm font-medium text-primary transition-colors active:bg-surface-container"
+                >
+                  + Generate New Key
+                </button>
+              )}
             </div>
           </section>
 

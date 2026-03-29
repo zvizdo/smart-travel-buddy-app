@@ -1,8 +1,7 @@
 """Preference repository for agent-extracted travel rules."""
 
-from backend.src.repositories.base_repository import BaseRepository
-
 from shared.models import Preference
+from shared.repositories.base_repository import BaseRepository
 
 
 class PreferenceRepository(BaseRepository):

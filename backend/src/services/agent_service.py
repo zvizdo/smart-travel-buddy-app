@@ -7,13 +7,12 @@ import time
 import uuid
 from datetime import UTC, datetime
 
-from google import genai
-from google.genai import types
-
 from backend.src.services.agent_tools import create_agent_tools
 from backend.src.services.agent_user_context import build_user_context, build_user_context_text
 from backend.src.services.dag_service import DAGService
 from backend.src.services.tool_executor import ToolExecutor
+from google import genai
+from google.genai import types
 
 from shared.agent.config import (
     IMPORT_SYSTEM_PROMPT,
@@ -22,9 +21,8 @@ from shared.agent.config import (
     RESPONSE_SCHEMA,
 )
 from shared.agent.schemas import AgentReply, ImportChatResponse, OngoingChatResponse
-from shared.models import Trip
 from shared.dag.assembler import AssemblyResult, assemble_dag
-from shared.models import Preference, PreferenceCategory
+from shared.models import Preference, PreferenceCategory, Trip
 
 logger = logging.getLogger(__name__)
 

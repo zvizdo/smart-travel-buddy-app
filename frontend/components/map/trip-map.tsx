@@ -113,6 +113,12 @@ export function TripMap({
     return map;
   }, [nodes]);
 
+  // Root nodes (in-degree 0) — these are starting points of the trip
+  const rootNodeIds = useMemo(() => {
+    const hasParent = new Set(edges.map((e) => e.to_node_id));
+    return new Set(nodes.filter((n) => !hasParent.has(n.id)).map((n) => n.id));
+  }, [nodes, edges]);
+
   const map = useMap();
 
   // Track zoom changes to recompute pixel distances
@@ -577,6 +583,7 @@ export function TripMap({
             arrivalTime={node.arrival_time}
             selected={selectedNodeId === node.id}
             isMergeNode={mergeNodeIds?.has(node.id)}
+            isStartNode={rootNodeIds.has(node.id)}
             dimmed={dimmed}
             proximityScale={nodeProximityScales.get(node.id) ?? 1}
             fannedOut={nodeFanOutPositions.has(node.id)}

@@ -13,8 +13,6 @@ from backend.src.deps import (
     get_user_service,
 )
 from backend.src.repositories.chat_history_repository import ChatHistoryRepository
-from backend.src.repositories.edge_repository import EdgeRepository
-from backend.src.repositories.node_repository import NodeRepository
 from backend.src.repositories.preference_repository import PreferenceRepository
 from backend.src.services.agent_service import AgentService
 from backend.src.services.dag_service import DAGService
@@ -24,6 +22,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from shared.models import TripRole
+from shared.repositories.edge_repository import EdgeRepository
+from shared.repositories.node_repository import NodeRepository
 
 router = APIRouter(tags=["agent"])
 

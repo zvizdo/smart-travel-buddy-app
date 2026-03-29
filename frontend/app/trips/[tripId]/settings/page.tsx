@@ -41,7 +41,7 @@ export default function TripSettingsPage() {
 
   const router = useRouter();
 
-  const [inviteRole, setInviteRole] = useState<"planner" | "viewer">(
+  const [inviteRole, setInviteRole] = useState<"admin" | "planner" | "viewer">(
     "planner",
   );
   const [invite, setInvite] = useState<InviteResult | null>(null);
@@ -360,10 +360,11 @@ export default function TripSettingsPage() {
                 <select
                   value={inviteRole}
                   onChange={(e) =>
-                    setInviteRole(e.target.value as "planner" | "viewer")
+                    setInviteRole(e.target.value as "admin" | "planner" | "viewer")
                   }
                   className="flex-1 rounded-xl bg-surface-high px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
                 >
+                  <option value="admin">Admin</option>
                   <option value="planner">Planner</option>
                   <option value="viewer">Viewer</option>
                 </select>

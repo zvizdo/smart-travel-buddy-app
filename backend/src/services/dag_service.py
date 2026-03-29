@@ -7,19 +7,20 @@ import asyncio
 import logging
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from backend.src.repositories.edge_repository import EdgeRepository
-from backend.src.repositories.node_repository import NodeRepository
-from backend.src.repositories.plan_repository import PlanRepository
-from backend.src.repositories.trip_repository import TripRepository
+from shared.repositories.edge_repository import EdgeRepository
+from shared.repositories.node_repository import NodeRepository
+from shared.repositories.plan_repository import PlanRepository
+from shared.repositories.trip_repository import TripRepository
 
 if TYPE_CHECKING:
     from backend.src.services.route_service import RouteService
 
 from shared.dag.assembler import AssemblyResult
+from shared.dag.cascade import compute_cascade, parse_dt
 from shared.models import (
     Edge,
     LatLng,
@@ -197,13 +198,13 @@ class DAGService:
         # Resolve arrival
         resolved_arrival: datetime
         if arrival_time:
-            resolved_arrival = _parse_dt(arrival_time)
+            resolved_arrival = parse_dt(arrival_time)
         elif source is not None:
             departure = source.departure_time
             if departure is None and source.arrival_time:
-                departure = _parse_dt(source.arrival_time)
+                departure = parse_dt(source.arrival_time)
             elif departure:
-                departure = _parse_dt(departure)
+                departure = parse_dt(departure)
             resolved_arrival = (
                 (departure + timedelta(hours=travel_time_hours)) if departure
                 else datetime.now(UTC)
@@ -214,7 +215,7 @@ class DAGService:
         # Resolve departure
         resolved_departure: datetime | None = None
         if departure_time:
-            resolved_departure = _parse_dt(departure_time)
+            resolved_departure = parse_dt(departure_time)
 
         new_node = Node(
             id=str(uuid.uuid4()),
@@ -364,13 +365,13 @@ class DAGService:
 
         # Resolve arrival
         if arrival_time:
-            resolved_arrival = _parse_dt(arrival_time)
+            resolved_arrival = parse_dt(arrival_time)
         else:
             departure = source.departure_time
             if departure is None and source.arrival_time:
-                departure = _parse_dt(source.arrival_time)
+                departure = parse_dt(source.arrival_time)
             elif departure:
-                departure = _parse_dt(departure)
+                departure = parse_dt(departure)
             resolved_arrival = (
                 (departure + timedelta(hours=travel_time_hours)) if departure
                 else datetime.now(UTC)
@@ -379,7 +380,7 @@ class DAGService:
         # Resolve departure
         resolved_departure: datetime | None = None
         if departure_time:
-            resolved_departure = _parse_dt(departure_time)
+            resolved_departure = parse_dt(departure_time)
 
         all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
         max_order = max((n.get("order_index", 0) for n in all_nodes), default=0)
@@ -476,8 +477,8 @@ class DAGService:
         # Conflict detection: compare timestamps
         conflict = False
         if client_updated_at and node_dict.get("updated_at"):
-            server_ts = _parse_dt(node_dict["updated_at"])
-            client_ts = _parse_dt(client_updated_at)
+            server_ts = parse_dt(node_dict["updated_at"])
+            client_ts = parse_dt(client_updated_at)
             if abs((server_ts - client_ts).total_seconds()) > 1:
                 conflict = True
                 if notification_service and edited_by:
@@ -526,86 +527,17 @@ class DAGService:
         plan_id: str,
         modified_node: Node,
     ) -> dict:
-        """BFS from modified node to compute new arrival times for downstream nodes.
-
-        At divergence points (out-degree > 1), follows all branches.
-        Returns affected_nodes list with before/after times and any conflicts.
-        """
+        """BFS from modified node to compute new arrival times for downstream nodes."""
         all_nodes_raw = await self._node_repo.list_by_plan(trip_id, plan_id)
         all_edges_raw = await self._edge_repo.list_by_plan(trip_id, plan_id)
 
-        node_map: dict[str, dict] = {n["id"]: n for n in all_nodes_raw}
-        adj: dict[str, list[dict]] = defaultdict(list)
-        for e in all_edges_raw:
-            adj[e["from_node_id"]].append(e)
-
-        affected_nodes: list[dict] = []
-        conflicts: list[dict] = []
-
-        queue: deque[str] = deque()
-        parent_departure: dict[str, datetime] = {}
-
         departure = modified_node.departure_time
         if departure is None:
-            departure = _parse_dt(modified_node.arrival_time)
+            departure = parse_dt(modified_node.arrival_time)
         else:
-            departure = _parse_dt(departure)
+            departure = parse_dt(departure)
 
-        for edge in adj.get(modified_node.id, []):
-            child_id = edge["to_node_id"]
-            travel_hours = edge.get("travel_time_hours", 0)
-            new_arrival = departure + timedelta(hours=travel_hours)
-            parent_departure[child_id] = new_arrival
-            queue.append(child_id)
-
-        visited: set[str] = set()
-        while queue:
-            current_id = queue.popleft()
-            if current_id in visited:
-                continue
-            visited.add(current_id)
-
-            current = node_map.get(current_id)
-            if current is None:
-                continue
-
-            new_arrival = parent_departure[current_id]
-            old_arrival_str = current.get("arrival_time")
-            old_arrival = _parse_dt(old_arrival_str) if old_arrival_str else None
-
-            if old_arrival and abs((new_arrival - old_arrival).total_seconds()) < 60:
-                continue
-
-            # Preserve the node's stay duration (departure - arrival) when cascading
-            old_arrival_dt = _parse_dt(old_arrival_str) if old_arrival_str else new_arrival
-            old_departure_str = current.get("departure_time")
-            if old_departure_str:
-                stay_duration = _parse_dt(old_departure_str) - old_arrival_dt
-                new_departure = new_arrival + stay_duration
-            else:
-                new_departure = new_arrival
-
-            affected_nodes.append({
-                "id": current_id,
-                "name": current.get("name", ""),
-                "old_arrival": old_arrival.isoformat() if old_arrival else None,
-                "new_arrival": new_arrival.isoformat(),
-                "old_departure": current.get("departure_time"),
-                "new_departure": new_departure.isoformat(),
-            })
-
-            for edge in adj.get(current_id, []):
-                child_id = edge["to_node_id"]
-                if child_id not in visited:
-                    travel_hours = edge.get("travel_time_hours", 0)
-                    child_arrival = new_departure + timedelta(hours=travel_hours)
-                    parent_departure[child_id] = child_arrival
-                    queue.append(child_id)
-
-        return {
-            "affected_nodes": affected_nodes,
-            "conflicts": conflicts,
-        }
+        return compute_cascade(modified_node.id, departure, all_nodes_raw, all_edges_raw)
 
     async def confirm_cascade(
         self,
@@ -718,15 +650,3 @@ class DAGService:
         """Delete a single edge by ID."""
         await self._edge_repo.delete_edge(trip_id, plan_id, edge_id)
         return {"deleted_edge_id": edge_id}
-
-
-def _parse_dt(value: str | datetime) -> datetime:
-    """Parse a datetime value that may be a string or already a datetime."""
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value
-    dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt

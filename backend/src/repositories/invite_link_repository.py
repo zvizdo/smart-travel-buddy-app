@@ -1,9 +1,10 @@
 from typing import Any
 
-from backend.src.repositories.base_repository import BaseRepository
 from google.cloud.firestore import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from shared.models import InviteLink
+from shared.repositories.base_repository import BaseRepository
 
 
 class InviteLinkRepository(BaseRepository):
@@ -39,7 +40,7 @@ class InviteLinkRepository(BaseRepository):
 
         Returns (trip_id, invite) or None. Uses collection group query.
         """
-        query = self._db.collection_group("invite_links").where("id", "==", token)
+        query = self._db.collection_group("invite_links").where(filter=FieldFilter("id", "==", token))
         async for doc in query.stream():
             path_parts = doc.reference.path.split("/")
             trip_id = path_parts[1]

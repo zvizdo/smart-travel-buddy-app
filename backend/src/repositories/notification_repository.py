@@ -1,9 +1,10 @@
 from typing import Any
 
-from backend.src.repositories.base_repository import BaseRepository
 from google.cloud.firestore import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from shared.models import Notification
+from shared.repositories.base_repository import BaseRepository
 
 
 class NotificationRepository(BaseRepository):
@@ -21,7 +22,7 @@ class NotificationRepository(BaseRepository):
         self, trip_id: str, user_id: str, unread_only: bool = False
     ) -> list[dict[str, Any]]:
         coll = self._collection(trip_id=trip_id)
-        q = coll.where("target_user_ids", "array_contains", user_id)
+        q = coll.where(filter=FieldFilter("target_user_ids", "array_contains", user_id))
         docs = [doc.to_dict() async for doc in q.stream()]
         if unread_only:
             docs = [d for d in docs if user_id not in d.get("read_by", [])]

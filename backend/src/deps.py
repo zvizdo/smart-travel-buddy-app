@@ -1,14 +1,7 @@
-from backend.src.repositories.action_repository import ActionRepository
 from backend.src.repositories.chat_history_repository import ChatHistoryRepository
-from backend.src.repositories.edge_repository import EdgeRepository
 from backend.src.repositories.invite_link_repository import InviteLinkRepository
-from backend.src.repositories.location_repository import LocationRepository
-from backend.src.repositories.node_repository import NodeRepository
 from backend.src.repositories.notification_repository import NotificationRepository
-from backend.src.repositories.plan_repository import PlanRepository
 from backend.src.repositories.preference_repository import PreferenceRepository
-from backend.src.repositories.trip_repository import TripRepository
-from backend.src.repositories.user_repository import UserRepository
 from backend.src.services.agent_service import AgentService
 from backend.src.services.dag_service import DAGService
 from backend.src.services.invite_service import InviteService
@@ -20,6 +13,14 @@ from backend.src.services.user_service import UserService
 from fastapi import Depends, Request
 from google.cloud.firestore import AsyncClient
 from google.cloud.storage import Client as GCSClient
+
+from shared.repositories.action_repository import ActionRepository
+from shared.repositories.edge_repository import EdgeRepository
+from shared.repositories.location_repository import LocationRepository
+from shared.repositories.node_repository import NodeRepository
+from shared.repositories.plan_repository import PlanRepository
+from shared.repositories.trip_repository import TripRepository
+from shared.repositories.user_repository import UserRepository
 
 
 def get_firestore(request: Request) -> AsyncClient:
