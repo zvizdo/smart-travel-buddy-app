@@ -1,0 +1,61 @@
+from typing import Any
+
+from backend.src.repositories.base_repository import BaseRepository
+from google.cloud.firestore import AsyncClient
+
+from shared.models import ApiKey, User
+
+
+class UserRepository(BaseRepository):
+    collection_path = "users"
+
+    def __init__(self, db: AsyncClient):
+        super().__init__(db)
+
+    async def create_or_update(self, user: User) -> dict[str, Any]:
+        """Upsert user document."""
+        doc_dict = user.model_dump(mode="json")
+        await self._collection().document(user.id).set(doc_dict, merge=True)
+        return doc_dict
+
+    async def get_user(self, user_id: str) -> User | None:
+        data = await self.get(user_id)
+        if data is None:
+            return None
+        return User(**data)
+
+    async def get_user_or_raise(self, user_id: str) -> User:
+        data = await self.get_or_raise(user_id)
+        return User(**data)
+
+    async def create_api_key(self, user_id: str, api_key: ApiKey) -> dict[str, Any]:
+        """Store an API key in the user's api_keys subcollection."""
+        doc_dict = api_key.model_dump(mode="json")
+        ref = self._db.collection(f"users/{user_id}/api_keys").document(api_key.id)
+        await ref.set(doc_dict)
+        return doc_dict
+
+    async def list_api_keys(self, user_id: str) -> list[dict[str, Any]]:
+        """List all API keys for a user."""
+        docs = self._db.collection(f"users/{user_id}/api_keys").stream()
+        return [doc.to_dict() async for doc in docs]
+
+    async def get_api_key_by_hash(
+        self, user_id: str, key_hash: str
+    ) -> dict[str, Any] | None:
+        """Find an active API key by its hash."""
+        docs = (
+            self._db.collection(f"users/{user_id}/api_keys")
+            .where("key_hash", "==", key_hash)
+            .where("is_active", "==", True)
+            .stream()
+        )
+        async for doc in docs:
+            return doc.to_dict()
+        return None
+
+    async def deactivate_api_key(self, user_id: str, key_id: str) -> None:
+        """Deactivate an API key."""
+        await self._db.collection(f"users/{user_id}/api_keys").document(
+            key_id
+        ).update({"is_active": False})

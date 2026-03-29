@@ -1,50 +1,119 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+Sync Impact Report
+===================
+Version change: 1.0.0 → 1.1.0 (add shared/ sub-project)
+Modified principles: N/A
+Added sections:
+  - shared/ added to Technology Stack project structure
+Removed sections: N/A
+Templates requiring updates:
+  - .specify/templates/plan-template.md — ✅ no changes needed (generic)
+  - .specify/templates/spec-template.md — ✅ no changes needed (generic)
+  - .specify/templates/tasks-template.md — ✅ no changes needed (generic)
+  - .specify/templates/commands/ — no command files exist
+Follow-up TODOs: none
+-->
+
+# Smart Travel Buddy App Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Next.js 16 Best Practices
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+The frontend MUST be built with Next.js 16 following its current
+conventions, APIs, and file structure. Before writing any frontend
+code, the relevant guide in `node_modules/next/dist/docs/` MUST be
+consulted to account for breaking changes from earlier versions.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+- All frontend code MUST use the App Router and Next.js 16 idioms.
+- Deprecation notices from Next.js 16 MUST be heeded; deprecated
+  APIs MUST NOT be introduced into new code.
+- Server Components MUST be the default; Client Components used
+  only when interactivity or browser APIs are required.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### II. Object-Oriented Python Backend
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+The backend and MCP server MUST use Python with FastAPI and FastMCP
+respectively, following object-oriented design principles.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+- Every distinct domain concept MUST be represented as a class.
+- Business logic MUST live in service classes, not in route
+  handlers or MCP tool definitions.
+- Data models MUST use Pydantic for validation and serialization.
+- FastMCP tool implementations MUST delegate to service classes
+  rather than containing logic inline.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### III. Separation of Concerns
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+Each class and module MUST have a single, well-defined
+responsibility. Boundaries between layers MUST be explicit.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+- Route handlers / MCP tools: request parsing, response formatting.
+- Service classes: business logic and orchestration.
+- Repository / data-access classes: persistence operations.
+- Models: data shape and validation only.
+- No layer may bypass an adjacent layer (e.g., a route handler
+  MUST NOT query the database directly).
+
+### IV. Modular & Testable Code
+
+All code MUST be written to be modular, independently testable,
+maintainable, and swappable.
+
+- Dependencies MUST be injected, not hard-coded, so implementations
+  can be replaced without changing consumers.
+- Each module MUST be importable and testable in isolation without
+  requiring the full application to be running.
+- Interfaces (abstract base classes in Python, TypeScript interfaces
+  in the frontend) SHOULD be used at module boundaries to enable
+  substitution.
+- Side effects (network calls, file I/O, database access) MUST be
+  isolated behind explicit abstractions.
+
+## Technology Stack
+
+- **Frontend**: Next.js 16 (TypeScript, React, Tailwind CSS)
+- **Backend API**: Python 3.12+, FastAPI
+- **MCP Server**: Python 3.12+, FastMCP
+- **Package Manager (frontend)**: pnpm
+- **Project Structure**:
+  - `frontend/` — Next.js application
+  - `backend/` — FastAPI service
+  - `mcpserver/` — FastMCP server
+  - `shared/` — Shared Python library (Pydantic models, parsing logic; imported by backend and mcpserver)
+
+Each sub-project MUST maintain its own dependency manifest and MUST
+be runnable independently of the others for local development.
+
+## Development Workflow
+
+- Code reviews MUST verify compliance with all Core Principles
+  before merging.
+- Every pull request MUST include evidence that new or changed code
+  is testable (test files or manual verification steps).
+- Linting and formatting tools MUST be configured and enforced in
+  CI for both the frontend (ESLint, Prettier) and backend (ruff or
+  equivalent).
+- Commits SHOULD be atomic — one logical change per commit.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution is the authoritative source for architectural
+decisions and non-negotiable practices in the Smart Travel Buddy
+App project. It supersedes ad-hoc decisions made in code reviews
+or conversations.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+- **Amendments**: Any change to this constitution MUST be documented
+  with a version bump, a rationale, and an updated Sync Impact
+  Report at the top of this file.
+- **Versioning**: MAJOR for principle removals or redefinitions,
+  MINOR for new principles or material expansions, PATCH for
+  clarifications and wording fixes.
+- **Compliance**: All plans, specs, and task lists produced by
+  Specify commands MUST be checked against these principles. The
+  Constitution Check section in plan templates MUST reference the
+  current principles by number.
+- **Guidance**: See `AGENTS.md` for runtime development guidance
+  specific to the AI-assisted workflow.
+
+**Version**: 1.1.0 | **Ratified**: 2026-03-26 | **Last Amended**: 2026-03-26

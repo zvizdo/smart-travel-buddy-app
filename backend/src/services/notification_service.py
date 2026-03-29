@@ -1,0 +1,72 @@
+"""Notification service: create and fan-out notifications."""
+
+import uuid
+from datetime import UTC, datetime
+
+from backend.src.repositories.notification_repository import NotificationRepository
+
+from shared.models import Notification, NotificationType, RelatedEntity
+
+
+class NotificationService:
+    def __init__(self, notification_repo: NotificationRepository):
+        self._notification_repo = notification_repo
+
+    async def create_notification(
+        self,
+        trip_id: str,
+        notification_type: NotificationType,
+        message: str,
+        target_user_ids: list[str],
+        related_entity: RelatedEntity | None = None,
+    ) -> dict:
+        """Create and persist a notification."""
+        notification = Notification(
+            id=str(uuid.uuid4()),
+            type=notification_type,
+            message=message,
+            target_user_ids=target_user_ids,
+            read_by=[],
+            related_entity=related_entity,
+            created_at=datetime.now(UTC),
+        )
+        return await self._notification_repo.create_notification(trip_id, notification)
+
+    async def notify_member_joined(
+        self,
+        trip_id: str,
+        joined_user_name: str,
+        all_participant_ids: list[str],
+        joined_user_id: str,
+    ) -> dict:
+        """Create a notification when a new member joins the trip."""
+        targets = [uid for uid in all_participant_ids if uid != joined_user_id]
+        if not targets:
+            return {}
+        return await self.create_notification(
+            trip_id=trip_id,
+            notification_type=NotificationType.MEMBER_JOINED,
+            message=f"{joined_user_name} joined the trip",
+            target_user_ids=targets,
+        )
+
+    async def notify_unresolved_paths(
+        self,
+        trip_id: str,
+        unresolved: list[dict],
+        admin_ids: list[str],
+    ) -> list[dict]:
+        """Create notifications for unresolved participant flows at divergence points."""
+        results = []
+        for item in unresolved:
+            result = await self.create_notification(
+                trip_id=trip_id,
+                notification_type=NotificationType.UNRESOLVED_PATH,
+                message="Participant needs assignment at divergence point",
+                target_user_ids=admin_ids,
+                related_entity=RelatedEntity(
+                    type="node", id=item["divergence_node_id"]
+                ),
+            )
+            results.append(result)
+        return results

@@ -1,0 +1,116 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper: get a trip document
+    function getTripDoc(tripId) {
+      return get(/databases/$(database)/documents/trips/$(tripId));
+    }
+
+    // Helper: check if user is a participant in a trip
+    function isParticipant(tripId) {
+      let trip = getTripDoc(tripId);
+      return trip.data.participants[request.auth.uid] != null;
+    }
+
+    // Helper: get user's role in a trip
+    function getRole(tripId) {
+      let trip = getTripDoc(tripId);
+      return trip.data.participants[request.auth.uid].role;
+    }
+
+    // Helper: check if user has one of the allowed roles
+    function hasRole(tripId, roles) {
+      return getRole(tripId) in roles;
+    }
+
+    // ─── Users ───────────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && request.auth.uid == userId;
+
+      match /api_keys/{keyId} {
+        allow read: if isAuthenticated() && request.auth.uid == userId;
+        allow create: if isAuthenticated() && request.auth.uid == userId;
+        allow update: if isAuthenticated() && request.auth.uid == userId;
+        allow delete: if isAuthenticated() && request.auth.uid == userId;
+      }
+    }
+
+    // ─── Trips ───────────────────────────────────────────────
+    match /trips/{tripId} {
+      allow create: if isAuthenticated();
+      allow read: if isAuthenticated() && isParticipant(tripId);
+      // Only admin can update trip-level fields (active_plan_id, participants)
+      allow update: if isAuthenticated() && hasRole(tripId, ['admin']);
+
+      // ─── Plans ─────────────────────────────────────────────
+      match /plans/{planId} {
+        allow read: if isAuthenticated() && isParticipant(tripId);
+        allow create: if isAuthenticated() && hasRole(tripId, ['admin', 'planner']);
+        allow update: if isAuthenticated() && hasRole(tripId, ['admin', 'planner']);
+
+        // ─── Nodes ───────────────────────────────────────────
+        match /nodes/{nodeId} {
+          allow read: if isAuthenticated() && isParticipant(tripId);
+          allow create: if isAuthenticated() && hasRole(tripId, ['admin', 'planner']);
+          allow update: if isAuthenticated() && hasRole(tripId, ['admin', 'planner']);
+          allow delete: if isAuthenticated() && hasRole(tripId, ['admin', 'planner']);
+
+          // ─── Actions (notes, todos, places) ────────────────
+          // All roles including viewer can create actions
+          match /actions/{actionId} {
+            allow read: if isAuthenticated() && isParticipant(tripId);
+            allow create: if isAuthenticated() && isParticipant(tripId);
+            allow update: if isAuthenticated() && isParticipant(tripId);
+          }
+        }
+
+        // ─── Edges ───────────────────────────────────────────
+        match /edges/{edgeId} {
+          allow read: if isAuthenticated() && isParticipant(tripId);
+          allow create: if isAuthenticated() && hasRole(tripId, ['admin', 'planner']);
+          allow update: if isAuthenticated() && hasRole(tripId, ['admin', 'planner']);
+          allow delete: if isAuthenticated() && hasRole(tripId, ['admin', 'planner']);
+        }
+      }
+
+      // ─── Preferences (agent-extracted, read by participants) ─
+      match /preferences/{prefId} {
+        allow read: if isAuthenticated() && isParticipant(tripId);
+        // Write restricted to server (Admin SDK bypasses rules)
+      }
+
+      // ─── Locations (Pulse check-ins) ───────────────────────
+      match /locations/{userId} {
+        allow read: if isAuthenticated() && isParticipant(tripId);
+        // Users can only write their own location
+        allow write: if isAuthenticated() && isParticipant(tripId)
+                     && request.auth.uid == userId;
+      }
+
+      // ─── Invite Links ─────────────────────────────────────
+      match /invite_links/{token} {
+        // Anyone authenticated can read (needed for claiming)
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && hasRole(tripId, ['admin']);
+        allow update: if isAuthenticated() && hasRole(tripId, ['admin']);
+      }
+
+      // ─── Notifications ────────────────────────────────────
+      match /notifications/{notifId} {
+        // Participants can read notifications targeted at them
+        allow read: if isAuthenticated() && isParticipant(tripId);
+        // Participants can update (mark as read)
+        allow update: if isAuthenticated() && isParticipant(tripId);
+        // Create restricted to server (Admin SDK bypasses rules)
+      }
+    }
+  }
+}

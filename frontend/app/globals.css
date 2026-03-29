@@ -1,0 +1,208 @@
+@import "tailwindcss";
+
+/* ========================================================================
+   Azure Odyssey Design System — "The Kinetic Horizon"
+   From Stitch MCP design system for Travel Buddy App
+   ======================================================================== */
+
+:root {
+  /* Primary — Teal/Cyan (water, exploration) */
+  --primary: #006479;
+  --on-primary: #e0f6ff;
+  --primary-container: #40cef3;
+  --on-primary-container: #00414f;
+  --primary-dim: #00576a;
+  --primary-fixed: #40cef3;
+  --primary-fixed-dim: #28c0e4;
+
+  /* Secondary — Leaf Green (nature, confirmation) */
+  --secondary: #006b1b;
+  --on-secondary: #d1ffc8;
+  --secondary-container: #91f78e;
+  --on-secondary-container: #005e17;
+  --secondary-dim: #005d16;
+
+  /* Tertiary — Golden/Amber (energy, highlights) */
+  --tertiary: #6d5a00;
+  --on-tertiary: #fff2ce;
+  --tertiary-container: #fdd400;
+  --on-tertiary-container: #594a00;
+  --tertiary-dim: #5f4e00;
+
+  /* Error */
+  --error: #b31b25;
+  --on-error: #ffefee;
+  --error-container: #fb5151;
+  --on-error-container: #570008;
+
+  /* Surfaces — Tonal Layering (No-Line Rule) */
+  --surface: #eff8f7;
+  --surface-bright: #eff8f7;
+  --surface-dim: #c9d7d6;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #e9f3f2;
+  --surface-container: #dfeae9;
+  --surface-container-high: #d9e5e4;
+  --surface-container-highest: #d2e0df;
+  --surface-tint: #006479;
+  --surface-variant: #d2e0df;
+
+  /* On-Surface */
+  --on-surface: #283030;
+  --on-surface-variant: #545d5d;
+
+  /* Outline */
+  --outline: #707978;
+  --outline-variant: #a6afae;
+
+  /* Inverse */
+  --inverse-surface: #07100f;
+  --inverse-on-surface: #969f9e;
+  --inverse-primary: #40cef3;
+
+  /* Background */
+  --background: #eff8f7;
+  --on-background: #283030;
+}
+
+@theme inline {
+  /* Color tokens */
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-primary-container: var(--primary-container);
+  --color-on-primary-container: var(--on-primary-container);
+  --color-primary-dim: var(--primary-dim);
+
+  --color-secondary: var(--secondary);
+  --color-on-secondary: var(--on-secondary);
+  --color-secondary-container: var(--secondary-container);
+  --color-on-secondary-container: var(--on-secondary-container);
+
+  --color-tertiary: var(--tertiary);
+  --color-on-tertiary: var(--on-tertiary);
+  --color-tertiary-container: var(--tertiary-container);
+  --color-on-tertiary-container: var(--on-tertiary-container);
+
+  --color-error: var(--error);
+  --color-on-error: var(--on-error);
+  --color-error-container: var(--error-container);
+  --color-on-error-container: var(--on-error-container);
+
+  --color-surface: var(--surface);
+  --color-surface-bright: var(--surface-bright);
+  --color-surface-dim: var(--surface-dim);
+  --color-surface-lowest: var(--surface-container-lowest);
+  --color-surface-low: var(--surface-container-low);
+  --color-surface-container: var(--surface-container);
+  --color-surface-high: var(--surface-container-high);
+  --color-surface-highest: var(--surface-container-highest);
+  --color-surface-tint: var(--surface-tint);
+  --color-surface-variant: var(--surface-variant);
+
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+
+  --color-outline: var(--outline);
+  --color-outline-variant: var(--outline-variant);
+
+  --color-inverse-surface: var(--inverse-surface);
+  --color-inverse-on-surface: var(--inverse-on-surface);
+  --color-inverse-primary: var(--inverse-primary);
+
+  --color-background: var(--background);
+  --color-on-background: var(--on-background);
+
+  /* Font family */
+  --font-sans: var(--font-manrope);
+  --font-headline: var(--font-manrope);
+
+  /* Shadows — Ambient, primary-tinted */
+  --shadow-ambient: 0px 20px 40px rgba(0, 100, 121, 0.08);
+  --shadow-soft: 0px 8px 24px rgba(0, 100, 121, 0.06);
+  --shadow-float: 0px 12px 32px -4px rgba(0, 100, 121, 0.12);
+
+  /* Animation durations */
+  --animate-slide-up: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-fade-in: fade-in 0.2s ease-out;
+}
+
+/* Keyframes */
+@keyframes slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ========================================================================
+   Base Styles
+   ======================================================================== */
+
+body {
+  background: var(--background);
+  color: var(--on-surface);
+  font-family: var(--font-manrope), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Headlines — tight letter spacing for editorial feel */
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+}
+
+/* Restore native dropdown behavior stripped by Tailwind 4 preflight */
+select {
+  appearance: menulist;
+  background-color: inherit;
+}
+
+/* ========================================================================
+   Glass & Gradient Utilities
+   ======================================================================== */
+
+.glass-panel {
+  background: rgba(255, 255, 255, 0.70);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+.glass-panel-dense {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.gradient-primary {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%);
+}
+
+.gradient-hero {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 60%, var(--secondary-container) 100%);
+}
+
+/* Ghost border — for same-background containers (15% opacity outline-variant) */
+.ghost-border {
+  box-shadow: inset 0 0 0 1px rgba(166, 175, 174, 0.15);
+}
+
+/* ========================================================================
+   Scrollbar Hiding
+   ======================================================================== */
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
