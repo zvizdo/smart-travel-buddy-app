@@ -35,3 +35,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Deploy scripts contain secrets — never commit
+deploy/deploy.sh
