@@ -518,6 +518,7 @@ export default function TripMapPage() {
             pulseLocations={liveLocations}
             participants={trip?.participants}
             currentUserId={user?.uid}
+            distanceUnit={distanceUnit}
           />
         )}
       </div>
@@ -573,6 +574,8 @@ export default function TripMapPage() {
               .filter((n) => n.timezone)
               .map((n) => [n.id, n.timezone as string]),
           )}
+          datetimeFormat={datetimeFormat}
+          dateFormat={dateFormat}
           loading={cascadeLoading}
           onConfirm={handleCascadeConfirm}
           onCancel={() => {

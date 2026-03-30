@@ -3,6 +3,7 @@
 import json
 
 from mcp.server.fastmcp import Context
+from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
 
 
@@ -38,6 +39,7 @@ async def create_or_modify_trip(
         edges_to_update: JSON array of edges to update. Each: {id, travel_mode?, travel_time_hours?, distance_km?}
         edges_to_remove: JSON array of edge ID strings to remove.
     """
+    user_id = get_user_id(ctx)
     app: AppContext = ctx.request_context.lifespan_context
 
     # Parse JSON string parameters
@@ -49,7 +51,7 @@ async def create_or_modify_trip(
     parsed_edges_remove = json.loads(edges_to_remove) if edges_to_remove else None
 
     result = await app.trip_service.create_or_modify_trip(
-        user_id=app.user_id,
+        user_id=user_id,
         trip_id=trip_id,
         plan_id=plan_id,
         plan_name=plan_name,

@@ -1,6 +1,7 @@
 """MCP tool: add_action — attach notes, todos, or places to trip stops."""
 
 from mcp.server.fastmcp import Context
+from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
 
 
@@ -26,12 +27,13 @@ async def add_action(
     """
     import json
 
+    user_id = get_user_id(ctx)
     app: AppContext = ctx.request_context.lifespan_context
 
     parsed_place_data = json.loads(place_data) if place_data else None
 
     result = await app.trip_service.add_action(
-        user_id=app.user_id,
+        user_id=user_id,
         trip_id=trip_id,
         node_id=node_id,
         action_type=type,

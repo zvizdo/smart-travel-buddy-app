@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useMap, useMapsLibrary } from "@vis.gl/react-google-maps";
+import { formatDistance } from "@/lib/dates";
 
 interface EdgePolylineProps {
   fromLat: number;
@@ -11,6 +12,7 @@ interface EdgePolylineProps {
   travelMode?: string;
   travelTimeHours?: number;
   distanceKm?: number | null;
+  distanceUnit?: "km" | "mi";
   routePolyline?: string | null;
   selected?: boolean;
   pathColor?: string;
@@ -63,6 +65,7 @@ export function EdgePolyline({
   travelMode = "drive",
   travelTimeHours,
   distanceKm,
+  distanceUnit = "km",
   routePolyline,
   selected,
   pathColor,
@@ -509,8 +512,7 @@ export function EdgePolyline({
       : MODE_COLORS[travelMode] || "#6b7280";
     const iconSvg = MODE_ICON_SVG[travelMode] ?? MODE_ICON_SVG["drive"];
     const durationStr = travelTimeHours ? formatDuration(travelTimeHours) : "";
-    const distStr =
-      distanceKm != null ? `${Math.round(distanceKm)} km` : "";
+    const distStr = formatDistance(distanceKm, distanceUnit);
 
     // Update warning indicator
     if (warnSpanRef.current) {
@@ -568,6 +570,7 @@ export function EdgePolyline({
     travelMode,
     travelTimeHours,
     distanceKm,
+    distanceUnit,
     midpoint,
   ]);
 

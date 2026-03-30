@@ -7,13 +7,25 @@ Four sub-projects in a monorepo. Single `travel-app` conda env for all Python.
 ```
 frontend/     Next.js 16.2 + React 19.2 + Tailwind 4 (pnpm)
 backend/      FastAPI + google-cloud-firestore[async] + google-genai
-shared/       Pydantic models + agent config + DAG logic (pip install -e)
-mcpserver/    FastMCP server (Phase 9)
+shared/       Pydantic models + repositories + agent config + DAG logic (pip install -e)
+mcpserver/    FastMCP server — streamable-http, per-request Bearer auth
 ```
 
 Storage: Firestore (Native mode) + GCS for chat history.
-Auth: Firebase Auth (frontend) -> `firebase-admin` token verification (backend).
+Auth: Firebase Auth (frontend) -> `firebase-admin` token verification (backend). MCP server uses HMAC API keys (per-request Bearer token).
 All Google Cloud auth via ADC — no service account JSON files.
+
+## Deployment
+
+Three Cloud Run services in `europe-west1`, GCP project `as-dev-anze`.
+
+| Service | Cloud Run name | URL |
+|---|---|---|
+| Frontend | `smart-travel-buddy` | `https://smart-travel-buddy-px6atnevbq-ew.a.run.app` |
+| Backend | `smart-travel-buddy-backend` | `https://smart-travel-buddy-backend-px6atnevbq-ew.a.run.app` |
+| MCP Server | `smart-travel-buddy-mcpserver` | `https://smart-travel-buddy-mcpserver-px6atnevbq-ew.a.run.app` |
+
+Deploy script: `./deploy/deploy.sh [setup|all|frontend|backend|mcpserver]`. Images stored in Artifact Registry (`europe-west1-docker.pkg.dev/as-dev-anze/stb-images`), tagged by git SHA. See `deploy/` for Dockerfiles and Cloud Build configs.
 
 ---
 
@@ -52,9 +64,11 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 - `get_current_user()`: `HTTPBearer` -> `auth.verify_id_token` via `asyncio.to_thread`. Returns decoded token dict (key: `uid`).
 - `require_role(trip, user_id, *allowed_roles)`: checks `trip.participants[user_id].role`. Raises `PermissionError`.
 
-### Repository Pattern (`backend/src/repositories/`)
+### Repository Pattern
 
-`BaseRepository`: abstract `collection_path` (supports `{param}` placeholders), CRUD methods (`create`, `get`, `get_or_raise`, `update`, `delete`, `list_all`).
+`BaseRepository` (`shared/shared/repositories/base_repository.py`): abstract `collection_path` (supports `{param}` placeholders), CRUD methods (`create`, `get`, `get_or_raise`, `update`, `delete`, `list_all`).
+
+**Shared repositories** (`shared/shared/repositories/`) — used by both backend and mcpserver:
 
 | Repository | Path | Notes |
 |---|---|---|
@@ -62,10 +76,18 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 | `PlanRepository` | `trips/{trip_id}/plans` | |
 | `NodeRepository` | `trips/{trip_id}/plans/{plan_id}/nodes` | `batch_create` for bulk |
 | `EdgeRepository` | `trips/{trip_id}/plans/{plan_id}/edges` | `batch_create` for bulk |
-| `ChatHistoryRepository` | GCS bucket | 12h TTL sessions |
+| `ActionRepository` | `trips/{trip_id}/plans/{plan_id}/nodes/{node_id}/actions` | |
 | `LocationRepository` | `trips/{trip_id}/locations` | user_id as doc ID |
 | `UserRepository` | `users` | `create_or_update`, API keys subcollection |
+
+**Backend-only repositories** (`backend/src/repositories/`) — backend-specific storage:
+
+| Repository | Path | Notes |
+|---|---|---|
+| `ChatHistoryRepository` | GCS bucket | 12h TTL sessions |
+| `InviteLinkRepository` | `trips/{trip_id}/invite_links` | |
 | `NotificationRepository` | `trips/{trip_id}/notifications` | |
+| `PreferenceRepository` | `trips/{trip_id}/preferences` | |
 
 ### Services (`backend/src/services/`)
 
@@ -100,7 +122,7 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 
 ## Shared Library (`shared/`)
 
-Installed as `pip install -e shared/`. Imported as `from shared.models import ...`, `from shared.agent.config import ...`, `from shared.dag.assembler import ...`.
+Installed as `pip install -e shared/`. Imported as `from shared.models import ...`, `from shared.repositories import ...`, `from shared.agent.config import ...`, `from shared.dag.assembler import ...`.
 
 ### Models (`shared/shared/models/`)
 
@@ -187,6 +209,38 @@ GCS: {bucket}/{user_id}/{trip_id}/chat-history.json  # 12h session, 7-day lifecy
 | `PulseButton` | GPS check-in. Hidden when `location_tracking_enabled` is false. Fetches user profile on mount. |
 | `PulseAvatars` | Other users' positions on map. Filters out users with `location_tracking_enabled: false`. |
 | `OfflineBanner` | Disables edit actions when offline. Offline queue for pulse. Absolutely positioned below glass header in trip map (`top-12 z-20`). |
+
+---
+
+## MCP Server (`mcpserver/`)
+
+FastMCP server exposing trip management tools to external AI agents (e.g. Claude Desktop) via the Model Context Protocol.
+
+### Transport & Auth
+- **Transport**: `streamable-http` (Cloud Run) or `stdio` (local dev). Configured via `MCP_TRANSPORT` env var.
+- **HTTP auth**: Per-request `Authorization: Bearer <api_key>` header. `ApiKeyTokenVerifier` (`mcpserver/src/auth/api_key_auth.py`) resolves the key to a `user_id` via HMAC-SHA256 + Firestore lookup (`users/{uid}/api_keys`).
+- **stdio auth**: Falls back to `MCP_API_KEY` env var resolved once at startup.
+- **`_LazyTokenVerifier`**: FastMCP must be instantiated at module level for `@mcp.tool()` decorators, but the real verifier needs a Firestore client from lifespan. The lazy wrapper delegates once the lifespan has set it.
+
+### Entry Point (`mcpserver/src/main.py`)
+Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, build services. For HTTP transports, runs via `uvicorn.run(mcp.streamable_http_app() / mcp.sse_app(), ...)`. `MCP_SERVER_URL` is used as the `AuthSettings.issuer_url` and `resource_server_url` (auto-set to Cloud Run URL post-deploy).
+
+### Config (`mcpserver/src/config.py`)
+Reads: `API_KEY_HMAC_SECRET`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_MAPS_API_KEY`, `MCP_TRANSPORT` (default `stdio`), `MCP_HOST` (default `0.0.0.0`), `MCP_PORT` (default `8080`), `MCP_SERVER_URL`.
+
+### Services (`mcpserver/src/services/`)
+| Service | Notes |
+|---|---|
+| `TripService` | Read/write trip DAG operations via shared repositories |
+| `PlacesService` | Google Places API wrapper for location search |
+
+### Tools (`mcpserver/src/tools/`)
+| File | Tools |
+|---|---|
+| `trips.py` | List and read trips |
+| `modify.py` | Add/update/delete nodes and edges |
+| `actions.py` | Manage node actions (notes, todos, places) |
+| `places.py` | Search for places via Google Places |
 
 ---
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { formatDateTime } from "@/lib/dates";
+import { formatDateTimeWithPreference, type DateFormatPreference } from "@/lib/dates";
 
 interface AffectedNode {
   id: string;
@@ -19,6 +19,8 @@ interface CascadePreviewData {
 interface CascadePreviewProps {
   preview: CascadePreviewData;
   nodeTimezones?: Record<string, string>;
+  datetimeFormat?: "12h" | "24h";
+  dateFormat?: DateFormatPreference;
   loading: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -27,6 +29,8 @@ interface CascadePreviewProps {
 export function CascadePreview({
   preview,
   nodeTimezones,
+  datetimeFormat = "24h",
+  dateFormat = "eu",
   loading,
   onConfirm,
   onCancel,
@@ -78,13 +82,13 @@ export function CascadePreview({
                   <div>
                     <span className="text-on-surface-variant">Before: </span>
                     <span className="text-outline line-through">
-                      {formatDateTime(node.old_arrival, tz)}
+                      {formatDateTimeWithPreference(node.old_arrival, datetimeFormat, dateFormat, tz)}
                     </span>
                   </div>
                   <div>
                     <span className="text-on-surface-variant">After: </span>
                     <span className="text-secondary font-medium">
-                      {formatDateTime(node.new_arrival, tz)}
+                      {formatDateTimeWithPreference(node.new_arrival, datetimeFormat, dateFormat, tz)}
                     </span>
                   </div>
                 </div>

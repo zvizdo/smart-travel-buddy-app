@@ -15,4 +15,5 @@ def get_config() -> dict:
         "mcp_transport": os.environ.get("MCP_TRANSPORT", "stdio"),
         "mcp_host": os.environ.get("MCP_HOST", "0.0.0.0"),
         "mcp_port": int(os.environ.get("MCP_PORT", "8080")),
+        "mcp_server_url": os.environ.get("MCP_SERVER_URL", "https://placeholder.example.com"),
     }

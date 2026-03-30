@@ -143,9 +143,13 @@ class TripService:
                 "lng": n.get("lat_lng", {}).get("lng"),
                 "arrival_time": n.get("arrival_time"),
                 "departure_time": n.get("departure_time"),
+                "duration_hours": n.get("duration_hours"),
+                "order_index": n.get("order_index", 0),
+                "timezone": n.get("timezone"),
                 "participant_ids": n.get("participant_ids"),
                 "actions": [
                     {
+                        "id": a.get("id"),
                         "type": a.get("type"),
                         "content": a.get("content"),
                         "created_by": a.get("created_by"),
@@ -180,10 +184,19 @@ class TripService:
             trip_id, trip_data, nodes_raw
         )
 
+        # Build participant info with roles and display names
+        enriched_participants = {}
+        for uid, pdata in participants.items():
+            enriched_participants[uid] = {
+                "role": pdata.get("role", "viewer"),
+                "display_name": pdata.get("display_name", uid),
+            }
+
         return {
             "trip": {
                 "id": trip_id,
                 "name": trip_data["name"],
+                "participants": enriched_participants,
                 "plan": {
                     "id": plan_id,
                     "name": plan_data.get("name", ""),

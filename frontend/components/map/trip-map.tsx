@@ -33,6 +33,7 @@ interface TripMapProps {
   pulseLocations?: DocumentData[];
   participants?: Record<string, { role: string; display_name?: string; location_tracking_enabled?: boolean }>;
   currentUserId?: string;
+  distanceUnit?: "km" | "mi";
 }
 
 /** Minimum pixel distance between any two nodes before they start scaling down */
@@ -91,6 +92,7 @@ export function TripMap({
   pulseLocations,
   participants,
   currentUserId,
+  distanceUnit = "km",
 }: TripMapProps) {
   const defaultCenter = useMemo(() => {
     if (savedCamera) return savedCamera.center;
@@ -541,6 +543,7 @@ export function TripMap({
             travelMode={edge.travel_mode}
             travelTimeHours={edge.travel_time_hours}
             distanceKm={edge.distance_km}
+            distanceUnit={distanceUnit}
             routePolyline={edge.route_polyline}
             selected={selectedEdgeId === edge.id}
             pathColor={dimmed ? undefined : edgeColors?.get(edgeKey)}

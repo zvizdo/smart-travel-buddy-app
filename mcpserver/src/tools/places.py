@@ -3,6 +3,7 @@
 import math
 
 from mcp.server.fastmcp import Context
+from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
 
 
@@ -25,11 +26,12 @@ async def suggest_stop(
         category: Type of stop: 'restaurant', 'hotel', or 'attraction'.
         preferences: Optional natural language preferences (e.g., "Italian food", "budget-friendly").
     """
+    user_id = get_user_id(ctx)
     app: AppContext = ctx.request_context.lifespan_context
 
     # Get trip and edge to find the route segment
     trip_data = await app.trip_service._trip_repo.get_or_raise(trip_id)
-    app.trip_service._verify_participant(trip_data, app.user_id)
+    app.trip_service._verify_participant(trip_data, user_id)
 
     plan_id = trip_data.get("active_plan_id")
     if not plan_id:
@@ -101,6 +103,7 @@ async def search_places(
         near_lng: Longitude for search center (alternative to near_node_id).
         radius_km: Search radius in km (default: 5).
     """
+    user_id = get_user_id(ctx)
     app: AppContext = ctx.request_context.lifespan_context
 
     lat, lng = near_lat, near_lng
@@ -108,7 +111,7 @@ async def search_places(
     # Resolve node location if provided
     if near_node_id and (lat is None or lng is None):
         # Need to find the node — search across user's trips
-        trips = await app.trip_service._trip_repo.list_by_user(app.user_id)
+        trips = await app.trip_service._trip_repo.list_by_user(user_id)
         for trip_data in trips:
             plan_id = trip_data.get("active_plan_id")
             if not plan_id:

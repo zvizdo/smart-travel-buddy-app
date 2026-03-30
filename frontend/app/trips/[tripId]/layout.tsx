@@ -80,9 +80,27 @@ export default function TripLayout({ children }: { children: ReactNode }) {
   const [apiLoading, setApiLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const mapFittedRef = useRef(false);
-  const markMapFitted = useCallback(() => { mapFittedRef.current = true; }, []);
   const mapCameraRef = useRef<MapCamera | null>(null);
-  const setMapCamera = useCallback((camera: MapCamera) => { mapCameraRef.current = camera; }, []);
+
+  // Restore camera state from sessionStorage on mount (survives navigation to /profile)
+  const restoredRef = useRef(false);
+  if (!restoredRef.current) {
+    restoredRef.current = true;
+    try {
+      mapFittedRef.current = sessionStorage.getItem(`trip-map-fitted:${tripId}`) === "1";
+      const raw = sessionStorage.getItem(`trip-map-camera:${tripId}`);
+      if (raw) mapCameraRef.current = JSON.parse(raw) as MapCamera;
+    } catch {}
+  }
+
+  const markMapFitted = useCallback(() => {
+    mapFittedRef.current = true;
+    try { sessionStorage.setItem(`trip-map-fitted:${tripId}`, "1"); } catch {}
+  }, [tripId]);
+  const setMapCamera = useCallback((camera: MapCamera) => {
+    mapCameraRef.current = camera;
+    try { sessionStorage.setItem(`trip-map-camera:${tripId}`, JSON.stringify(camera)); } catch {}
+  }, [tripId]);
   const [viewedPlanId, setViewedPlanId] = useState<string | null>(null);
   const [plans, setPlans] = useState<PlanData[]>([]);
   const [plansLoading, setPlansLoading] = useState(true);
