@@ -26,6 +26,7 @@ interface NodeDetailSheetProps {
   onAddAction?: (nodeId: string, data: AddActionData) => void;
   onDeleteAction?: (nodeId: string, actionId: string) => void;
   onToggleAction?: (nodeId: string, actionId: string, isCompleted: boolean) => void;
+  plannerReadOnly?: boolean;
   onBranch?: (
     nodeId: string,
     data: {
@@ -43,6 +44,7 @@ interface NodeDetailSheetProps {
       connect_to_node_id: string | null;
     },
   ) => void;
+  onProposeChanges?: () => void;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -70,6 +72,7 @@ export function NodeDetailSheet({
   dateFormat = "eu",
   actions = [],
   actionsLoading,
+  plannerReadOnly = false,
   onClose,
   onEdit,
   onDelete,
@@ -77,6 +80,7 @@ export function NodeDetailSheet({
   onDeleteAction,
   onToggleAction,
   onBranch,
+  onProposeChanges,
 }: NodeDetailSheetProps) {
   const [mode, setMode] = useState<"view" | "edit" | "branch">("view");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -137,7 +141,15 @@ export function NodeDetailSheet({
           </span>
         </div>
         <div className="flex items-center gap-1">
-          {mode === "view" && canEdit && onEdit && (
+          {mode === "view" && plannerReadOnly && onProposeChanges && (
+            <button
+              onClick={onProposeChanges}
+              className="rounded-full px-3 py-1.5 text-xs font-semibold text-on-surface-variant bg-surface-high border border-outline-variant transition-all active:scale-95"
+            >
+              Propose changes
+            </button>
+          )}
+          {mode === "view" && !plannerReadOnly && canEdit && onEdit && (
             <button
               onClick={() => setMode("edit")}
               className="rounded-full px-3 py-1.5 text-xs font-semibold text-primary bg-primary/10 transition-all active:scale-95"
@@ -145,7 +157,7 @@ export function NodeDetailSheet({
               Edit
             </button>
           )}
-          {mode === "view" && canEdit && onBranch && (
+          {mode === "view" && !plannerReadOnly && canEdit && onBranch && (
             <button
               onClick={() => setMode("branch")}
               className="rounded-full px-3 py-1.5 text-xs font-semibold text-on-surface-variant bg-surface-high transition-all active:scale-95"
@@ -153,7 +165,7 @@ export function NodeDetailSheet({
               Branch
             </button>
           )}
-          {mode === "view" && canEdit && onDelete && (
+          {mode === "view" && !plannerReadOnly && canEdit && onDelete && (
             <button
               onClick={handleDelete}
               className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all active:scale-95 ${

@@ -127,22 +127,23 @@ export function NodeMarker({
   const startVisible = isStartNode && !dimmed && !isCompact;
 
   return (
-    <AdvancedMarker position={{ lat, lng }} zIndex={selected ? 110 : 100} onClick={() => onClick?.(id)}>
+    <AdvancedMarker position={{ lat, lng }} zIndex={selected ? 110 : 100} onClick={dimmed ? undefined : () => onClick?.(id)}>
       <div
         style={{
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           gap: 3,
-          cursor: "pointer",
+          cursor: dimmed ? "default" : "pointer",
           // Let clicks pass through to elements below (edges/labels) in the
           // invisible areas. Children re-enable pointer events selectively.
           pointerEvents: "none",
         }}
         role="button"
-        tabIndex={0}
+        tabIndex={dimmed ? -1 : 0}
         aria-label={`${name}, ${typeLabel}${isStartNode ? ", starting point" : ""}${isMergeNode ? ", junction point" : ""}`}
         onKeyDown={(e) => {
+          if (dimmed) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             onClick?.(id);
@@ -192,8 +193,8 @@ export function NodeMarker({
             transform: selected ? "scale(1.14)" : "scale(1)",
             opacity: dimmed ? 0.35 : 1,
             position: "relative",
-            pointerEvents: "auto",
-            cursor: "pointer",
+            pointerEvents: dimmed ? "none" : "auto",
+            cursor: dimmed ? "default" : "pointer",
           }}
         >
           <NodeIcon type={type} dimmed={dimmed} size={iconSize} />

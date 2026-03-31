@@ -8,18 +8,14 @@ where the group splits up and reconvenes. Branch annotations on locations:
 - participant_names: optional list of participant names for the branch
 """
 
-import uuid
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
 from shared.agent.schemas import ImportNote
 from shared.models.edge import Edge, TravelMode
 from shared.models.node import LatLng, Node, NodeType
+from shared.tools.id_gen import edge_id, node_id
 from shared.tools.timezone import resolve_timezone
-
-
-def _generate_id() -> str:
-    return str(uuid.uuid4())
 
 
 def _infer_node_type(name: str) -> NodeType:
@@ -63,7 +59,7 @@ def _create_node(
     """Create a Node from a location dict."""
     duration_hours = _get(loc, "duration_hours", 24)
     return Node(
-        id=_generate_id(),
+        id=node_id(),
         name=loc["name"],
         type=_infer_node_type(loc["name"]),
         lat_lng=LatLng(lat=loc["lat"], lng=loc["lng"]),
@@ -84,7 +80,7 @@ def _create_edge(from_node: Node, to_node: Node, loc: dict) -> Edge:
     travel_time = _get(loc, "travel_time_hours", 0)
     distance_km = loc.get("distance_km")
     return Edge(
-        id=_generate_id(),
+        id=edge_id(),
         from_node_id=from_node.id,
         to_node_id=to_node.id,
         travel_mode=_infer_travel_mode(distance_km),
@@ -233,7 +229,7 @@ def assemble_dag(
             # Edge from branch node to merge target
             if merge_node:
                 edges.append(Edge(
-                    id=_generate_id(),
+                    id=edge_id(),
                     from_node_id=node.id,
                     to_node_id=merge_node.id,
                     travel_mode=_infer_travel_mode(None),

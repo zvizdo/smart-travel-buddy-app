@@ -1,10 +1,10 @@
 """Trip service: create and retrieve trips with participant checks."""
 
-import uuid
 from datetime import UTC, datetime
 
 from shared.models import Participant, Trip, TripRole
 from shared.repositories.trip_repository import TripRepository
+from shared.tools.id_gen import trip_id
 
 
 class TripService:
@@ -16,7 +16,7 @@ class TripService:
     ) -> Trip:
         """Create a new trip. The caller becomes Admin."""
         trip = Trip(
-            id=str(uuid.uuid4()),
+            id=trip_id(),
             name=name,
             created_by=user_id,
             active_plan_id=None,

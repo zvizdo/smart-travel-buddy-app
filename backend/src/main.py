@@ -23,6 +23,7 @@ from backend.src.services.route_service import RouteService
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from shared.dag.cycle import CycleDetectedError
 from google.cloud.firestore import AsyncClient
 from google.cloud.storage import Client as GCSClient
 
@@ -54,6 +55,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(CycleDetectedError)
+async def cycle_detected_handler(request: Request, exc: CycleDetectedError):
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "code": "CYCLE_DETECTED",
+                "message": "This connection would create a loop in the route",
+                "cycle_path": exc.cycle_path,
+            },
+        },
+    )
 
 
 @app.exception_handler(ValueError)

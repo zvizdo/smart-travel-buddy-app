@@ -1,15 +1,15 @@
 """Node endpoints: list, create, branch, update, delete, cascade, participant assignment, actions."""
 
-import uuid
 from datetime import UTC, datetime
 
 from backend.src.auth.firebase_auth import get_current_user
-from backend.src.auth.permissions import require_role
+from backend.src.auth.permissions import require_plan_editable, require_role
 from backend.src.deps import (
     get_action_repo,
     get_dag_service,
     get_node_repo,
     get_notification_service,
+    get_plan_repo,
     get_trip_service,
 )
 from backend.src.services.dag_service import DAGService
@@ -19,6 +19,9 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from shared.models import Action, ActionType, PlaceData, TripRole
+from shared.models.plan import Plan
+from shared.repositories.plan_repository import PlanRepository
+from shared.tools.id_gen import action_id
 from shared.repositories.action_repository import ActionRepository
 from shared.repositories.node_repository import NodeRepository
 
@@ -32,6 +35,7 @@ class NodeUpdateRequest(BaseModel):
     departure_time: str | None = None
     lat: float | None = None
     lng: float | None = None
+    place_id: str | None = None
     client_updated_at: str | None = None
 
 
@@ -49,6 +53,26 @@ class CreateNodeRequest(BaseModel):
     travel_time_hours: float = 1.0
     distance_km: float | None = None
     route_polyline: str | None = None
+
+
+class ConnectionData(BaseModel):
+    node_id: str
+    travel_mode: str = "drive"
+    travel_time_hours: float = 1.0
+    distance_km: float | None = None
+    route_polyline: str | None = None
+
+
+class ConnectedNodeRequest(BaseModel):
+    name: str
+    type: str = "place"
+    lat: float
+    lng: float
+    place_id: str | None = None
+    arrival_time: str | None = None
+    departure_time: str | None = None
+    incoming: list[ConnectionData] = []
+    outgoing: list[ConnectionData] = []
 
 
 class ParticipantAssignmentRequest(BaseModel):
@@ -98,10 +122,12 @@ async def create_node(
     user: dict = Depends(get_current_user),
     trip_service: TripService = Depends(get_trip_service),
     dag_service: DAGService = Depends(get_dag_service),
+    plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Create a new node. Optionally connect it after an existing node."""
     trip = await trip_service.get_trip(trip_id, user["uid"])
-    require_role(trip, user["uid"], TripRole.ADMIN, TripRole.PLANNER)
+    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
+    require_plan_editable(trip, Plan(**plan_data), user["uid"])
 
     if body.connect_after_node_id and body.connect_before_node_id:
         raise ValueError("Cannot specify both connect_after_node_id and connect_before_node_id")
@@ -127,6 +153,41 @@ async def create_node(
     return result
 
 
+@router.post("/trips/{trip_id}/plans/{plan_id}/nodes/connected", status_code=201)
+async def create_connected_node(
+    trip_id: str,
+    plan_id: str,
+    body: ConnectedNodeRequest,
+    user: dict = Depends(get_current_user),
+    trip_service: TripService = Depends(get_trip_service),
+    dag_service: DAGService = Depends(get_dag_service),
+    plan_repo: PlanRepository = Depends(get_plan_repo),
+):
+    """Create a node with multiple incoming and outgoing connections.
+
+    Returns 400 with cycle_path if the connections would create a cycle.
+    """
+    trip = await trip_service.get_trip(trip_id, user["uid"])
+    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
+    require_plan_editable(trip, Plan(**plan_data), user["uid"])
+
+    result = await dag_service.create_connected_node(
+        trip_id=trip_id,
+        plan_id=plan_id,
+        name=body.name,
+        node_type=body.type,
+        lat=body.lat,
+        lng=body.lng,
+        place_id=body.place_id,
+        arrival_time=body.arrival_time,
+        departure_time=body.departure_time,
+        incoming=[c.model_dump() for c in body.incoming],
+        outgoing=[c.model_dump() for c in body.outgoing],
+        created_by=user["uid"],
+    )
+    return result
+
+
 @router.post("/trips/{trip_id}/plans/{plan_id}/nodes/{node_id}/branch", status_code=201)
 async def branch_from_node(
     trip_id: str,
@@ -136,10 +197,12 @@ async def branch_from_node(
     user: dict = Depends(get_current_user),
     trip_service: TripService = Depends(get_trip_service),
     dag_service: DAGService = Depends(get_dag_service),
+    plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Create a new node branching off from an existing node."""
     trip = await trip_service.get_trip(trip_id, user["uid"])
-    require_role(trip, user["uid"], TripRole.ADMIN, TripRole.PLANNER)
+    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
+    require_plan_editable(trip, Plan(**plan_data), user["uid"])
 
     result = await dag_service.create_branch(
         trip_id=trip_id,
@@ -172,10 +235,12 @@ async def update_node(
     trip_service: TripService = Depends(get_trip_service),
     dag_service: DAGService = Depends(get_dag_service),
     notification_service: NotificationService = Depends(get_notification_service),
+    plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Update a node. Returns cascade preview if dates changed."""
     trip = await trip_service.get_trip(trip_id, user["uid"])
-    require_role(trip, user["uid"], TripRole.ADMIN, TripRole.PLANNER)
+    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
+    require_plan_editable(trip, Plan(**plan_data), user["uid"])
 
     client_updated_at = body.client_updated_at
     raw = body.model_dump()
@@ -211,10 +276,12 @@ async def delete_node(
     user: dict = Depends(get_current_user),
     trip_service: TripService = Depends(get_trip_service),
     dag_service: DAGService = Depends(get_dag_service),
+    plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Delete a node and reconnect edges around it."""
     trip = await trip_service.get_trip(trip_id, user["uid"])
-    require_role(trip, user["uid"], TripRole.ADMIN, TripRole.PLANNER)
+    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
+    require_plan_editable(trip, Plan(**plan_data), user["uid"])
 
     result = await dag_service.delete_node(trip_id, plan_id, node_id)
     return result
@@ -228,10 +295,12 @@ async def confirm_cascade(
     user: dict = Depends(get_current_user),
     trip_service: TripService = Depends(get_trip_service),
     dag_service: DAGService = Depends(get_dag_service),
+    plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Confirm cascading update after preview."""
     trip = await trip_service.get_trip(trip_id, user["uid"])
-    require_role(trip, user["uid"], TripRole.ADMIN, TripRole.PLANNER)
+    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
+    require_plan_editable(trip, Plan(**plan_data), user["uid"])
 
     result = await dag_service.confirm_cascade(trip_id, plan_id, node_id)
     return result
@@ -353,7 +422,7 @@ async def create_action(
 
     place_data = PlaceData(**body.place_data) if body.place_data else None
     action = Action(
-        id=str(uuid.uuid4()),
+        id=action_id(),
         type=ActionType(body.type),
         content=body.content,
         place_data=place_data,

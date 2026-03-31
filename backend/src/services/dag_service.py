@@ -6,7 +6,6 @@ Includes cascade engine for propagating schedule changes downstream through the 
 import asyncio
 import logging
 import time
-import uuid
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -15,12 +14,14 @@ from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
 from shared.repositories.trip_repository import TripRepository
+from shared.tools.id_gen import edge_id, node_id, plan_id
 
 if TYPE_CHECKING:
     from backend.src.services.route_service import RouteService
 
 from shared.dag.assembler import AssemblyResult
 from shared.dag.cascade import compute_cascade, parse_dt
+from shared.dag.cycle import CycleDetectedError, detect_cycle
 from shared.models import (
     Edge,
     LatLng,
@@ -120,7 +121,7 @@ class DAGService:
         Returns summary with plan_id, nodes_created, edges_created.
         """
         plan = Plan(
-            id=str(uuid.uuid4()),
+            id=plan_id(),
             name=plan_name,
             status=PlanStatus.ACTIVE,
             created_by=created_by,
@@ -218,7 +219,7 @@ class DAGService:
             resolved_departure = parse_dt(departure_time)
 
         new_node = Node(
-            id=str(uuid.uuid4()),
+            id=node_id(),
             name=name,
             type=NodeType(node_type),
             lat_lng=LatLng(lat=lat, lng=lng),
@@ -242,7 +243,7 @@ class DAGService:
                 ll = source.lat_lng
                 source_latlng = {"lat": ll.lat, "lng": ll.lng}
             edge = Edge(
-                id=str(uuid.uuid4()),
+                id=edge_id(),
                 from_node_id=connect_after_node_id,
                 to_node_id=new_node.id,
                 travel_mode=TravelMode(travel_mode),
@@ -264,7 +265,7 @@ class DAGService:
                 bl = before_node.lat_lng
                 before_latlng = {"lat": bl.lat, "lng": bl.lng}
             edge = Edge(
-                id=str(uuid.uuid4()),
+                id=edge_id(),
                 from_node_id=new_node.id,
                 to_node_id=connect_before_node_id,
                 travel_mode=TravelMode(travel_mode),
@@ -309,7 +310,7 @@ class DAGService:
         reconnected_edge = None
         if len(incoming) == 1 and len(outgoing) == 1:
             new_edge = Edge(
-                id=str(uuid.uuid4()),
+                id=edge_id(),
                 from_node_id=incoming[0]["from_node_id"],
                 to_node_id=outgoing[0]["to_node_id"],
                 travel_mode=TravelMode(
@@ -386,7 +387,7 @@ class DAGService:
         max_order = max((n.get("order_index", 0) for n in all_nodes), default=0)
 
         new_node = Node(
-            id=str(uuid.uuid4()),
+            id=node_id(),
             name=name,
             type=NodeType(node_type),
             lat_lng=LatLng(lat=lat, lng=lng),
@@ -409,7 +410,7 @@ class DAGService:
             source_latlng = {"lat": ll.lat, "lng": ll.lng}
 
         branch_edge = Edge(
-            id=str(uuid.uuid4()),
+            id=edge_id(),
             from_node_id=from_node_id,
             to_node_id=new_node.id,
             travel_mode=TravelMode(travel_mode),
@@ -433,7 +434,7 @@ class DAGService:
                 mt_ll = merge_target.lat_lng
                 merge_target_latlng = {"lat": mt_ll.lat, "lng": mt_ll.lng}
             merge_edge = Edge(
-                id=str(uuid.uuid4()),
+                id=edge_id(),
                 from_node_id=new_node.id,
                 to_node_id=connect_to_node_id,
                 travel_mode=TravelMode(travel_mode),
@@ -510,6 +511,14 @@ class DAGService:
 
         await self._node_repo.update_node(trip_id, plan_id, node_id, node_dict)
 
+        # Recalculate polylines for connected edges when location changed
+        if "lat_lng" in updates:
+            lat_lng = updates["lat_lng"]
+            new_latlng = {"lat": lat_lng.get("lat"), "lng": lat_lng.get("lng")}
+            await self._recalculate_connected_polylines(
+                trip_id, plan_id, node_id, new_latlng
+            )
+
         updated_node = Node(**node_dict)
         cascade_preview = await self._compute_cascade_preview(
             trip_id, plan_id, updated_node
@@ -520,6 +529,68 @@ class DAGService:
             "cascade_preview": cascade_preview,
             "conflict": conflict,
         }
+
+    async def _recalculate_connected_polylines(
+        self,
+        trip_id: str,
+        plan_id: str,
+        node_id: str,
+        new_latlng: dict,
+    ) -> None:
+        """Fire background polyline recalculation for all edges connected to a node.
+
+        Called when a node's location changes. Skips flight edges.
+        """
+        if not self._route_service:
+            return
+
+        all_edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
+        connected = [
+            e for e in all_edges
+            if e["from_node_id"] == node_id or e["to_node_id"] == node_id
+        ]
+
+        for edge_dict in connected:
+            travel_mode = edge_dict.get("travel_mode", "drive")
+            if travel_mode == "flight":
+                continue
+
+            # Determine the other endpoint's latlng
+            if edge_dict["from_node_id"] == node_id:
+                from_latlng = new_latlng
+                other_node = await self._node_repo.get_node_or_raise(
+                    trip_id, plan_id, edge_dict["to_node_id"]
+                )
+                to_latlng = (
+                    {"lat": other_node.lat_lng.lat, "lng": other_node.lat_lng.lng}
+                    if other_node.lat_lng else None
+                )
+            else:
+                to_latlng = new_latlng
+                other_node = await self._node_repo.get_node_or_raise(
+                    trip_id, plan_id, edge_dict["from_node_id"]
+                )
+                from_latlng = (
+                    {"lat": other_node.lat_lng.lat, "lng": other_node.lat_lng.lng}
+                    if other_node.lat_lng else None
+                )
+
+            asyncio.create_task(
+                self._route_service.fetch_and_patch_polyline(
+                    trip_id=trip_id,
+                    plan_id=plan_id,
+                    edge_id=edge_dict["id"],
+                    from_latlng=from_latlng,
+                    to_latlng=to_latlng,
+                    travel_mode=travel_mode,
+                    edge_repo=self._edge_repo,
+                )
+            )
+
+        logger.debug(
+            "Queued polyline recalculation for %d edges connected to node %s",
+            len(connected), node_id,
+        )
 
     async def _compute_cascade_preview(
         self,
@@ -627,7 +698,7 @@ class DAGService:
             to_latlng = {"lat": ll.lat, "lng": ll.lng}
 
         edge = Edge(
-            id=str(uuid.uuid4()),
+            id=edge_id(),
             from_node_id=from_node_id,
             to_node_id=to_node_id,
             travel_mode=TravelMode(travel_mode),
@@ -650,3 +721,344 @@ class DAGService:
         """Delete a single edge by ID."""
         await self._edge_repo.delete_edge(trip_id, plan_id, edge_id)
         return {"deleted_edge_id": edge_id}
+
+    async def split_edge(
+        self,
+        trip_id: str,
+        plan_id: str,
+        split_edge_id: str,
+        name: str,
+        node_type: str,
+        lat: float,
+        lng: float,
+        created_by: str,
+        place_id: str | None = None,
+        arrival_time: str | None = None,
+        departure_time: str | None = None,
+        leg_a_travel_mode: str | None = None,
+        leg_a_travel_time_hours: float | None = None,
+        leg_a_distance_km: float | None = None,
+        leg_a_route_polyline: str | None = None,
+        leg_b_travel_mode: str | None = None,
+        leg_b_travel_time_hours: float | None = None,
+        leg_b_distance_km: float | None = None,
+        leg_b_route_polyline: str | None = None,
+    ) -> dict:
+        """Split an edge by inserting a new node between its endpoints.
+
+        Atomically deletes the original edge and creates the new node plus
+        two replacement edges via a Firestore batch write.
+        """
+        # Read original edge
+        original = await self._edge_repo.get_edge(trip_id, plan_id, split_edge_id)
+        if original is None:
+            raise LookupError(f"Edge {split_edge_id} not found")
+
+        from_node = await self._node_repo.get_node_or_raise(
+            trip_id, plan_id, original.from_node_id
+        )
+        to_node = await self._node_repo.get_node_or_raise(
+            trip_id, plan_id, original.to_node_id
+        )
+
+        # Default travel modes from original edge
+        mode_a = TravelMode(leg_a_travel_mode or original.travel_mode or "drive")
+        mode_b = TravelMode(leg_b_travel_mode or original.travel_mode or "drive")
+
+        # Split travel time proportionally if not provided
+        orig_time = original.travel_time_hours or 0
+        orig_dist = original.distance_km or 0
+        if leg_a_travel_time_hours is None and leg_b_travel_time_hours is None:
+            if leg_a_distance_km and leg_b_distance_km and (leg_a_distance_km + leg_b_distance_km) > 0:
+                ratio = leg_a_distance_km / (leg_a_distance_km + leg_b_distance_km)
+                leg_a_travel_time_hours = orig_time * ratio
+                leg_b_travel_time_hours = orig_time * (1 - ratio)
+            else:
+                leg_a_travel_time_hours = orig_time / 2
+                leg_b_travel_time_hours = orig_time / 2
+
+        # Compute order_index
+        all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
+        max_order = max((n.get("order_index", 0) for n in all_nodes), default=0)
+
+        # Resolve arrival time
+        if arrival_time:
+            resolved_arrival = parse_dt(arrival_time)
+        else:
+            departure = from_node.departure_time
+            if departure is None and from_node.arrival_time:
+                departure = parse_dt(from_node.arrival_time)
+            elif departure:
+                departure = parse_dt(departure)
+            resolved_arrival = (
+                (departure + timedelta(hours=leg_a_travel_time_hours or 0))
+                if departure else datetime.now(UTC)
+            )
+
+        resolved_departure: datetime | None = None
+        if departure_time:
+            resolved_departure = parse_dt(departure_time)
+
+        # Build entities
+        new_node = Node(
+            id=node_id(),
+            name=name,
+            type=NodeType(node_type),
+            lat_lng=LatLng(lat=lat, lng=lng),
+            arrival_time=resolved_arrival,
+            departure_time=resolved_departure,
+            timezone=resolve_timezone(lat, lng),
+            place_id=place_id,
+            order_index=max_order + 1,
+            created_by=created_by,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+        edge_a = Edge(
+            id=edge_id(),
+            from_node_id=original.from_node_id,
+            to_node_id=new_node.id,
+            travel_mode=mode_a,
+            travel_time_hours=leg_a_travel_time_hours,
+            distance_km=leg_a_distance_km,
+            route_polyline=leg_a_route_polyline,
+        )
+
+        edge_b = Edge(
+            id=edge_id(),
+            from_node_id=new_node.id,
+            to_node_id=original.to_node_id,
+            travel_mode=mode_b,
+            travel_time_hours=leg_b_travel_time_hours,
+            distance_km=leg_b_distance_km,
+            route_polyline=leg_b_route_polyline,
+        )
+
+        # Atomic batch write: delete old edge + create node + create 2 edges
+        batch = self._node_repo._db.batch()
+
+        # Delete original edge
+        old_edge_ref = self._edge_repo._collection(
+            trip_id=trip_id, plan_id=plan_id
+        ).document(split_edge_id)
+        batch.delete(old_edge_ref)
+
+        # Create node
+        node_ref = self._node_repo._collection(
+            trip_id=trip_id, plan_id=plan_id
+        ).document(new_node.id)
+        batch.set(node_ref, new_node.model_dump(mode="json"))
+
+        # Create edges
+        edge_a_ref = self._edge_repo._collection(
+            trip_id=trip_id, plan_id=plan_id
+        ).document(edge_a.id)
+        batch.set(edge_a_ref, edge_a.model_dump(mode="json"))
+
+        edge_b_ref = self._edge_repo._collection(
+            trip_id=trip_id, plan_id=plan_id
+        ).document(edge_b.id)
+        batch.set(edge_b_ref, edge_b.model_dump(mode="json"))
+
+        await batch.commit()
+
+        logger.info(
+            "split_edge: edge=%s -> node=%s, edge_a=%s, edge_b=%s",
+            split_edge_id, new_node.id, edge_a.id, edge_b.id,
+        )
+
+        # Fire background polyline fetch for legs missing polylines
+        new_latlng = {"lat": lat, "lng": lng}
+        from_latlng = (
+            {"lat": from_node.lat_lng.lat, "lng": from_node.lat_lng.lng}
+            if from_node.lat_lng else None
+        )
+        to_latlng = (
+            {"lat": to_node.lat_lng.lat, "lng": to_node.lat_lng.lng}
+            if to_node.lat_lng else None
+        )
+
+        if self._route_service:
+            if edge_a.route_polyline is None and mode_a != TravelMode.FLIGHT:
+                asyncio.create_task(
+                    self._route_service.fetch_and_patch_polyline(
+                        trip_id, plan_id, edge_a.id,
+                        from_latlng, new_latlng, str(mode_a), self._edge_repo,
+                    )
+                )
+            if edge_b.route_polyline is None and mode_b != TravelMode.FLIGHT:
+                asyncio.create_task(
+                    self._route_service.fetch_and_patch_polyline(
+                        trip_id, plan_id, edge_b.id,
+                        new_latlng, to_latlng, str(mode_b), self._edge_repo,
+                    )
+                )
+
+        return {
+            "node": new_node.model_dump(mode="json"),
+            "edge_a": edge_a.model_dump(mode="json"),
+            "edge_b": edge_b.model_dump(mode="json"),
+        }
+
+    async def create_connected_node(
+        self,
+        trip_id: str,
+        plan_id: str,
+        name: str,
+        node_type: str,
+        lat: float,
+        lng: float,
+        created_by: str,
+        incoming: list[dict],
+        outgoing: list[dict],
+        place_id: str | None = None,
+        arrival_time: str | None = None,
+        departure_time: str | None = None,
+    ) -> dict:
+        """Create a node with multiple incoming and outgoing connections.
+
+        Validates all referenced nodes exist and checks for cycles before
+        writing. Uses a Firestore batch write for atomicity.
+
+        Args:
+            incoming: List of dicts with node_id, travel_mode, travel_time_hours,
+                      distance_km, route_polyline for edges TO this node.
+            outgoing: List of dicts with node_id, travel_mode, travel_time_hours,
+                      distance_km, route_polyline for edges FROM this node.
+
+        Raises:
+            CycleDetectedError: If the proposed connections would create a cycle.
+            LookupError: If a referenced node ID does not exist.
+        """
+        # Load existing state
+        all_edges_raw = await self._edge_repo.list_by_plan(trip_id, plan_id)
+        all_nodes_raw = await self._node_repo.list_by_plan(trip_id, plan_id)
+        existing_node_ids = {n["id"] for n in all_nodes_raw}
+
+        # Validate all referenced nodes exist
+        incoming_ids = [c["node_id"] for c in incoming]
+        outgoing_ids = [c["node_id"] for c in outgoing]
+        for nid in incoming_ids + outgoing_ids:
+            if nid not in existing_node_ids:
+                raise LookupError(f"Node {nid} not found")
+
+        # Cycle detection
+        new_id = node_id()
+        cycle_path = detect_cycle(all_edges_raw, new_id, incoming_ids, outgoing_ids)
+        if cycle_path is not None:
+            raise CycleDetectedError(cycle_path)
+
+        max_order = max((n.get("order_index", 0) for n in all_nodes_raw), default=0)
+
+        # Resolve arrival time
+        if arrival_time:
+            resolved_arrival = parse_dt(arrival_time)
+        else:
+            resolved_arrival = datetime.now(UTC)
+
+        resolved_departure: datetime | None = None
+        if departure_time:
+            resolved_departure = parse_dt(departure_time)
+
+        new_node = Node(
+            id=new_id,
+            name=name,
+            type=NodeType(node_type),
+            lat_lng=LatLng(lat=lat, lng=lng),
+            arrival_time=resolved_arrival,
+            departure_time=resolved_departure,
+            timezone=resolve_timezone(lat, lng),
+            place_id=place_id,
+            order_index=max_order + 1,
+            created_by=created_by,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+        new_latlng = {"lat": lat, "lng": lng}
+
+        # Build all edges
+        edges_to_create: list[Edge] = []
+        edge_latlng_pairs: list[tuple[dict | None, dict | None]] = []
+
+        # Incoming edges: from_node -> new_node
+        for conn in incoming:
+            from_node = next(
+                (n for n in all_nodes_raw if n["id"] == conn["node_id"]), None
+            )
+            from_ll = None
+            if from_node and from_node.get("lat_lng"):
+                ll = from_node["lat_lng"]
+                from_ll = {"lat": ll.get("lat"), "lng": ll.get("lng")}
+
+            e = Edge(
+                id=edge_id(),
+                from_node_id=conn["node_id"],
+                to_node_id=new_id,
+                travel_mode=TravelMode(conn.get("travel_mode", "drive")),
+                travel_time_hours=conn.get("travel_time_hours", 1.0),
+                distance_km=conn.get("distance_km"),
+                route_polyline=conn.get("route_polyline"),
+            )
+            edges_to_create.append(e)
+            edge_latlng_pairs.append((from_ll, new_latlng))
+
+        # Outgoing edges: new_node -> to_node
+        for conn in outgoing:
+            to_node = next(
+                (n for n in all_nodes_raw if n["id"] == conn["node_id"]), None
+            )
+            to_ll = None
+            if to_node and to_node.get("lat_lng"):
+                ll = to_node["lat_lng"]
+                to_ll = {"lat": ll.get("lat"), "lng": ll.get("lng")}
+
+            e = Edge(
+                id=edge_id(),
+                from_node_id=new_id,
+                to_node_id=conn["node_id"],
+                travel_mode=TravelMode(conn.get("travel_mode", "drive")),
+                travel_time_hours=conn.get("travel_time_hours", 1.0),
+                distance_km=conn.get("distance_km"),
+                route_polyline=conn.get("route_polyline"),
+            )
+            edges_to_create.append(e)
+            edge_latlng_pairs.append((new_latlng, to_ll))
+
+        # Atomic batch write: create node + all edges
+        batch = self._node_repo._db.batch()
+
+        node_ref = self._node_repo._collection(
+            trip_id=trip_id, plan_id=plan_id
+        ).document(new_node.id)
+        batch.set(node_ref, new_node.model_dump(mode="json"))
+
+        for e in edges_to_create:
+            edge_ref = self._edge_repo._collection(
+                trip_id=trip_id, plan_id=plan_id
+            ).document(e.id)
+            batch.set(edge_ref, e.model_dump(mode="json"))
+
+        await batch.commit()
+
+        logger.info(
+            "create_connected_node: node=%s, %d incoming, %d outgoing edges",
+            new_id, len(incoming), len(outgoing),
+        )
+
+        # Fire background polyline fetch for edges missing polylines
+        if self._route_service:
+            for e, (from_ll, to_ll) in zip(edges_to_create, edge_latlng_pairs):
+                if e.route_polyline is None and e.travel_mode != TravelMode.FLIGHT:
+                    asyncio.create_task(
+                        self._route_service.fetch_and_patch_polyline(
+                            trip_id, plan_id, e.id,
+                            from_ll, to_ll, str(e.travel_mode), self._edge_repo,
+                        )
+                    )
+
+        return {
+            "node": new_node.model_dump(mode="json"),
+            "edges": [e.model_dump(mode="json") for e in edges_to_create],
+        }

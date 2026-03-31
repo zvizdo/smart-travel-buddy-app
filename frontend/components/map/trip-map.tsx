@@ -34,6 +34,7 @@ interface TripMapProps {
   participants?: Record<string, { role: string; display_name?: string; location_tracking_enabled?: boolean }>;
   currentUserId?: string;
   distanceUnit?: "km" | "mi";
+  recalculatingEdges?: Set<string>;
 }
 
 /** Minimum pixel distance between any two nodes before they start scaling down */
@@ -93,6 +94,7 @@ export function TripMap({
   participants,
   currentUserId,
   distanceUnit = "km",
+  recalculatingEdges,
 }: TripMapProps) {
   const defaultCenter = useMemo(() => {
     if (savedCamera) return savedCamera.center;
@@ -549,6 +551,7 @@ export function TripMap({
             pathColor={dimmed ? undefined : edgeColors?.get(edgeKey)}
             dimmed={dimmed}
             timingWarning={timingWarning}
+            recalculating={recalculatingEdges?.has(edge.id)}
             pixelDistance={edgePixelDistances.get(edge.id)}
             onClick={edgeClickHandlers.get(edge.id)}
           />

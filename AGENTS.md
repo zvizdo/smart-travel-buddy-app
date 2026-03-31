@@ -57,7 +57,7 @@ Deploy script: `./deploy/deploy.sh [setup|all|frontend|backend|mcpserver]`. Imag
 
 ### Entry Point & Config (`backend/src/main.py`)
 
-Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `RouteService(http_client)`. CORS from `CORS_ORIGINS` env. Exception handlers: `ValueError`->422, `PermissionError`->403, `LookupError`->404. Routers: trips, agent, nodes, edges, paths, notifications, invites, plans, users (all under `/api/v1`). Health: `GET /health`.
+Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `RouteService(http_client)`. CORS from `CORS_ORIGINS` env. Exception handlers: `CycleDetectedError`->400 (`CYCLE_DETECTED` with `cycle_path`), `ValueError`->422, `PermissionError`->403, `LookupError`->404. Routers: trips, agent, nodes, edges, paths, notifications, invites, plans, users (all under `/api/v1`). Health: `GET /health`.
 
 ### Auth (`backend/src/auth/`)
 
@@ -94,9 +94,9 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 | Service | Key methods |
 |---|---|
 | `TripService` | `create_trip` (caller=Admin, stores `display_name` in participant), `get_trip` (verifies participant), `list_trips` |
-| `DAGService` | `create_plan_from_assembly`, `get_full_dag`, `create_node` (+connect), `delete_node` (+reconnect), `create_branch`, `update_node_with_cascade_preview` (BFS), `confirm_cascade`, `create_standalone_edge`, `delete_edge_by_id`, `cleanup_stale_participant_ids`. `_create_edge_if_new()` prevents duplicates + fires background polyline fetch. |
+| `DAGService` | `create_plan_from_assembly`, `get_full_dag`, `create_node` (+connect), `delete_node` (+reconnect), `create_branch`, `update_node_with_cascade_preview` (BFS, auto-recalculates connected polylines on lat_lng change), `confirm_cascade`, `create_standalone_edge`, `delete_edge_by_id`, `split_edge` (atomic: delete old edge + create node + 2 new edges via batch write, proportional travel-time splitting), `create_connected_node` (multi-connection with cycle detection via `detect_cycle`, batch write), `cleanup_stale_participant_ids`. `_create_edge_if_new()` prevents duplicates + fires background polyline fetch. `_recalculate_connected_polylines()` fires background polyline fetch for all non-flight edges connected to a node. |
 | `AgentService` | `import_chat` (Gemini->ImportChatResponse), `build_dag` (spine+branches->assemble_dag), `ongoing_chat` (AFC with DAG tools+grounding) |
-| `PlanService` | `clone_plan` (deep clone, new UUIDs), `promote_plan` (swap active, demote old to draft), `delete_plan` (non-active only) |
+| `PlanService` | `clone_plan` (deep clone, new UUIDs), `promote_plan` (swap active, demote old to draft), `delete_plan` (non-active only, batched: parallel list + WriteBatch delete of edges/actions/nodes/plan) |
 | `NotificationService` | `create_notification`, `notify_member_joined`, `notify_unresolved_paths` |
 | `InviteService` | `generate_invite` (token), `claim_invite` (adds participant with `display_name`) |
 | `UserService` | `ensure_user` (upsert on sign-in), `update_user` (name, location tracking), `get_users_batch` (bulk name+setting lookup) |
@@ -109,8 +109,8 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 |---|---|
 | `trips.py` | `POST/GET /trips`, `GET/DELETE /trips/{id}`, `PATCH /trips/{id}/settings` (admin only) |
 | `agent.py` | `POST .../import/chat`, `POST .../import/build`, `POST .../agent/chat` (with optional `plan_id`) |
-| `nodes.py` | CRUD + `POST .../branch`, `POST .../cascade/confirm`, `PATCH .../participants`, `POST/DELETE .../choose` |
-| `edges.py` | `GET .../edges` |
+| `nodes.py` | CRUD + `POST .../nodes/connected` (multi-connection with cycle detection), `POST .../branch`, `POST .../cascade/confirm`, `PATCH .../participants`, `POST/DELETE .../choose` |
+| `edges.py` | `GET .../edges`, `POST .../edges/{edge_id}/split` (insert node between endpoints) |
 | `paths.py` | `GET .../paths` (compute paths), `GET .../warnings` (unresolved flows) |
 | `notifications.py` | `GET /trips/{id}/notifications`, `PATCH .../notifications/{id}` |
 | `invites.py` | `POST .../invites`, `POST .../invites/{token}/claim` |
@@ -147,6 +147,7 @@ All Pydantic `BaseModel` with `StrEnum` for enums. Barrel export from `__init__.
 ### DAG (`shared/shared/dag/`)
 
 - **`assembler.py`**: `assemble_dag(notes, geocoded_locations, created_by, start_date?)`. Infers `NodeType` from name heuristics, `TravelMode` from distance (>800km=flight, <3km=walk, else drive). **Branching**: locations with `branch_group` → 4-phase algorithm. Connection resolution (3-tier fallback): name-based → index-based → positional heuristic.
+- **`cycle.py`**: Pure cycle detection module (no I/O). `detect_cycle(existing_edges, new_node_id, incoming_node_ids, outgoing_node_ids)` — iterative DFS with gray-set (three-color) marking, returns cycle path or `None`. `CycleDetectedError(cycle_path)` exception. `get_ancestors(node_id, edges)` / `get_descendants(node_id, edges)` — BFS-based reachability helpers. Tests: `shared/tests/test_cycle.py`.
 - **`paths.py`**: `compute_participant_paths(nodes, edges, participant_ids) -> PathResult(paths, unresolved)`. BFS per participant. At divergence (out-degree > 1): follow assigned child, fallback to shared, or flag unresolved. **Multi-root divergence**: when DAG has 2+ root nodes (in-degree = 0), treated as a virtual `__root__` divergence — participants must choose a starting point, same as downstream divergences. `detect_divergence_points()` returns `__root__` entry for multi-root DAGs alongside regular divergences. `detect_unresolved_flows()` and `compute_participant_paths()` generate `__root__` warnings for unassigned participants. Frontend mirror: `frontend/lib/path-computation.ts`.
 
 ---
@@ -183,7 +184,7 @@ GCS: {bucket}/{user_id}/{trip_id}/chat-history.json  # 12h session, 7-day lifecy
 | `/profile` | User profile: editable display name (syncs to Firebase + Firestore), location sharing toggle, sign out. |
 | `/trips/new` | Create trip -> redirect to import |
 | `/trips/[tripId]` (layout) | `TripContext` with `onSnapshot` for real-time `active_plan_id`. Persists `viewedPlanId`. Enriches participants with display names and `location_tracking_enabled` via `POST /users/batch`. |
-| `/trips/[tripId]` (page) | Map view: node CRUD, path filtering, divergence resolver, cascade preview, plan switcher, agent overlay, pulse check-in, offline banner. Profile avatar in header. `displayPlanId = viewedPlanId ?? activePlanId`. `hasBranches` detects divergences from out-degree > 1 **or** multiple root nodes. |
+| `/trips/[tripId]` (page) | Map view: node CRUD, edge splitting (insert stop), multi-connection node creation, path filtering, divergence resolver, cascade preview, plan switcher, agent overlay, pulse check-in, offline banner. Profile avatar in header. `displayPlanId = viewedPlanId ?? activePlanId`. `hasBranches` detects divergences from out-degree > 1 **or** multiple root nodes. Tracks `recalculatingEdges` state — set when node location changes, cleared when Firestore delivers updated polylines via `onSnapshot`. |
 | `/trips/[tripId]/import` | Magic Import chat (10K char limit, send/skip/build) |
 | `/trips/[tripId]/settings` | Settings, invites, plan versioning (create/promote/delete). Participants shown as "FirstName L." via `formatUserName()`. |
 | `/invite/[tripId]/[token]` | Invite claim page |
@@ -194,11 +195,13 @@ GCS: {bucket}/{user_id}/{trip_id}/chat-history.json  # 12h session, 7-day lifecy
 |---|---|
 | `TripMap` | Google Map with markers + polylines. Fan-out algorithm displaces co-located nodes radially (bounded 60px drift). Initial view: `fitBounds` with asymmetric padding, zoom clamped 3-14. |
 | `NodeMarker` | Map marker with type-colored icon badge, name label, merge indicator. Exports `TYPE_TOKENS` and `FALLBACK_TOKEN` color maps. Fan-out: hides label, `pointerEvents: "none"` on container. |
-| `EdgePolyline` | Renders route polylines (decoded or straight-line fallback) with travel-mode dash patterns, midpoint badge (time/distance), opacity animation for dimming. |
+| `EdgePolyline` | Renders route polylines (decoded or straight-line fallback) with travel-mode dash patterns, midpoint badge (time/distance), opacity animation for dimming. `recalculating` prop: RAF-based shimmer animation (neutral gray, oscillating opacity), badge shows spinner + "Updating..." text. |
 | `FanOutTether` | Dashed tether line + anchor dot connecting displaced fan-out markers to real lat/lng. Rendered as non-clickable `google.maps.Polyline` with icon sequences. |
 | `NodeDetailSheet` | Bottom sheet: view/edit/branch modes with two-click delete |
 | `NodeEditForm` | Edit node fields. `DateTimePicker` for times. Departure-before-arrival validation. |
-| `AddNodeSheet` / `BranchForm` | Add/branch nodes with travel data auto-computation |
+| `EdgeDetail` | Edge click bottom sheet with travel info and "Insert stop here" CTA for edge splitting. |
+| `AddNodeSheet` / `BranchForm` | Add/branch nodes with travel data auto-computation. AddNodeSheet supports insert mode (`insertBetween` prop: locked connection card, two leg travel rows, calls split endpoint) and advanced multi-connection mode (`ConnectionSelector` with cycle pre-filtering, calls connected endpoint). |
+| `ConnectionSelector` | Two-column "Coming from" / "Going to" connection picker with searchable node dropdowns. Client-side cycle pre-filtering via `getAncestors`/`getDescendants` disables cycle-creating options. "Simple mode" link to collapse back. |
 | `DivergenceResolver` | Bottom overlay for path choices. Shows participant names via `formatUserName()`. Detects divergences from adjacency (out-degree > 1) **and** multiple root nodes (virtual `__root__` divergence). Admin sees other participants' unresolved. Stays mounted with `hidden` prop. |
 | `ParticipantAssignment` | Modal for assigning participants to nodes. Shows names via `formatUserName()`. |
 | `PathFilter` | Toggle "All Paths" / "My Path" with dimming |
@@ -269,4 +272,4 @@ Reads: `API_KEY_HMAC_SECRET`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_MAPS_API_KEY`, `MC
 - **Duplicate edge prevention**: `DAGService._create_edge_if_new()` on all user-facing creation paths.
 - **Bottom sheet state**: `DivergenceResolver` uses `hidden` prop (not conditional render) to preserve collapsed state.
 - **Node popups**: One `InfoWindow` at a time via parent-controlled `selectedNodeId`.
-- **Route polyline flow**: Frontend `useDirections` computes polyline via client-side Routes API → passed through API to backend → stored on Edge. Agent-created edges get polyline via backend `RouteService` fire-and-forget task. Fan-out tethers and edge polylines use `clickable: false` / `pointerEvents: "none"` to avoid intercepting node/edge clicks.
+- **Route polyline flow**: Frontend `useDirections` computes polyline via client-side Routes API → passed through API to backend → stored on Edge. Agent-created edges get polyline via backend `RouteService` fire-and-forget task. Node location updates trigger `_recalculate_connected_polylines()` which fires background polyline fetch for all connected non-flight edges; frontend tracks recalculating state and clears it when Firestore `onSnapshot` delivers updated polylines. Fan-out tethers and edge polylines use `clickable: false` / `pointerEvents: "none"` to avoid intercepting node/edge clicks.

@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from datetime import UTC, datetime
 
 from backend.src.services.agent_tools import create_agent_tools
@@ -21,6 +20,7 @@ from shared.agent.config import (
     RESPONSE_SCHEMA,
 )
 from shared.agent.schemas import AgentReply, ImportChatResponse, OngoingChatResponse
+from shared.tools.id_gen import generate_id
 from shared.dag.assembler import AssemblyResult, assemble_dag
 from shared.models import Preference, PreferenceCategory, Trip
 
@@ -126,6 +126,9 @@ class AgentService:
                 system_instruction=IMPORT_SYSTEM_PROMPT,
                 response_mime_type="application/json",
                 response_schema=RESPONSE_SCHEMA,
+                thinking_config=types.ThinkingConfig(
+                    thinking_level=types.ThinkingLevel.HIGH
+                ),
                 tools=[
                     types.Tool(google_maps=types.GoogleMaps()),
                     types.Tool(google_search=types.GoogleSearch()),
@@ -217,6 +220,9 @@ class AgentService:
             config=types.GenerateContentConfig(
                 system_instruction=IMPORT_SYSTEM_PROMPT,
                 response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(
+                    thinking_level=types.ThinkingLevel.HIGH
+                ),
                 tools=[
                     types.Tool(google_maps=types.GoogleMaps()),
                     types.Tool(google_search=types.GoogleSearch()),
@@ -342,7 +348,7 @@ class AgentService:
             except ValueError:
                 category = PreferenceCategory.GENERAL
             result.append(Preference(
-                id=str(uuid.uuid4()),
+                id=generate_id("prf"),
                 content=p.content,
                 category=category,
                 extracted_from="agent_chat",

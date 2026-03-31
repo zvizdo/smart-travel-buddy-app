@@ -6,6 +6,8 @@ import { useTripContext } from "@/app/trips/[tripId]/layout";
 interface PlanSwitcherProps {
   activePlanId: string | null;
   onPlanSelect: (planId: string) => void;
+  userRole?: string;
+  onCreateDraft?: () => void;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -17,21 +19,36 @@ const STATUS_BADGE: Record<string, string> = {
 export function PlanSwitcher({
   activePlanId,
   onPlanSelect,
+  userRole,
+  onCreateDraft,
 }: PlanSwitcherProps) {
   const { plans, plansLoading } = useTripContext();
   const [open, setOpen] = useState(false);
 
   const activePlan = plans.find((p) => p.id === activePlanId);
   const hasMultiplePlans = plans.length > 1;
+  const hasDraft = plans.some((p) => p.status === "draft");
+  const showDraftPill = userRole === "planner" && !hasDraft && onCreateDraft;
 
   if (plansLoading || plans.length === 0) return null;
-  if (!hasMultiplePlans) return null;
+  if (!hasMultiplePlans && !showDraftPill) return null;
 
   return (
-    <div className="relative">
+    <div className="relative flex items-center gap-1.5">
+      {!hasMultiplePlans && showDraftPill ? (
+        <button
+          onClick={onCreateDraft}
+          className="flex items-center gap-1 rounded-full bg-surface-lowest/80 px-3 py-1.5 text-xs font-semibold text-primary shadow-soft transition-all active:scale-95"
+        >
+          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          </svg>
+          Draft
+        </button>
+      ) : null}
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-full bg-surface-lowest/80 px-3 py-1.5 text-xs font-semibold text-on-surface shadow-soft transition-all active:scale-95"
+        className={`flex items-center gap-1.5 rounded-full bg-surface-lowest/80 px-3 py-1.5 text-xs font-semibold text-on-surface shadow-soft transition-all active:scale-95 ${!hasMultiplePlans ? "hidden" : ""}`}
       >
         <span className="truncate max-w-[100px]">
           {activePlan?.name ?? "Plan"}

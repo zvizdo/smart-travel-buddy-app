@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { type DocumentData } from "firebase/firestore";
 import {
   PlacesAutocomplete,
@@ -45,6 +45,26 @@ const NODE_TYPES = [
   { value: "activity", label: "Activity" },
 ];
 
+function PinIcon({ colored = false }: { colored?: boolean }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`shrink-0 ${colored ? "text-primary" : "text-outline-variant"}`}
+    >
+      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
+
 export function BranchForm({
   sourceNode,
   allNodes,
@@ -54,6 +74,11 @@ export function BranchForm({
   onCancel,
 }: BranchFormProps) {
   const [selectedPlace, setSelectedPlace] = useState<PlaceResult | null>(null);
+  const [displayName, setDisplayName] = useState("");
+  const [locationState, setLocationState] = useState<"empty" | "chip" | "searching">("empty");
+  const [searchKey, setSearchKey] = useState(0);
+  const nameAutoFilledRef = useRef(false);
+
   const [type, setType] = useState("place");
   const [arrivalTime, setArrivalTime] = useState("");
   const [departureTime, setDepartureTime] = useState("");
@@ -80,7 +105,6 @@ export function BranchForm({
     destCoords,
   );
 
-  // Earliest possible arrival = source departure + travel time
   const earliestArrival = useMemo(() => {
     if (!travelData) return null;
     const dep = sourceNode.departure_time ?? sourceNode.arrival_time;
@@ -89,14 +113,12 @@ export function BranchForm({
     return new Date(depMs + travelData.travel_time_hours * 3_600_000);
   }, [sourceNode, travelData]);
 
-  // Auto-set arrival when travel data first comes in
   useEffect(() => {
     if (earliestArrival && !arrivalTime) {
       setArrivalTime(utcToLocalInput(earliestArrival.toISOString()));
     }
   }, [earliestArrival, arrivalTime]);
 
-  // Check if arrival is too early (truncate to minute precision to match datetime-local input)
   const timingWarning = useMemo(() => {
     if (!earliestArrival || !arrivalTime) return null;
     const userArrival = new Date(arrivalTime).getTime();
@@ -115,8 +137,19 @@ export function BranchForm({
   function handlePlaceSelect(place: PlaceResult) {
     setSelectedPlace(place);
     setType(inferNodeType(place.types));
+    setLocationState("chip");
     // Reset arrival so it can be re-filled by travel data
     setArrivalTime("");
+    // Auto-fill name only if user hasn't typed anything yet
+    if (displayName === "" && !nameAutoFilledRef.current) {
+      setDisplayName(place.name);
+      nameAutoFilledRef.current = true;
+    }
+  }
+
+  function handleDisplayNameChange(value: string) {
+    setDisplayName(value);
+    nameAutoFilledRef.current = false;
   }
 
   function handleArrivalChange(value: string) {
@@ -141,7 +174,7 @@ export function BranchForm({
     if (!selectedPlace || departureBeforeArrival) return;
 
     onSubmit({
-      name: selectedPlace.name,
+      name: displayName.trim() || selectedPlace.name,
       type,
       lat: selectedPlace.lat,
       lng: selectedPlace.lng,
@@ -162,14 +195,17 @@ export function BranchForm({
         Branch from <span className="font-semibold">{sourceNode.name}</span>
       </p>
 
+      {/* Row 1: Name + Type */}
       <div className="grid grid-cols-[1fr_auto] gap-2">
         <div>
-          <label className="block text-xs text-on-surface-variant mb-1">Place</label>
-          <PlacesAutocomplete
-            onPlaceSelect={handlePlaceSelect}
-            placeholder="Search for a place..."
+          <label className="block text-xs text-on-surface-variant mb-1">Name</label>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => handleDisplayNameChange(e.target.value)}
+            placeholder="Give this stop a name"
             autoFocus
-            locationBias={sourceNode.lat_lng ?? undefined}
+            className="w-full rounded-xl bg-surface-high px-3 py-2 text-sm text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
         </div>
         <div>
@@ -186,6 +222,61 @@ export function BranchForm({
             ))}
           </select>
         </div>
+      </div>
+
+      {/* Row 2: Location slot */}
+      <div>
+        <label className="block text-xs text-on-surface-variant mb-1">Location</label>
+        {locationState === "empty" && (
+          <button
+            type="button"
+            onClick={() => setLocationState("searching")}
+            className="w-full rounded-xl border border-dashed border-outline-variant/50 px-3 py-2.5 flex items-center gap-2 text-sm text-on-surface-variant hover:bg-surface-low transition-colors"
+          >
+            <PinIcon />
+            <span>Pin to a specific place</span>
+          </button>
+        )}
+        {locationState === "chip" && selectedPlace && (
+          <div className="rounded-xl bg-primary/[0.08] px-3 py-2 flex items-center gap-2 animate-fade-in">
+            <PinIcon colored />
+            <span className="flex-1 text-sm font-medium text-on-surface truncate">
+              {selectedPlace.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setSearchKey((k) => k + 1);
+                setLocationState("searching");
+              }}
+              className="shrink-0 text-xs font-semibold text-primary rounded-lg px-2 py-1 hover:bg-primary/10 transition-colors"
+            >
+              Change
+            </button>
+          </div>
+        )}
+        {locationState === "searching" && (
+          <div className="rounded-xl bg-surface-high px-3 py-2 flex items-center gap-2">
+            <PinIcon />
+            <div className="flex-1">
+              <PlacesAutocomplete
+                key={searchKey}
+                onPlaceSelect={handlePlaceSelect}
+                initialValue={selectedPlace?.name ?? ""}
+                placeholder="Search for a place..."
+                autoFocus
+                locationBias={sourceNode.lat_lng ?? undefined}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => setLocationState(selectedPlace ? "chip" : "empty")}
+              className="shrink-0 text-xs text-on-surface-variant hover:text-on-surface transition-colors ml-1"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-2">

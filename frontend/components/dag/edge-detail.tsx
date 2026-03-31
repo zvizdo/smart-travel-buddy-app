@@ -10,6 +10,8 @@ interface EdgeDetailProps {
   distanceUnit?: "km" | "mi";
   timingWarning?: boolean;
   warningMessage?: string;
+  canEdit?: boolean;
+  onInsertStop?: () => void;
   onClose: () => void;
 }
 
@@ -80,6 +82,8 @@ export function EdgeDetail({
   distanceUnit = "km",
   timingWarning,
   warningMessage,
+  canEdit,
+  onInsertStop,
   onClose,
 }: EdgeDetailProps) {
   const modeColor = MODE_COLORS[edge.travel_mode] ?? "#707978";
@@ -170,6 +174,31 @@ export function EdgeDetail({
               {formatDistance(edge.distance_km, distanceUnit)}
             </span>
           </div>
+        )}
+
+        {/* Insert stop CTA */}
+        {canEdit && onInsertStop && (
+          <button
+            type="button"
+            onClick={onInsertStop}
+            className="w-full rounded-xl bg-primary/[0.07] border border-primary/15 px-3.5 py-3 flex items-center gap-3 cursor-pointer transition-colors active:bg-primary/15 active:scale-[0.99]"
+          >
+            <span className="h-8 w-8 rounded-full bg-primary/15 flex items-center justify-center shrink-0">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </span>
+            <span className="text-left">
+              <span className="block text-sm font-semibold text-on-surface">Insert stop here</span>
+              <span className="block text-xs text-on-surface-variant">
+                Add a stop between {fromNode?.name || "?"} and {toNode?.name || "?"}
+              </span>
+            </span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="ml-auto shrink-0">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </button>
         )}
 
         {/* Warning */}

@@ -1,7 +1,6 @@
 """MCP TripService: thin composition layer over shared repos + DAG algorithms."""
 
 import math
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,6 +24,7 @@ from shared.repositories import (
     TripRepository,
     UserRepository,
 )
+from shared.tools.id_gen import action_id, edge_id, generate_id, node_id
 from shared.tools.timezone import resolve_timezone
 
 
@@ -311,7 +311,7 @@ class TripService:
             plan_id = trip_data.get("active_plan_id")
             if not plan_id:
                 plan = Plan(
-                    id=str(uuid.uuid4()),
+                    id=generate_id("p"),
                     name=plan_name or "Main Route",
                     status=PlanStatus.ACTIVE,
                     created_by=user_id,
@@ -344,15 +344,15 @@ class TripService:
             max_order = max((n.get("order_index", 0) for n in existing_nodes), default=0)
 
             for i, nd in enumerate(nodes_to_add):
-                node_id = str(uuid.uuid4())
-                name_to_id[nd["name"]] = node_id
+                nid = node_id()
+                name_to_id[nd["name"]] = nid
 
                 lat = nd.get("lat", 0)
                 lng = nd.get("lng", 0)
                 tz = resolve_timezone(lat, lng) if lat and lng else None
 
                 node = Node(
-                    id=node_id,
+                    id=nid,
                     name=nd["name"],
                     type=NodeType(nd.get("type", "place")),
                     lat_lng={"lat": lat, "lng": lng},
@@ -410,7 +410,7 @@ class TripService:
                 # Reconnect if exactly 1 in + 1 out
                 if len(incoming) == 1 and len(outgoing) == 1:
                     new_edge = Edge(
-                        id=str(uuid.uuid4()),
+                        id=edge_id(),
                         from_node_id=incoming[0]["from_node_id"],
                         to_node_id=outgoing[0]["to_node_id"],
                         travel_mode=TravelMode(
@@ -447,7 +447,7 @@ class TripService:
                     continue
 
                 edge = Edge(
-                    id=str(uuid.uuid4()),
+                    id=edge_id(),
                     from_node_id=from_id,
                     to_node_id=to_id,
                     travel_mode=TravelMode(ea.get("travel_mode", "drive")),
@@ -544,7 +544,7 @@ class TripService:
         await self._node_repo.get_or_raise(node_id, trip_id=trip_id, plan_id=plan_id)
 
         action = Action(
-            id=str(uuid.uuid4()),
+            id=action_id(),
             type=action_type,
             content=content,
             place_data=place_data,

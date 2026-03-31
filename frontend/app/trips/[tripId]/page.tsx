@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useTripContext } from "@/app/trips/[tripId]/layout";
+import { useTripContext, type PlanData } from "@/app/trips/[tripId]/layout";
 import { useAuth } from "@/components/auth/auth-provider";
 import { api } from "@/lib/api";
 import { useTripNodes, useTripEdges, usePulseLocations, useNodeActions } from "@/lib/firestore-hooks";
@@ -20,6 +20,7 @@ import {
   computeEdgeColors,
 } from "@/lib/path-computation";
 import { PlanSwitcher } from "@/components/dag/plan-switcher";
+import { CreateDraftOverlay } from "@/components/dag/create-draft-overlay";
 import { OfflineBanner, useOnlineStatus } from "@/components/ui/offline-banner";
 import { flushQueue } from "@/lib/offline-queue";
 import { BottomNav } from "@/components/ui/bottom-nav";
@@ -62,7 +63,7 @@ interface CascadePreviewData {
 }
 
 export default function TripMapPage() {
-  const { tripId, trip, mapFitted, markMapFitted, mapCamera, setMapCamera, viewedPlanId, setViewedPlanId } = useTripContext();
+  const { tripId, trip, mapFitted, markMapFitted, mapCamera, setMapCamera, viewedPlanId, setViewedPlanId, setPlans } = useTripContext();
   const { user } = useAuth();
   const activePlanId = trip?.active_plan_id ?? null;
 
@@ -109,6 +110,26 @@ export default function TripMapPage() {
   const edges = liveEdges as EdgeData[];
   const loading = nodesLoading || edgesLoading;
 
+  // Clear recalculating state when edges update from Firestore
+  const prevEdgePolylinesRef = useRef<Map<string, unknown>>(new Map());
+  useEffect(() => {
+    const prev = prevEdgePolylinesRef.current;
+    const changed: string[] = [];
+    for (const e of edges) {
+      if (prev.has(e.id) && prev.get(e.id) !== (e as Record<string, unknown>).route_polyline) {
+        changed.push(e.id);
+      }
+      prev.set(e.id, (e as Record<string, unknown>).route_polyline);
+    }
+    if (changed.length > 0) {
+      setRecalculatingEdges((s) => {
+        const next = new Set(s);
+        for (const id of changed) next.delete(id);
+        return next.size === s.size ? s : next;
+      });
+    }
+  }, [edges]);
+
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
@@ -126,8 +147,11 @@ export default function TripMapPage() {
   const [pathMode, setPathMode] = useState<"all" | "mine">("all");
 
   const [addNodePlace, setAddNodePlace] = useState<PlaceResult | null>(null);
+  const [insertEdgeId, setInsertEdgeId] = useState<string | null>(null);
+  const [recalculatingEdges, setRecalculatingEdges] = useState<Set<string>>(new Set());
 
   const [activeTab, setActiveTab] = useState<"map" | "agent" | "settings">("map");
+  const [showCreateDraft, setShowCreateDraft] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const handleToastDismiss = useCallback(() => setToastMessage(null), []);
 
@@ -145,7 +169,9 @@ export default function TripMapPage() {
     return participant?.role ?? "viewer";
   }, [user, trip]);
 
-  const canEdit = online && (userRole === "admin" || userRole === "planner");
+  const isViewingActivePlan = displayPlanId === activePlanId;
+  const plannerReadOnly = userRole === "planner" && isViewingActivePlan;
+  const canEdit = online && (userRole === "admin" || (userRole === "planner" && !isViewingActivePlan));
 
   const tripSettings = trip?.settings ?? {};
   const datetimeFormat = (tripSettings.datetime_format ?? "24h") as "12h" | "24h";
@@ -271,11 +297,36 @@ export default function TripMapPage() {
     setSelectedEdgeId((prev) => (prev === edgeId ? null : edgeId));
   }
 
+  function handleCloneToDraft() {
+    setShowCreateDraft(true);
+  }
+
+  async function handleCreateDraft(name: string) {
+    if (!activePlanId) return;
+    setShowCreateDraft(false);
+    try {
+      const result = await api.post<{ plan: PlanData }>(
+        `/trips/${tripId}/plans`,
+        { source_plan_id: activePlanId, name },
+      );
+      setPlans((prev) => [...prev, result.plan]);
+      setViewedPlanId(result.plan.id);
+      setToastMessage("Draft created. You're now editing your draft.");
+    } catch {
+      // Error handled by api client
+    }
+  }
+
   function handleMapClick(place: PlaceResult) {
+    if (plannerReadOnly) {
+      setToastMessage("Switch to a draft plan to add stops.");
+      return;
+    }
     if (!canEdit) return;
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
     setAddNodePlace(place);
+    // Keep insertEdgeId if in insert mode — the AddNodeSheet will use it
   }
 
   async function handleNodeEdit(
@@ -283,6 +334,22 @@ export default function TripMapPage() {
     updates: Record<string, unknown>,
   ) {
     if (!displayPlanId) return;
+
+    // Track recalculating edges when location changes
+    const locationChanged = updates.lat != null || updates.lng != null;
+    if (locationChanged) {
+      const connectedEdgeIds = edges
+        .filter((e) => e.from_node_id === nodeId || e.to_node_id === nodeId)
+        .map((e) => e.id);
+      if (connectedEdgeIds.length > 0) {
+        setRecalculatingEdges((prev) => {
+          const next = new Set(prev);
+          for (const id of connectedEdgeIds) next.add(id);
+          return next;
+        });
+      }
+    }
+
     try {
       const result = await api.patch<{
         node: NodeData;
@@ -403,8 +470,77 @@ export default function TripMapPage() {
         data,
       );
       setAddNodePlace(null);
+      setInsertEdgeId(null);
     } catch {
       // Error handled by api client
+    }
+  }
+
+  function handleInsertStop() {
+    if (!selectedEdge || !canEdit) return;
+    // Keep the edge selected, open a map click handler
+    setInsertEdgeId(selectedEdge.id);
+    setSelectedEdgeId(null);
+    setToastMessage("Tap the map to place your new stop");
+  }
+
+  const insertBetween = useMemo(() => {
+    if (!insertEdgeId) return null;
+    const edge = edges.find((e) => e.id === insertEdgeId);
+    if (!edge) return null;
+    const fromNode = nodes.find((n) => n.id === edge.from_node_id);
+    const toNode = nodes.find((n) => n.id === edge.to_node_id);
+    if (!fromNode || !toNode) return null;
+    return { edgeId: insertEdgeId, fromNode, toNode };
+  }, [insertEdgeId, edges, nodes]);
+
+  async function handleSplitEdge(edgeId: string, data: {
+    name: string;
+    type: string;
+    lat: number;
+    lng: number;
+    place_id: string | null;
+    arrival_time: string | null;
+    departure_time: string | null;
+    leg_a: { travel_mode: string; travel_time_hours: number | null; distance_km: number | null; route_polyline: string | null } | null;
+    leg_b: { travel_mode: string; travel_time_hours: number | null; distance_km: number | null; route_polyline: string | null } | null;
+  }) {
+    if (!displayPlanId) return;
+    try {
+      await api.post(
+        `/trips/${tripId}/plans/${displayPlanId}/edges/${edgeId}/split`,
+        data,
+      );
+      setAddNodePlace(null);
+      setInsertEdgeId(null);
+    } catch {
+      // Error handled by api client
+    }
+  }
+
+  async function handleSubmitConnected(data: {
+    name: string;
+    type: string;
+    lat: number;
+    lng: number;
+    place_id: string | null;
+    arrival_time: string | null;
+    departure_time: string | null;
+    incoming: { node_id: string; travel_mode: string; travel_time_hours: number; distance_km: number | null; route_polyline: string | null }[];
+    outgoing: { node_id: string; travel_mode: string; travel_time_hours: number; distance_km: number | null; route_polyline: string | null }[];
+  }) {
+    if (!displayPlanId) return;
+    try {
+      await api.post(
+        `/trips/${tripId}/plans/${displayPlanId}/nodes/connected`,
+        data,
+      );
+      setAddNodePlace(null);
+    } catch (err: unknown) {
+      const error = err as { error?: { code?: string; message?: string } };
+      if (error?.error?.code === "CYCLE_DETECTED") {
+        setToastMessage("This connection would create a loop in your route");
+      }
     }
   }
 
@@ -479,6 +615,8 @@ export default function TripMapPage() {
             onPlanSelect={(planId) =>
               setViewedPlanId(planId === activePlanId ? null : planId)
             }
+            userRole={userRole}
+            onCreateDraft={handleCloneToDraft}
           />
         </div>
         <div className="flex items-center gap-2">
@@ -519,6 +657,7 @@ export default function TripMapPage() {
             participants={trip?.participants}
             currentUserId={user?.uid}
             distanceUnit={distanceUnit}
+            recalculatingEdges={recalculatingEdges}
           />
         )}
       </div>
@@ -529,6 +668,7 @@ export default function TripMapPage() {
           allNodes={nodes}
           userRole={userRole}
           online={online}
+          plannerReadOnly={plannerReadOnly}
           datetimeFormat={datetimeFormat}
           dateFormat={dateFormat}
           actions={nodeActions}
@@ -540,6 +680,7 @@ export default function TripMapPage() {
           onDeleteAction={handleDeleteAction}
           onToggleAction={handleToggleAction}
           onBranch={handleBranch}
+          onProposeChanges={handleCloneToDraft}
         />
       )}
 
@@ -551,6 +692,8 @@ export default function TripMapPage() {
           distanceUnit={distanceUnit}
           timingWarning={selectedEdgeWarning.hasWarning}
           warningMessage={selectedEdgeWarning.message}
+          canEdit={canEdit}
+          onInsertStop={handleInsertStop}
           onClose={() => setSelectedEdgeId(null)}
         />
       )}
@@ -559,10 +702,14 @@ export default function TripMapPage() {
         <AddNodeSheet
           initialPlace={addNodePlace}
           allNodes={nodes}
+          allEdges={edges}
           datetimeFormat={datetimeFormat}
           dateFormat={dateFormat}
+          insertBetween={insertBetween}
           onSubmit={handleAddNode}
-          onCancel={() => setAddNodePlace(null)}
+          onSplitEdge={handleSplitEdge}
+          onSubmitConnected={handleSubmitConnected}
+          onCancel={() => { setAddNodePlace(null); setInsertEdgeId(null); }}
         />
       )}
 
@@ -601,7 +748,8 @@ export default function TripMapPage() {
             !!selectedNode ||
             !!selectedEdge ||
             !!addNodePlace ||
-            !!cascadePreview
+            !!cascadePreview ||
+            !!insertEdgeId
           }
         />
       )}
@@ -622,6 +770,14 @@ export default function TripMapPage() {
         open={activeTab === "agent"}
         onClose={() => setActiveTab("map")}
       />
+
+      {/* Create draft overlay */}
+      {showCreateDraft && (
+        <CreateDraftOverlay
+          onSubmit={handleCreateDraft}
+          onCancel={() => setShowCreateDraft(false)}
+        />
+      )}
 
       {/* Toast */}
       <Toast

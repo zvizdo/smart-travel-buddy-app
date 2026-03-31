@@ -1,9 +1,10 @@
 """Plan service: deep clone plans, promote alternatives, manage plan versions."""
 
-import uuid
+import asyncio
 from datetime import UTC, datetime
 
 from backend.src.services.notification_service import NotificationService
+from shared.tools.id_gen import action_id, edge_id, node_id, plan_id
 
 from shared.models import (
     Action,
@@ -60,7 +61,7 @@ class PlanService:
 
         # Create new plan
         new_plan = Plan(
-            id=str(uuid.uuid4()),
+            id=plan_id(),
             name=name,
             status=PlanStatus.DRAFT,
             created_by=created_by,
@@ -73,7 +74,7 @@ class PlanService:
         node_id_map: dict[str, str] = {}
         new_nodes: list[Node] = []
         for n in source_nodes:
-            new_id = str(uuid.uuid4())
+            new_id = node_id()
             node_id_map[n["id"]] = new_id
             new_nodes.append(Node(
                 **{**n, "id": new_id, "created_at": datetime.now(UTC), "updated_at": datetime.now(UTC)},
@@ -85,12 +86,13 @@ class PlanService:
             new_from = node_id_map.get(e["from_node_id"], e["from_node_id"])
             new_to = node_id_map.get(e["to_node_id"], e["to_node_id"])
             new_edges.append(Edge(
-                id=str(uuid.uuid4()),
+                id=edge_id(),
                 from_node_id=new_from,
                 to_node_id=new_to,
                 travel_mode=e["travel_mode"],
                 travel_time_hours=e.get("travel_time_hours", 0),
                 distance_km=e.get("distance_km"),
+                route_polyline=e.get("route_polyline"),
             ))
 
         # Batch write cloned nodes and edges
@@ -110,7 +112,7 @@ class PlanService:
                     new_action = Action(
                         **{
                             **a,
-                            "id": str(uuid.uuid4()),
+                            "id": action_id(),
                             "created_at": datetime.now(UTC),
                         },
                     )
@@ -182,7 +184,7 @@ class PlanService:
         trip_id: str,
         plan_id: str,
     ) -> None:
-        """Delete a non-active plan and all its nodes/edges."""
+        """Delete a non-active plan and all its nodes, edges, and actions."""
         trip = await self._trip_repo.get_trip_or_raise(trip_id)
         if trip.active_plan_id == plan_id:
             raise ValueError("Cannot delete the active plan")
@@ -190,17 +192,46 @@ class PlanService:
         # Verify plan exists
         await self._plan_repo.get_plan_or_raise(trip_id, plan_id)
 
-        # Delete all edges and nodes in the plan
-        edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
-        for edge in edges:
-            await self._edge_repo.delete_edge(trip_id, plan_id, edge["id"])
+        # Phase 1: Parallel reads
+        edges, nodes = await asyncio.gather(
+            self._edge_repo.list_by_plan(trip_id, plan_id),
+            self._node_repo.list_by_plan(trip_id, plan_id),
+        )
+        action_lists = await asyncio.gather(
+            *[
+                self._action_repo.list_by_node(trip_id, plan_id, n["id"])
+                for n in nodes
+            ]
+        ) if nodes else []
 
-        nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
-        for node in nodes:
-            await self._node_repo.delete_node(trip_id, plan_id, node["id"])
+        # Phase 2: Collect all document refs for batched delete
+        refs = []
+        edge_col = self._edge_repo._collection(trip_id=trip_id, plan_id=plan_id)
+        for e in edges:
+            refs.append(edge_col.document(e["id"]))
 
-        # Delete the plan document
-        await self._plan_repo.delete(plan_id, trip_id=trip_id)
+        node_col = self._node_repo._collection(trip_id=trip_id, plan_id=plan_id)
+        for node, actions in zip(nodes, action_lists):
+            action_col = self._action_repo._collection(
+                trip_id=trip_id, plan_id=plan_id, node_id=node["id"]
+            )
+            for a in actions:
+                refs.append(action_col.document(a["id"]))
+            refs.append(node_col.document(node["id"]))
+
+        # Plan doc last — if a batch fails mid-way, plan still exists for retry
+        refs.append(
+            self._plan_repo._collection(trip_id=trip_id).document(plan_id)
+        )
+
+        # Phase 3: Chunked batch commits (Firestore limit: 500 ops per batch)
+        batch_size = 500
+        db = self._node_repo._db
+        for i in range(0, len(refs), batch_size):
+            batch = db.batch()
+            for ref in refs[i : i + batch_size]:
+                batch.delete(ref)
+            await batch.commit()
 
     async def list_plans(self, trip_id: str) -> list[dict]:
         """List all plans for a trip."""

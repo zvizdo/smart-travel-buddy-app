@@ -111,22 +111,24 @@ export default function TripSettingsPage() {
   const [deletePlanConfirm, setDeletePlanConfirm] = useState<string | null>(
     null,
   );
-  const [deletingPlan, setDeletingPlan] = useState(false);
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   async function handleDeletePlan(planId: string) {
     if (deletePlanConfirm !== planId) {
       setDeletePlanConfirm(planId);
       return;
     }
-    setDeletingPlan(true);
+    setDeletingPlanId(planId);
+    setDeleteError(null);
     try {
       await api.delete(`/trips/${tripId}/plans/${planId}`);
       setPlans((prev) => prev.filter((p) => p.id !== planId));
       setDeletePlanConfirm(null);
     } catch {
-      // Error handled by api client
+      setDeleteError("Could not delete plan. Please try again.");
     } finally {
-      setDeletingPlan(false);
+      setDeletingPlanId(null);
     }
   }
 
@@ -423,59 +425,80 @@ export default function TripSettingsPage() {
                     };
                     return (order[a.status] ?? 3) - (order[b.status] ?? 3);
                   })
-                  .map((plan) => (
-                    <div
-                      key={plan.id}
-                      className="flex items-center justify-between rounded-2xl bg-surface-lowest px-4 py-3 shadow-soft"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-sm font-medium text-on-surface truncate">
-                          {plan.name}
-                        </span>
-                        <span
-                          className={`shrink-0 inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold capitalize ${STATUS_BADGE[plan.status] || STATUS_BADGE.archived}`}
-                        >
-                          {plan.status}
-                        </span>
-                      </div>
-                      {plan.status !== "active" && canCreateAlternative && (
-                        <div className="flex items-center gap-1.5 ml-3">
-                          {isAdmin && plan.status === "draft" && (
-                            <button
-                              onClick={() => handlePromotePlan(plan.id)}
-                              disabled={promoting}
-                              className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 ${
-                                promoteConfirm === plan.id
-                                  ? "bg-secondary text-on-secondary"
-                                  : "bg-secondary/10 text-secondary"
-                              }`}
-                            >
-                              {promoting && promoteConfirm === plan.id
-                                ? "..."
-                                : promoteConfirm === plan.id
-                                  ? "Confirm"
-                                  : "Promote"}
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleDeletePlan(plan.id)}
-                            disabled={deletingPlan}
-                            className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 ${
-                              deletePlanConfirm === plan.id
-                                ? "bg-error text-on-error"
-                                : "bg-error/10 text-error"
-                            }`}
+                  .map((plan) => {
+                    const isDeleting = deletingPlanId === plan.id;
+                    return (
+                      <div
+                        key={plan.id}
+                        aria-busy={isDeleting || undefined}
+                        className={`flex items-center justify-between rounded-2xl bg-surface-lowest px-4 py-3 shadow-soft transition-opacity ${isDeleting ? "opacity-50 pointer-events-none" : ""}`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium text-on-surface truncate">
+                            {plan.name}
+                          </span>
+                          <span
+                            className={`shrink-0 inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold capitalize ${STATUS_BADGE[plan.status] || STATUS_BADGE.archived}`}
                           >
-                            {deletingPlan && deletePlanConfirm === plan.id
-                              ? "..."
-                              : deletePlanConfirm === plan.id
-                                ? "Confirm"
-                                : "Delete"}
-                          </button>
+                            {plan.status}
+                          </span>
                         </div>
-                      )}
-                    </div>
-                  ))
+                        {plan.status !== "active" && canCreateAlternative && (
+                          isDeleting ? (
+                            <div className="ml-3" role="status" aria-label="Deleting plan">
+                              <div className="h-5 w-5 animate-spin rounded-full border-2 border-surface-high border-t-error" />
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 ml-3">
+                              {isAdmin && plan.status === "draft" && (
+                                <button
+                                  onClick={() => handlePromotePlan(plan.id)}
+                                  disabled={promoting}
+                                  className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 ${
+                                    promoteConfirm === plan.id
+                                      ? "bg-secondary text-on-secondary"
+                                      : "bg-secondary/10 text-secondary"
+                                  }`}
+                                >
+                                  {promoting && promoteConfirm === plan.id
+                                    ? "..."
+                                    : promoteConfirm === plan.id
+                                      ? "Confirm"
+                                      : "Promote"}
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleDeletePlan(plan.id)}
+                                disabled={deletingPlanId !== null}
+                                className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 ${
+                                  deletePlanConfirm === plan.id
+                                    ? "bg-error text-on-error"
+                                    : "bg-error/10 text-error"
+                                }`}
+                              >
+                                {deletePlanConfirm === plan.id
+                                  ? "Confirm"
+                                  : "Delete"}
+                              </button>
+                            </div>
+                          )
+                        )}
+                      </div>
+                    );
+                  }))
+              }
+
+              {deleteError && (
+                <div className="rounded-xl bg-error/10 px-4 py-3 flex items-center justify-between" role="alert">
+                  <span className="text-xs font-medium text-error">{deleteError}</span>
+                  <button
+                    onClick={() => setDeleteError(null)}
+                    className="text-error/60 hover:text-error ml-3 text-sm"
+                    aria-label="Dismiss error"
+                  >
+                    &times;
+                  </button>
+                </div>
               )}
 
               {canCreateAlternative && (

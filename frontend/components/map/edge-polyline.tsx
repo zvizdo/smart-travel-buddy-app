@@ -18,6 +18,8 @@ interface EdgePolylineProps {
   pathColor?: string;
   dimmed?: boolean;
   timingWarning?: boolean;
+  /** When true, edge shows shimmer animation indicating polyline is being recalculated */
+  recalculating?: boolean;
   /** Pixel distance between the from/to nodes at current zoom. Used to hide label when too close. */
   pixelDistance?: number;
   onClick?: () => void;
@@ -28,6 +30,14 @@ const MODE_COLORS: Record<string, string> = {
   flight: "#5e35b1",
   transit: "#9a7c00",
   walk: "#006b1b",
+};
+
+/** Darker casing colors per mode (fill color darkened ~45%) */
+const CASING_COLORS: Record<string, string> = {
+  drive: "#003d49",
+  flight: "#3a1f70",
+  transit: "#5c4a00",
+  walk: "#004010",
 };
 
 const MODE_DASH: Record<string, number[]> = {
@@ -48,6 +58,14 @@ const MIN_PX_FOR_LABEL = 120;
 /** Ease-in-out-quad for smooth opacity transitions */
 function easeInOutQuad(t: number): number {
   return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+}
+
+/** Darken a hex color by a factor (0 = black, 1 = unchanged) */
+function darkenHex(hex: string, factor = 0.55): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `#${Math.round(r * factor).toString(16).padStart(2, "0")}${Math.round(g * factor).toString(16).padStart(2, "0")}${Math.round(b * factor).toString(16).padStart(2, "0")}`;
 }
 
 function formatDuration(hours: number): string {
@@ -71,6 +89,7 @@ export function EdgePolyline({
   pathColor,
   dimmed,
   timingWarning,
+  recalculating,
   pixelDistance,
   onClick,
 }: EdgePolylineProps) {
@@ -78,6 +97,7 @@ export function EdgePolyline({
   const geometryLib = useMapsLibrary("geometry");
   const markerLib = useMapsLibrary("marker");
   const polylineRef = useRef<google.maps.Polyline | null>(null);
+  const casingRef = useRef<google.maps.Polyline | null>(null);
   const hitPolylineRef = useRef<google.maps.Polyline | null>(null);
   const midMarkerRef =
     useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
@@ -97,8 +117,9 @@ export function EdgePolyline({
   const warnSpanRef = useRef<HTMLSpanElement | null>(null);
 
   // Animated opacity state for dimmed transitions
-  const currentOpacityRef = useRef<number>(dimmed ? 0.25 : 0.85);
+  const currentOpacityRef = useRef<number>(dimmed ? 0.12 : 0.85);
   const animFrameRef = useRef<number>(0);
+  const shimmerFrameRef = useRef<number>(0);
 
   // Decode route polyline or fall back to straight line
   const path = useMemo(() => {
@@ -130,14 +151,25 @@ export function EdgePolyline({
     return { lat: (fromLat + toLat) / 2, lng: (fromLng + toLng) / 2 };
   }, [path, fromLat, fromLng, toLat, toLng]);
 
-  // Derived visual properties (excluding dimmed/selected — those are handled
-  // by the options update effect and the opacity animation respectively).
-  const rawColor = dimmed
+  // Derived visual properties
+  const fillColor = recalculating
+    ? "#a1a1aa"
+    : dimmed
+      ? "#d4d4d8"
+      : timingWarning
+        ? "#d97706"
+        : pathColor || MODE_COLORS[travelMode] || "#6b7280";
+  const casingColor = recalculating
     ? "#d4d4d8"
-    : timingWarning
-      ? "#d97706"
-      : pathColor || MODE_COLORS[travelMode] || "#6b7280";
-  const strokeWeight = selected ? 4 : 2.5;
+    : dimmed
+      ? "#a1a1a6"
+      : timingWarning
+        ? "#8a4d04"
+        : pathColor
+          ? darkenHex(pathColor)
+          : CASING_COLORS[travelMode] || "#404040";
+  const fillWeight = selected ? 4 : dimmed ? 1.5 : 2.5;
+  const casingWeight = selected ? 7 : dimmed ? 3 : 4.5;
   const dash = dimmed ? undefined : MODE_DASH[travelMode];
 
   // Should we show the label? Only when nodes are far enough apart on screen
@@ -147,55 +179,68 @@ export function EdgePolyline({
     (pixelDistance === undefined || pixelDistance >= MIN_PX_FOR_LABEL);
 
   // ---------------------------------------------------------------------------
-  // Effect A: CREATE polyline (and hit target) — only when map or path changes.
-  // Visual options (color, weight, opacity, dash) are set to initial values here
-  // but are kept in sync by Effect B without tearing down the polyline.
-  // onClick is read through onClickRef so it never belongs in this dep array.
+  // Effect A: CREATE polylines (casing + fill + hit target) — only when map or
+  // path changes. Visual options are set to initial values here but kept in sync
+  // by Effect B. onClick is read through onClickRef.
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!map) return;
 
     const initialOpacity = currentOpacityRef.current;
     const initialDash = dimmed ? undefined : MODE_DASH[travelMode];
-    const initialColor = dimmed
+    const initialFillColor = dimmed
       ? "#d4d4d8"
       : timingWarning
         ? "#d97706"
         : pathColor || MODE_COLORS[travelMode] || "#6b7280";
-    const initialWeight = selected ? 4 : 2.5;
+    const initialCasingColor = dimmed
+      ? "#a1a1a6"
+      : timingWarning
+        ? "#8a4d04"
+        : pathColor
+          ? darkenHex(pathColor)
+          : CASING_COLORS[travelMode] || "#404040";
+    const initialFillWeight = selected ? 4 : dimmed ? 1.5 : 2.5;
+    const initialCasingWeight = selected ? 7 : dimmed ? 3 : 4.5;
+    const casingOpacity = Math.min(initialOpacity, dimmed ? 0.08 : 0.5);
 
-    const arrowTip: google.maps.IconSequence = {
+    // Small direction hint arrow on the casing layer
+    const hint: google.maps.IconSequence = {
       icon: {
         path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-        scale: selected ? 4 : 3,
-        strokeColor: initialColor,
-        fillColor: initialColor,
-        fillOpacity: dimmed ? 0.25 : 0.95,
-        strokeOpacity: dimmed ? 0.25 : 0.95,
-        strokeWeight: 1,
+        scale: selected ? 3 : 2.5,
+        strokeColor: initialCasingColor,
+        strokeOpacity: dimmed ? 0.08 : 0.6,
+        strokeWeight: 0.5,
+        fillColor: initialCasingColor,
+        fillOpacity: dimmed ? 0.08 : 0.6,
       },
-      offset: "100%",
+      offset: "75%",
     };
 
-    const midArrow: google.maps.IconSequence = {
-      icon: {
-        path: google.maps.SymbolPath.FORWARD_OPEN_ARROW,
-        scale: 2.5,
-        strokeColor: initialColor,
-        strokeOpacity: dimmed ? 0.25 : 0.7,
-        strokeWeight: 1.5,
-      },
-      offset: "50%",
-    };
+    // Casing polyline (wider, darker, rendered underneath)
+    const casing = new google.maps.Polyline({
+      path,
+      strokeColor: initialCasingColor,
+      strokeOpacity: casingOpacity,
+      strokeWeight: initialCasingWeight,
+      map,
+      clickable: false,
+      zIndex: 1,
+      icons: [hint],
+    });
+    casingRef.current = casing;
 
+    // Fill polyline (narrower, brighter, rendered on top)
     const polyline = new google.maps.Polyline({
       path,
-      strokeColor: initialColor,
+      strokeColor: initialFillColor,
       strokeOpacity: initialDash ? 0 : initialOpacity,
-      strokeWeight: initialWeight,
+      strokeWeight: initialFillWeight,
       map,
-      clickable: true,
-      icons: [arrowTip, midArrow],
+      clickable: !dimmed,
+      zIndex: 2,
+      icons: [],
     });
 
     if (initialDash) {
@@ -206,19 +251,16 @@ export function EdgePolyline({
             icon: {
               path: "M 0,-1 0,1",
               strokeOpacity: initialOpacity,
-              strokeColor: initialColor,
-              scale: initialWeight,
+              strokeColor: initialFillColor,
+              scale: initialFillWeight,
             },
             offset: "0",
             repeat: `${initialDash[0] + initialDash[1]}px`,
           },
-          arrowTip,
-          midArrow,
         ],
       });
     }
 
-    // Use the ref so swapping onClick in the parent never re-mounts the polyline
     polyline.addListener("click", () => onClickRef.current?.());
     polylineRef.current = polyline;
 
@@ -229,12 +271,15 @@ export function EdgePolyline({
       strokeOpacity: 0,
       strokeWeight: 20,
       map,
-      clickable: true,
+      clickable: !dimmed,
+      zIndex: 3,
     });
     hitPoly.addListener("click", () => onClickRef.current?.());
     hitPolylineRef.current = hitPoly;
 
     return () => {
+      casing.setMap(null);
+      casingRef.current = null;
       polyline.setMap(null);
       polylineRef.current = null;
       hitPoly.setMap(null);
@@ -246,77 +291,80 @@ export function EdgePolyline({
 
   // ---------------------------------------------------------------------------
   // Effect B: UPDATE polyline options in-place when visual props change.
-  // Runs after creation and on every subsequent visual-prop change.
-  // Does NOT tear down the polyline — only calls setOptions.
   // ---------------------------------------------------------------------------
   useEffect(() => {
     const polyline = polylineRef.current;
+    const casing = casingRef.current;
     if (!polyline) return;
 
     const currentOpacity = currentOpacityRef.current;
+    const casingOpacity = Math.min(currentOpacity, dimmed ? 0.08 : 0.5);
 
-    const arrowTip: google.maps.IconSequence = {
-      icon: {
-        path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-        scale: selected ? 4 : 3,
-        strokeColor: rawColor,
-        fillColor: rawColor,
-        fillOpacity: currentOpacity,
-        strokeOpacity: currentOpacity,
-        strokeWeight: 1,
-      },
-      offset: "100%",
-    };
+    // Update casing + direction hint
+    if (casing) {
+      const hintOpacity = dimmed ? 0.08 : 0.6;
+      const hint: google.maps.IconSequence = {
+        icon: {
+          path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+          scale: selected ? 3 : 2.5,
+          strokeColor: casingColor,
+          strokeOpacity: hintOpacity,
+          strokeWeight: 0.5,
+          fillColor: casingColor,
+          fillOpacity: hintOpacity,
+        },
+        offset: "75%",
+      };
+      casing.setOptions({
+        strokeColor: casingColor,
+        strokeOpacity: casingOpacity,
+        strokeWeight: casingWeight,
+        icons: [hint],
+      });
+    }
 
-    const midArrow: google.maps.IconSequence = {
-      icon: {
-        path: google.maps.SymbolPath.FORWARD_OPEN_ARROW,
-        scale: 2.5,
-        strokeColor: rawColor,
-        strokeOpacity: Math.min(currentOpacity, 0.7),
-        strokeWeight: 1.5,
-      },
-      offset: "50%",
-    };
-
+    // Update fill
     if (dash) {
       polyline.setOptions({
-        strokeColor: rawColor,
+        strokeColor: fillColor,
         strokeOpacity: 0,
-        strokeWeight,
-        clickable: true,
+        strokeWeight: fillWeight,
+        clickable: !dimmed,
         icons: [
           {
             icon: {
               path: "M 0,-1 0,1",
               strokeOpacity: currentOpacity,
-              strokeColor: rawColor,
-              scale: strokeWeight,
+              strokeColor: fillColor,
+              scale: fillWeight,
             },
             offset: "0",
             repeat: `${dash[0] + dash[1]}px`,
           },
-          arrowTip,
-          midArrow,
         ],
       });
     } else {
       polyline.setOptions({
-        strokeColor: rawColor,
+        strokeColor: fillColor,
         strokeOpacity: currentOpacity,
-        strokeWeight,
-        clickable: true,
-        icons: [arrowTip, midArrow],
+        strokeWeight: fillWeight,
+        clickable: !dimmed,
+        icons: [],
       });
     }
-  }, [rawColor, strokeWeight, dash, selected]);
+
+    // Update hit polyline clickability
+    const hitPoly = hitPolylineRef.current;
+    if (hitPoly) {
+      hitPoly.setOptions({ clickable: !dimmed });
+    }
+  }, [fillColor, casingColor, fillWeight, casingWeight, dash, selected, dimmed, pixelDistance]);
 
   // ---------------------------------------------------------------------------
   // Opacity animation — animates dimmed transitions over 350ms.
-  // Cancels any in-flight animation before starting a new one.
   // ---------------------------------------------------------------------------
   useEffect(() => {
-    const targetOpacity = dimmed ? 0.25 : 0.85;
+    const targetOpacity = dimmed ? 0.12 : 0.85;
     const startOpacity = currentOpacityRef.current;
 
     if (startOpacity === targetOpacity) return;
@@ -334,58 +382,37 @@ export function EdgePolyline({
       currentOpacityRef.current = opacity;
 
       const polyline = polylineRef.current;
+      const casing = casingRef.current;
+
       if (polyline) {
         const currentDash = dimmed ? undefined : MODE_DASH[travelMode];
         if (currentDash) {
           const icons = polyline.get("icons") as google.maps.IconSequence[] | undefined;
           if (icons) {
-            const updated = icons.map((seq) => {
-              if (seq.repeat) {
-                // dashed segment
-                return {
-                  ...seq,
-                  icon: { ...seq.icon, strokeOpacity: opacity },
-                };
-              }
-              if (seq.offset === "100%") {
-                // arrow tip
-                return {
-                  ...seq,
-                  icon: { ...seq.icon, fillOpacity: opacity, strokeOpacity: opacity },
-                };
-              }
-              if (seq.offset === "50%") {
-                // mid arrow
-                return {
-                  ...seq,
-                  icon: { ...seq.icon, strokeOpacity: Math.min(opacity, 0.7) },
-                };
-              }
-              return seq;
-            });
+            const updated = icons.map((seq) => ({
+              ...seq,
+              icon: { ...seq.icon, strokeOpacity: opacity },
+            }));
             polyline.setOptions({ icons: updated as google.maps.IconSequence[] });
           }
         } else {
           polyline.setOptions({ strokeOpacity: opacity });
-          const icons = polyline.get("icons") as google.maps.IconSequence[] | undefined;
-          if (icons) {
-            const updated = icons.map((seq) => {
-              if (seq.offset === "100%") {
-                return {
-                  ...seq,
-                  icon: { ...seq.icon, fillOpacity: opacity, strokeOpacity: opacity },
-                };
-              }
-              if (seq.offset === "50%") {
-                return {
-                  ...seq,
-                  icon: { ...seq.icon, strokeOpacity: Math.min(opacity, 0.7) },
-                };
-              }
-              return seq;
-            });
-            polyline.setOptions({ icons: updated as google.maps.IconSequence[] });
-          }
+        }
+      }
+
+      // Animate casing opacity + hint arrow
+      if (casing) {
+        const casingOpacity = Math.min(opacity, dimmed ? 0.08 : 0.5);
+        const hintOpacity = dimmed ? Math.min(opacity, 0.08) : 0.6;
+        const icons = casing.get("icons") as google.maps.IconSequence[] | undefined;
+        if (icons) {
+          const updated = icons.map((seq) => ({
+            ...seq,
+            icon: { ...seq.icon, strokeOpacity: hintOpacity, fillOpacity: hintOpacity },
+          }));
+          casing.setOptions({ strokeOpacity: casingOpacity, icons: updated as google.maps.IconSequence[] });
+        } else {
+          casing.setOptions({ strokeOpacity: casingOpacity });
         }
       }
 
@@ -405,6 +432,54 @@ export function EdgePolyline({
       cancelAnimationFrame(animFrameRef.current);
     };
   }, [dimmed, travelMode]);
+
+  // ---------------------------------------------------------------------------
+  // Shimmer animation for recalculating state — pulsing opacity on a sine wave.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!recalculating) {
+      cancelAnimationFrame(shimmerFrameRef.current);
+      return;
+    }
+
+    const PERIOD = 1200; // ms for one full cycle
+
+    function shimmerTick(now: number) {
+      const phase = (now % PERIOD) / PERIOD;
+      const opacity = 0.30 + 0.25 * Math.sin(phase * Math.PI * 2);
+      const casingOpacity = 0.12 + 0.13 * Math.sin(phase * Math.PI * 2);
+
+      const polyline = polylineRef.current;
+      const casing = casingRef.current;
+
+      if (polyline) {
+        const icons = polyline.get("icons") as google.maps.IconSequence[] | undefined;
+        if (icons && icons.length > 0) {
+          const updated = icons.map((seq) => ({
+            ...seq,
+            icon: { ...seq.icon, strokeOpacity: opacity },
+          }));
+          polyline.setOptions({ icons: updated as google.maps.IconSequence[] });
+        } else {
+          polyline.setOptions({ strokeOpacity: opacity });
+        }
+      }
+      if (casing) {
+        casing.setOptions({ strokeOpacity: casingOpacity });
+      }
+      if (badgeElRef.current) {
+        badgeElRef.current.style.opacity = String(opacity + 0.15);
+      }
+
+      shimmerFrameRef.current = requestAnimationFrame(shimmerTick);
+    }
+
+    shimmerFrameRef.current = requestAnimationFrame(shimmerTick);
+
+    return () => {
+      cancelAnimationFrame(shimmerFrameRef.current);
+    };
+  }, [recalculating]);
 
   // ---------------------------------------------------------------------------
   // Midpoint info badge — created ONCE when map is available; updated in-place.
@@ -507,34 +582,45 @@ export function EdgePolyline({
     const marker = midMarkerRef.current;
     if (!marker) return;
 
-    const badgeColor = timingWarning
-      ? "#d97706"
-      : MODE_COLORS[travelMode] || "#6b7280";
+    const badgeColor = recalculating
+      ? "#a1a1aa"
+      : timingWarning
+        ? "#d97706"
+        : MODE_COLORS[travelMode] || "#6b7280";
     const iconSvg = MODE_ICON_SVG[travelMode] ?? MODE_ICON_SVG["drive"];
     const durationStr = travelTimeHours ? formatDuration(travelTimeHours) : "";
     const distStr = formatDistance(distanceKm, distanceUnit);
 
     // Update warning indicator
     if (warnSpanRef.current) {
-      warnSpanRef.current.textContent = timingWarning ? "!" : "";
-      warnSpanRef.current.style.display = timingWarning ? "" : "none";
+      warnSpanRef.current.textContent = timingWarning && !recalculating ? "!" : "";
+      warnSpanRef.current.style.display = timingWarning && !recalculating ? "" : "none";
     }
 
-    // Update mode icon
+    // Update mode icon — show spinner when recalculating
     if (iconWrapRef.current) {
       iconWrapRef.current.style.color = badgeColor;
-      iconWrapRef.current.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24">${iconSvg}</svg>`;
+      if (recalculating) {
+        iconWrapRef.current.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border:2px solid #d4d4d8;border-top-color:#71717a;border-radius:50%;animation:spin 1s linear infinite"></span>`;
+      } else {
+        iconWrapRef.current.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24">${iconSvg}</svg>`;
+      }
     }
 
     // Update duration text
     if (durationSpanRef.current) {
-      durationSpanRef.current.textContent = durationStr;
-      durationSpanRef.current.style.color = timingWarning ? "#d97706" : "#283030";
+      if (recalculating) {
+        durationSpanRef.current.textContent = "Updating\u2026";
+        durationSpanRef.current.style.color = "#71717a";
+      } else {
+        durationSpanRef.current.textContent = durationStr;
+        durationSpanRef.current.style.color = timingWarning ? "#d97706" : "#283030";
+      }
     }
 
-    // Update distance text — hide when warning to save space
+    // Update distance text — hide when warning or recalculating
     if (distanceSpanRef.current) {
-      const showDist = !!distStr && !timingWarning;
+      const showDist = !!distStr && !timingWarning && !recalculating;
       distanceSpanRef.current.textContent = showDist ? distStr : "";
       distanceSpanRef.current.style.display = showDist ? "" : "none";
       // Also hide the separator when distance is hidden
@@ -542,9 +628,11 @@ export function EdgePolyline({
       if (sep) sep.style.display = showDist ? "" : "none";
     }
 
-    // Update box-shadow accent color
+    // Update box-shadow accent color and interactivity
     if (badgeElRef.current) {
       badgeElRef.current.style.boxShadow = `0 1px 6px rgba(0,0,0,0.16), inset 0 0 0 1.5px ${badgeColor}40`;
+      badgeElRef.current.style.pointerEvents = dimmed || recalculating ? "none" : "auto";
+      badgeElRef.current.style.cursor = dimmed || recalculating ? "default" : "pointer";
     }
 
     // Update position
@@ -566,6 +654,8 @@ export function EdgePolyline({
   }, [
     map,
     showLabel,
+    dimmed,
+    recalculating,
     timingWarning,
     travelMode,
     travelTimeHours,
