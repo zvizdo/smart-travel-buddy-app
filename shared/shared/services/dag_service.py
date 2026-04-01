@@ -1,4 +1,4 @@
-"""DAG service: create plans with nodes/edges from assembler output, get full DAG.
+"""DAG service: node/edge CRUD, cascade engine, cycle detection, polyline management.
 
 Includes cascade engine for propagating schedule changes downstream through the DAG.
 """
@@ -19,9 +19,8 @@ from shared.tools.id_gen import edge_id, node_id, plan_id
 if TYPE_CHECKING:
     from shared.services.route_service import RouteService
 
-from shared.dag.assembler import AssemblyResult
 from shared.dag.cascade import compute_cascade, parse_dt
-from shared.dag.cycle import CycleDetectedError, detect_cycle
+from shared.dag.cycle import CycleDetectedError, detect_cycle, would_create_cycle
 from shared.models import (
     Edge,
     LatLng,
@@ -107,44 +106,6 @@ class DAGService:
                 )
             )
         return edge.model_dump(mode="json")
-
-    async def create_plan_from_assembly(
-        self,
-        trip_id: str,
-        assembly: AssemblyResult,
-        created_by: str,
-        plan_name: str = "Main Route",
-    ) -> dict:
-        """Create a new plan with nodes and edges from assembler output.
-
-        Sets the plan as the trip's active plan.
-        Returns summary with plan_id, nodes_created, edges_created.
-        """
-        plan = Plan(
-            id=plan_id(),
-            name=plan_name,
-            status=PlanStatus.ACTIVE,
-            created_by=created_by,
-            parent_plan_id=None,
-            created_at=datetime.now(UTC),
-        )
-        await self._plan_repo.create_plan(trip_id, plan)
-
-        if assembly.nodes:
-            await self._node_repo.batch_create(trip_id, plan.id, assembly.nodes)
-        if assembly.edges:
-            await self._edge_repo.batch_create(trip_id, plan.id, assembly.edges)
-
-        await self._trip_repo.update_trip(trip_id, {
-            "active_plan_id": plan.id,
-            "updated_at": datetime.now(UTC).isoformat(),
-        })
-
-        return {
-            "plan_id": plan.id,
-            "nodes_created": len(assembly.nodes),
-            "edges_created": len(assembly.edges),
-        }
 
     async def get_full_dag(
         self, trip_id: str, plan_id: str
@@ -690,6 +651,15 @@ class DAGService:
         """
         from_node = await self._node_repo.get_node_or_raise(trip_id, plan_id, from_node_id)
         to_node = await self._node_repo.get_node_or_raise(trip_id, plan_id, to_node_id)
+
+        # Cycle check — reject before expensive route data fetch
+        existing_edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
+        edge_dicts = [{"from_node_id": e.from_node_id, "to_node_id": e.to_node_id}
+                      if hasattr(e, "from_node_id") else e
+                      for e in existing_edges]
+        cycle_path = would_create_cycle(from_node_id, to_node_id, edge_dicts)
+        if cycle_path:
+            raise CycleDetectedError(cycle_path)
 
         from_latlng: dict | None = None
         if from_node.lat_lng is not None:

@@ -94,6 +94,56 @@ def detect_cycle(
     return None
 
 
+def would_create_cycle(
+    from_node_id: str,
+    to_node_id: str,
+    existing_edges: list[dict],
+) -> list[str] | None:
+    """Check if adding an edge from_node -> to_node would create a cycle.
+
+    Returns the cycle path if the edge would create a cycle, or None if safe.
+    A cycle exists when to_node can already reach from_node via existing edges
+    (adding from -> to would close the loop), or when from_node == to_node
+    (self-loop).
+    """
+    if from_node_id == to_node_id:
+        return [from_node_id, from_node_id]
+
+    descendants = get_descendants(to_node_id, existing_edges)
+    if from_node_id in descendants:
+        # Reconstruct a readable cycle path: from -> ... -> to -> from
+        # Use BFS to find the shortest path from to_node back to from_node
+        from collections import deque
+
+        adj: dict[str, list[str]] = defaultdict(list)
+        for edge in existing_edges:
+            adj[edge["from_node_id"]].append(edge["to_node_id"])
+
+        parent: dict[str, str | None] = {to_node_id: None}
+        queue = deque([to_node_id])
+        while queue:
+            current = queue.popleft()
+            if current == from_node_id:
+                break
+            for child in adj.get(current, []):
+                if child not in parent:
+                    parent[child] = current
+                    queue.append(child)
+
+        # Reconstruct path: to_node -> ... -> from_node, then prepend from_node
+        path = [from_node_id]
+        node = from_node_id
+        while node != to_node_id:
+            node = parent[node]
+            path.append(node)
+        path.reverse()
+        # path is now: to_node -> ... -> from_node
+        # The full cycle is: from_node -> to_node -> ... -> from_node
+        return [from_node_id] + path
+
+    return None
+
+
 def get_ancestors(
     node_id: str,
     edges: list[dict],

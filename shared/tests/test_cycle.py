@@ -1,6 +1,12 @@
 """Tests for DAG cycle detection and graph traversal utilities."""
 
-from shared.dag.cycle import CycleDetectedError, detect_cycle, get_ancestors, get_descendants
+from shared.dag.cycle import (
+    CycleDetectedError,
+    detect_cycle,
+    get_ancestors,
+    get_descendants,
+    would_create_cycle,
+)
 
 
 def _edge(from_id: str, to_id: str) -> dict:
@@ -207,3 +213,98 @@ class TestGetDescendants:
         """A -> B, A -> C: descendants of A are {B, C}."""
         edges = [_edge("A", "B"), _edge("A", "C")]
         assert get_descendants("A", edges) == {"B", "C"}
+
+
+# ---------------------------------------------------------------------------
+# would_create_cycle
+# ---------------------------------------------------------------------------
+
+
+class TestWouldCreateCycle:
+    """Tests for the would_create_cycle edge-level cycle check."""
+
+    def test_simple_cycle(self):
+        """A -> B exists, adding B -> A creates a cycle."""
+        edges = [_edge("A", "B")]
+        result = would_create_cycle("B", "A", edges)
+        assert result is not None
+        assert result[0] == "B"
+        assert result[-1] == "B"
+        assert "A" in result
+
+    def test_transitive_cycle(self):
+        """A -> B -> C exists, adding C -> A creates a cycle."""
+        edges = [_edge("A", "B"), _edge("B", "C")]
+        result = would_create_cycle("C", "A", edges)
+        assert result is not None
+        assert result[0] == "C"
+        assert result[-1] == "C"
+
+    def test_self_loop(self):
+        """Adding A -> A is a self-loop cycle."""
+        result = would_create_cycle("A", "A", [])
+        assert result is not None
+        assert result == ["A", "A"]
+
+    def test_valid_edge_linear(self):
+        """A -> B exists, adding B -> C is valid (extends the chain)."""
+        edges = [_edge("A", "B")]
+        result = would_create_cycle("B", "C", edges)
+        assert result is None
+
+    def test_valid_edge_no_existing(self):
+        """No existing edges, adding any edge is valid."""
+        result = would_create_cycle("A", "B", [])
+        assert result is None
+
+    def test_valid_edge_parallel(self):
+        """Two independent chains, connecting them is valid."""
+        edges = [_edge("A", "B"), _edge("C", "D")]
+        result = would_create_cycle("B", "C", edges)
+        assert result is None
+
+    def test_cycle_in_diamond(self):
+        """A -> B, A -> C, B -> D, C -> D. Adding D -> A creates a cycle."""
+        edges = [_edge("A", "B"), _edge("A", "C"), _edge("B", "D"), _edge("C", "D")]
+        result = would_create_cycle("D", "A", edges)
+        assert result is not None
+        assert result[0] == "D"
+        assert result[-1] == "D"
+
+    def test_no_cycle_in_diamond(self):
+        """A -> B, A -> C, B -> D, C -> D. Adding D -> E is valid."""
+        edges = [_edge("A", "B"), _edge("A", "C"), _edge("B", "D"), _edge("C", "D")]
+        result = would_create_cycle("D", "E", edges)
+        assert result is None
+
+    def test_long_chain_cycle(self):
+        """A0 -> A1 -> ... -> A9. Adding A9 -> A0 creates a cycle."""
+        edges = [_edge(f"A{i}", f"A{i+1}") for i in range(10)]
+        result = would_create_cycle("A9", "A0", edges)
+        assert result is not None
+        assert result[0] == "A9"
+        assert result[-1] == "A9"
+
+    def test_long_chain_valid(self):
+        """A0 -> A1 -> ... -> A9. Adding A9 -> A10 is valid."""
+        edges = [_edge(f"A{i}", f"A{i+1}") for i in range(10)]
+        result = would_create_cycle("A9", "A10", edges)
+        assert result is None
+
+    def test_cycle_path_is_correct(self):
+        """Verify the returned cycle path is a valid cycle."""
+        edges = [_edge("A", "B"), _edge("B", "C")]
+        result = would_create_cycle("C", "A", edges)
+        assert result is not None
+        # Path should start and end with the same node (the from_node)
+        assert result[0] == result[-1] == "C"
+        # Path should include the proposed edge: C -> A
+        assert "A" in result
+        # Path should be a valid sequence through the graph
+        assert len(result) >= 3  # At minimum: C -> A -> ... -> C
+
+    def test_duplicate_edge_no_false_positive(self):
+        """Adding a duplicate edge (A -> B when A -> B exists) is not a cycle."""
+        edges = [_edge("A", "B")]
+        result = would_create_cycle("A", "B", edges)
+        assert result is None
