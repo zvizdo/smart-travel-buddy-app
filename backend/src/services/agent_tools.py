@@ -3,17 +3,16 @@
 The google-genai SDK reads type annotations and docstrings from these
 functions to generate FunctionDeclaration objects. The SDK then handles
 the function calling loop automatically — no manual loop needed.
+
+Tools are defined once in _define_all_tools() and composed into subsets
+by create_agent_tools() and create_build_tools().
 """
 
 from backend.src.services.tool_executor import ToolExecutor
 
 
-def create_agent_tools(executor: ToolExecutor, can_mutate: bool = True) -> list:
-    """Create async callables bound to a ToolExecutor for use with Gemini AFC.
-
-    Returns a list of async functions that the SDK will convert to
-    FunctionDeclarations and call automatically when Gemini requests them.
-    """
+def _define_all_tools(executor: ToolExecutor) -> dict:
+    """Define all tool callables once, returning a dict of {name: callable}."""
 
     async def add_node(
         name: str,
@@ -21,16 +20,12 @@ def create_agent_tools(executor: ToolExecutor, can_mutate: bool = True) -> list:
         lat: float,
         lng: float,
         place_id: str = None,
-        connect_after_node_id: str = None,
-        travel_mode: str = "drive",
-        travel_time_hours: float = 0,
-        distance_km: float = None,
         arrival_time: str = None,
         departure_time: str = None,
     ) -> dict:
-        """Add a new stop to the trip itinerary. Returns the created node (including its ID) and any edge created.
+        """Add a new stop to the trip itinerary. Returns the created node (including its ID).
 
-        Use the returned node ID in subsequent calls (e.g., as connect_after_node_id for the next add_node).
+        Use the returned node ID in subsequent add_edge calls to connect stops.
         NEVER use placeholder strings — only use real IDs from the trip context or from previous tool results.
 
         Args:
@@ -39,10 +34,6 @@ def create_agent_tools(executor: ToolExecutor, can_mutate: bool = True) -> list:
             lat: Latitude of the stop.
             lng: Longitude of the stop.
             place_id: Google Places ID if known.
-            connect_after_node_id: Existing node ID (from trip context [brackets] or a previous add_node result) to insert after. Omit when adding the first stop to an empty trip.
-            travel_mode: Travel mode from the preceding node - one of: drive, flight, transit, walk. Default: drive.
-            travel_time_hours: Travel time in hours from the preceding node.
-            distance_km: Distance in km from the preceding node.
             arrival_time: ISO 8601 arrival datetime (e.g., 2026-04-10T14:00:00Z).
             departure_time: ISO 8601 departure datetime.
         """
@@ -52,10 +43,6 @@ def create_agent_tools(executor: ToolExecutor, can_mutate: bool = True) -> list:
             "lat": lat,
             "lng": lng,
             "place_id": place_id,
-            "connect_after_node_id": connect_after_node_id,
-            "travel_mode": travel_mode,
-            "travel_time_hours": travel_time_hours,
-            "distance_km": distance_km,
             "arrival_time": arrival_time,
             "departure_time": departure_time,
         })
@@ -102,28 +89,19 @@ def create_agent_tools(executor: ToolExecutor, can_mutate: bool = True) -> list:
         from_node_id: str,
         to_node_id: str,
         travel_mode: str = "drive",
-        travel_time_hours: float = None,
-        distance_km: float = None,
     ) -> dict:
-        """Create a connection between two existing stops.
+        """Create a connection between two existing stops. Travel time and distance are auto-calculated.
 
         Args:
             from_node_id: ID of the source node.
             to_node_id: ID of the destination node.
             travel_mode: Travel mode - one of: drive, flight, transit, walk. Default: drive.
-            travel_time_hours: Travel time in hours (optional, can be inferred).
-            distance_km: Distance in km (optional, can be inferred).
         """
-        args = {
+        return await executor.execute("add_edge", {
             "from_node_id": from_node_id,
             "to_node_id": to_node_id,
             "travel_mode": travel_mode,
-        }
-        if travel_time_hours is not None:
-            args["travel_time_hours"] = travel_time_hours
-        if distance_km is not None:
-            args["distance_km"] = distance_km
-        return await executor.execute("add_edge", args)
+        })
 
     async def delete_edge(edge_id: str) -> dict:
         """Remove a connection between two stops.
@@ -143,6 +121,38 @@ def create_agent_tools(executor: ToolExecutor, can_mutate: bool = True) -> list:
         """
         return await executor.execute("get_plan", {})
 
+    return {
+        "add_node": add_node,
+        "update_node": update_node,
+        "delete_node": delete_node,
+        "add_edge": add_edge,
+        "delete_edge": delete_edge,
+        "get_plan": get_plan,
+    }
+
+
+def create_agent_tools(executor: ToolExecutor, can_mutate: bool = True) -> list:
+    """Create async callables for the ongoing trip management agent.
+
+    Returns all 6 tools when can_mutate=True, or just get_plan when False.
+    """
+    tools = _define_all_tools(executor)
     if can_mutate:
-        return [add_node, update_node, delete_node, add_edge, delete_edge, get_plan]
-    return [get_plan]
+        return list(tools.values())
+    return [tools["get_plan"]]
+
+
+def create_build_tools(executor: ToolExecutor) -> list:
+    """Create the tool set for the build agent.
+
+    Includes add_node, add_edge, delete_node, delete_edge, and get_plan.
+    Excludes update_node since the build agent constructs a fresh DAG.
+    """
+    tools = _define_all_tools(executor)
+    return [
+        tools["add_node"],
+        tools["add_edge"],
+        tools["delete_node"],
+        tools["delete_edge"],
+        tools["get_plan"],
+    ]

@@ -4,6 +4,10 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTripContext } from "@/app/trips/[tripId]/layout";
 import { ChatMessages } from "@/components/chat/chat-messages";
+import {
+  BuildProgress,
+  type BuildAction,
+} from "@/components/dag/build-progress";
 import { api } from "@/lib/api";
 
 const MAX_INPUT_LENGTH = 10_000;
@@ -27,8 +31,10 @@ interface ChatResponse {
 
 interface BuildResponse {
   plan_id: string;
+  summary: string;
   nodes_created: number;
   edges_created: number;
+  actions_taken: BuildAction[];
 }
 
 export default function ImportPage() {
@@ -42,6 +48,10 @@ export default function ImportPage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [building, setBuilding] = useState(false);
+  const [buildActions, setBuildActions] = useState<BuildAction[]>([]);
+  const [buildPhase, setBuildPhase] = useState<
+    "preparing" | "nodes" | "edges" | "verifying" | "complete"
+  >("preparing");
   const [error, setError] = useState<string | null>(null);
 
   async function handleSend() {
@@ -81,17 +91,49 @@ export default function ImportPage() {
 
   async function handleBuild() {
     setBuilding(true);
+    setBuildActions([]);
+    setBuildPhase("preparing");
     setError(null);
 
     try {
-      await api.post<BuildResponse>(`/trips/${tripId}/import/build`, {
-        messages,
-      });
+      const data = await api.post<BuildResponse>(
+        `/trips/${tripId}/import/build`,
+        { messages },
+      );
+
+      // Replay actions with staggered delays for animation
+      const actions = data.actions_taken;
+      let currentPhase: typeof buildPhase = "preparing";
+
+      for (let i = 0; i < actions.length; i++) {
+        const action = actions[i];
+
+        // Determine phase from action type
+        if (action.type === "node_added" && currentPhase !== "nodes") {
+          currentPhase = "nodes";
+          setBuildPhase("nodes");
+        } else if (action.type === "edge_added" && currentPhase !== "edges") {
+          currentPhase = "edges";
+          setBuildPhase("edges");
+        }
+
+        // Stagger each action for visual effect
+        await new Promise((r) => setTimeout(r, 300));
+        setBuildActions((prev) => [...prev, action]);
+      }
+
+      // Verification phase
+      setBuildPhase("verifying");
+      await new Promise((r) => setTimeout(r, 1500));
+
+      // Complete
+      setBuildPhase("complete");
+      await new Promise((r) => setTimeout(r, 1200));
+
       refetch();
       router.push(`/trips/${tripId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to build trip");
-    } finally {
       setBuilding(false);
     }
   }
@@ -128,6 +170,28 @@ export default function ImportPage() {
       e.preventDefault();
       handleSend();
     }
+  }
+
+  // Full-screen build progress view
+  if (building) {
+    return (
+      <div className="flex flex-col flex-1 bg-surface">
+        <header className="flex items-center gap-3 px-5 py-4 bg-surface-lowest">
+          <div>
+            <h1 className="text-base font-bold text-on-surface">
+              Building Trip
+            </h1>
+            <p className="text-xs text-on-surface-variant">{trip?.name}</p>
+          </div>
+        </header>
+        <BuildProgress
+          actions={buildActions}
+          phase={buildPhase}
+          error={error}
+          onRetry={handleBuild}
+        />
+      </div>
+    );
   }
 
   return (
@@ -210,18 +274,6 @@ export default function ImportPage() {
           >
             Build Trip
           </button>
-        </div>
-      )}
-
-      {/* Building State */}
-      {building && (
-        <div className="px-5 py-4">
-          <div className="flex items-center justify-center gap-3">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-surface-high border-t-primary" />
-            <p className="text-sm text-on-surface-variant font-medium">
-              Building your trip...
-            </p>
-          </div>
         </div>
       )}
 

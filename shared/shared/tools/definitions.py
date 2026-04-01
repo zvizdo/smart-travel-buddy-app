@@ -3,15 +3,15 @@
 Each tool is a plain dict with name, description, parameters (JSON Schema),
 and is_mutation flag. These definitions are consumed by:
 - The Gemini agent (converted to async callables for AFC)
-- The MCP server (converted to @mcp.tool() handlers in Phase 9)
+- The MCP server (converted to @mcp.tool() handlers)
 """
 
 DAG_TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "add_node",
         "description": (
-            "Add a new stop to the trip itinerary. Optionally connect it after "
-            "an existing node by providing connect_after_node_id."
+            "Add a new stop to the trip itinerary. Returns the created node "
+            "with its ID. Use add_edge separately to connect it to other stops."
         ),
         "parameters": {
             "type": "object",
@@ -30,23 +30,6 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
                 "place_id": {
                     "type": "string",
                     "description": "Google Places ID if known",
-                },
-                "connect_after_node_id": {
-                    "type": "string",
-                    "description": "Node ID to insert this stop after (creates an edge)",
-                },
-                "travel_mode": {
-                    "type": "string",
-                    "enum": ["drive", "flight", "transit", "walk"],
-                    "description": "Travel mode from the preceding node. Default: drive",
-                },
-                "travel_time_hours": {
-                    "type": "number",
-                    "description": "Travel time in hours from the preceding node",
-                },
-                "distance_km": {
-                    "type": "number",
-                    "description": "Distance in km from the preceding node",
                 },
                 "arrival_time": {
                     "type": "string",
@@ -115,7 +98,10 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "add_edge",
-        "description": "Create a connection between two existing stops.",
+        "description": (
+            "Create a connection between two existing stops. "
+            "Travel time and distance are auto-calculated from the Routes API."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -131,14 +117,6 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "enum": ["drive", "flight", "transit", "walk"],
                     "description": "Travel mode. Default: drive",
-                },
-                "travel_time_hours": {
-                    "type": "number",
-                    "description": "Travel time in hours (optional, can be inferred)",
-                },
-                "distance_km": {
-                    "type": "number",
-                    "description": "Distance in km (optional, can be inferred)",
                 },
             },
             "required": ["from_node_id", "to_node_id"],

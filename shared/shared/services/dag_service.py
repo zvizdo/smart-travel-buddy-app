@@ -17,7 +17,7 @@ from shared.repositories.trip_repository import TripRepository
 from shared.tools.id_gen import edge_id, node_id, plan_id
 
 if TYPE_CHECKING:
-    from backend.src.services.route_service import RouteService
+    from shared.services.route_service import RouteService
 
 from shared.dag.assembler import AssemblyResult
 from shared.dag.cascade import compute_cascade, parse_dt
@@ -683,7 +683,11 @@ class DAGService:
         distance_km: float | None = None,
         route_polyline: str | None = None,
     ) -> dict:
-        """Create a standalone edge between two existing nodes."""
+        """Create a standalone edge between two existing nodes.
+
+        When route data (travel_time_hours, distance_km, route_polyline) is not
+        provided, fetches it synchronously from the Routes API before writing.
+        """
         from_node = await self._node_repo.get_node_or_raise(trip_id, plan_id, from_node_id)
         to_node = await self._node_repo.get_node_or_raise(trip_id, plan_id, to_node_id)
 
@@ -696,6 +700,21 @@ class DAGService:
         if to_node.lat_lng is not None:
             ll = to_node.lat_lng
             to_latlng = {"lat": ll.lat, "lng": ll.lng}
+
+        # Auto-fetch route data when not provided
+        if (
+            not route_polyline
+            and not travel_time_hours
+            and travel_mode != "flight"
+            and self._route_service is not None
+        ):
+            route_data = await self._route_service.get_route_data(
+                from_latlng, to_latlng, travel_mode
+            )
+            if route_data:
+                route_polyline = route_data.polyline
+                travel_time_hours = route_data.travel_time_hours or 0
+                distance_km = route_data.distance_km
 
         edge = Edge(
             id=edge_id(),

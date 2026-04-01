@@ -65,3 +65,24 @@ class OngoingChatResponse(BaseModel):
     reply: str
     actions_taken: list[ActionTaken] = []
     preferences_extracted: list[ExtractedPreference] = []
+
+
+class BuildDagReply(BaseModel):
+    """Structured reply from the build agent.
+
+    Used as response_schema for Gemini. Does NOT include actions_taken
+    because those are tracked by the backend from real tool executions.
+    """
+
+    summary: str
+    node_count: int
+    edge_count: int
+
+
+class BuildDagResponse(BaseModel):
+    """Full response returned to the frontend from the build endpoint."""
+
+    summary: str
+    actions_taken: list[ActionTaken] = []
+    node_count: int
+    edge_count: int

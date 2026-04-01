@@ -12,7 +12,7 @@ from backend.src.deps import (
     get_plan_repo,
     get_trip_service,
 )
-from backend.src.services.dag_service import DAGService
+from shared.services.dag_service import DAGService
 from backend.src.services.notification_service import NotificationService
 from backend.src.services.trip_service import TripService
 from fastapi import APIRouter, Depends

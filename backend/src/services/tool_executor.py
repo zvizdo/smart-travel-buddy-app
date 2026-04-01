@@ -2,7 +2,7 @@
 
 import logging
 
-from backend.src.services.dag_service import DAGService
+from shared.services.dag_service import DAGService
 
 from shared.agent.schemas import ActionTaken
 
@@ -49,10 +49,10 @@ class ToolExecutor:
 
     async def _handle_get_plan(self, args: dict) -> dict:
         """Fetch fresh plan state and return a text summary."""
-        from backend.src.services.agent_service import build_trip_context
+        from shared.tools.trip_context import format_trip_context
 
         dag = await self._dag.get_full_dag(self._trip_id, self._plan_id)
-        summary = build_trip_context(
+        summary = format_trip_context(
             dag["nodes"], dag["edges"], self._preferences
         )
         return {"plan_summary": summary}
@@ -65,10 +65,10 @@ class ToolExecutor:
             node_type=args["type"],
             lat=args["lat"],
             lng=args["lng"],
-            connect_after_node_id=args.get("connect_after_node_id"),
-            travel_mode=args.get("travel_mode", "drive"),
-            travel_time_hours=args.get("travel_time_hours", 0),
-            distance_km=args.get("distance_km"),
+            connect_after_node_id=None,
+            travel_mode="drive",
+            travel_time_hours=0,
+            distance_km=None,
             created_by=self._user_id,
             place_id=args.get("place_id"),
             arrival_time=args.get("arrival_time"),
@@ -143,8 +143,6 @@ class ToolExecutor:
             from_node_id=args["from_node_id"],
             to_node_id=args["to_node_id"],
             travel_mode=args.get("travel_mode", "drive"),
-            travel_time_hours=args.get("travel_time_hours", 0),
-            distance_km=args.get("distance_km"),
         )
         self.actions_taken.append(ActionTaken(
             type="edge_added",

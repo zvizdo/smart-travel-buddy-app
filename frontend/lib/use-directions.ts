@@ -20,6 +20,7 @@ interface ComputeRoutesRequest {
   origin: { location: { latLng: LatLng } };
   destination: { location: { latLng: LatLng } };
   travelMode: string;
+  routingPreference?: string;
 }
 
 interface ComputeRoutesResponse {
@@ -103,6 +104,7 @@ export function useDirections(
         origin: { location: { latLng: origin } },
         destination: { location: { latLng: destination } },
         travelMode: "DRIVE",
+        routingPreference: "TRAFFIC_UNAWARE",
       });
 
       if (requestId !== abortRef.current) return;

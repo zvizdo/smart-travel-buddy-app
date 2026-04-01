@@ -19,7 +19,7 @@ from backend.src.api import (
     trips,
     users,
 )
-from backend.src.services.route_service import RouteService
+from shared.services.route_service import RouteService
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse

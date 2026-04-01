@@ -1,5 +1,8 @@
 """Import chat, build, and ongoing agent endpoints."""
 
+import logging
+from datetime import UTC, datetime
+
 from backend.src.auth.firebase_auth import get_current_user
 from backend.src.auth.permissions import require_role
 from backend.src.deps import (
@@ -8,6 +11,7 @@ from backend.src.deps import (
     get_dag_service,
     get_edge_repo,
     get_node_repo,
+    get_plan_repo,
     get_preference_repo,
     get_trip_service,
     get_user_service,
@@ -15,15 +19,19 @@ from backend.src.deps import (
 from backend.src.repositories.chat_history_repository import ChatHistoryRepository
 from backend.src.repositories.preference_repository import PreferenceRepository
 from backend.src.services.agent_service import AgentService
-from backend.src.services.dag_service import DAGService
+from shared.services.dag_service import DAGService
 from backend.src.services.trip_service import TripService
 from backend.src.services.user_service import UserService
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from shared.models import TripRole
+from shared.models import Plan, PlanStatus, TripRole
 from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
+from shared.repositories.plan_repository import PlanRepository
+from shared.tools.id_gen import generate_id
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["agent"])
 
@@ -76,20 +84,50 @@ async def import_build(
     trip_service: TripService = Depends(get_trip_service),
     agent_service: AgentService = Depends(get_agent_service),
     dag_service: DAGService = Depends(get_dag_service),
+    plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
-    """Confirm and build the DAG from the finalized import conversation."""
+    """Build the DAG from the finalized import conversation using agent tools.
+
+    Creates an empty plan first, then the agent uses add_node/add_edge tools
+    to construct the DAG step-by-step. Nodes and edges are written to Firestore
+    as they are created, so the frontend can watch via onSnapshot.
+    """
     trip = await trip_service.get_trip(trip_id, user["uid"])
     require_role(trip, user["uid"], TripRole.ADMIN, TripRole.PLANNER)
 
-    messages = [m.model_dump() for m in body.messages]
-    assembly = await agent_service.build_dag(messages, user["uid"])
-
-    result = await dag_service.create_plan_from_assembly(
-        trip_id=trip_id,
-        assembly=assembly,
+    # Create an empty plan for the agent to populate
+    plan = Plan(
+        id=generate_id("p"),
+        name="Main Route",
+        status=PlanStatus.ACTIVE,
         created_by=user["uid"],
+        created_at=datetime.now(UTC),
     )
-    return result
+    await plan_repo.create_plan(trip_id, plan)
+
+    # Set as active plan
+    await dag_service._trip_repo.update_trip(trip_id, {
+        "active_plan_id": plan.id,
+        "updated_at": datetime.now(UTC).isoformat(),
+    })
+
+    # Run the build agent — nodes/edges are written to Firestore as they're created
+    messages = [m.model_dump() for m in body.messages]
+    result = await agent_service.build_dag(
+        messages=messages,
+        dag_service=dag_service,
+        trip_id=trip_id,
+        plan_id=plan.id,
+        user_id=user["uid"],
+    )
+
+    return {
+        "plan_id": plan.id,
+        "summary": result.summary,
+        "nodes_created": result.node_count,
+        "edges_created": result.edge_count,
+        "actions_taken": [a.model_dump() for a in result.actions_taken],
+    }
 
 
 @router.get("/trips/{trip_id}/agent/history")

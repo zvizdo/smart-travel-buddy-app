@@ -23,6 +23,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from pydantic import AnyHttpUrl
 
+import httpx
 from mcpserver.src.auth.api_key_auth import ApiKeyTokenVerifier, resolve_user_from_api_key
 from mcpserver.src.config import get_config
 from mcpserver.src.services.places_service import PlacesService
@@ -36,6 +37,8 @@ from shared.repositories import (
     TripRepository,
     UserRepository,
 )
+from shared.services.dag_service import DAGService
+from shared.services.route_service import RouteService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,8 +50,10 @@ class AppContext:
 
     db: AsyncClient
     trip_service: TripService
+    dag_service: DAGService
     places_service: PlacesService
     config: dict
+    http_client: httpx.AsyncClient | None = field(default=None)
     stdio_user_id: str | None = field(default=None)
 
 
@@ -115,19 +120,28 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         trip_repo, plan_repo, node_repo, edge_repo,
         action_repo, location_repo, user_repo,
     )
+    http_client = httpx.AsyncClient(limits=httpx.Limits(max_connections=20))
+    route_service = RouteService(http_client)
+    dag_service = DAGService(
+        trip_repo, plan_repo, node_repo, edge_repo,
+        route_service=route_service,
+    )
     places_service = PlacesService(config["google_maps_api_key"])
 
     try:
         yield AppContext(
             db=db,
             trip_service=trip_service,
+            dag_service=dag_service,
             places_service=places_service,
             config=config,
+            http_client=http_client,
             stdio_user_id=stdio_user_id,
         )
     finally:
         _verifier = None
         await places_service.close()
+        await http_client.aclose()
         db.close()
 
 
@@ -148,10 +162,11 @@ mcp = FastMCP(
 )
 
 # Import tools to register them with the server
-import mcpserver.src.tools.actions  # noqa: E402
-import mcpserver.src.tools.modify  # noqa: E402
-import mcpserver.src.tools.places  # noqa: E402
-import mcpserver.src.tools.trips  # noqa: F401, E402
+import mcpserver.src.tools.actions  # noqa: E402, F401
+import mcpserver.src.tools.nodes  # noqa: E402, F401
+import mcpserver.src.tools.edges  # noqa: E402, F401
+import mcpserver.src.tools.places  # noqa: E402, F401
+import mcpserver.src.tools.trips  # noqa: E402, F401
 
 
 def main():

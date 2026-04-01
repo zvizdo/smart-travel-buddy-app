@@ -19,6 +19,7 @@ class CreateTripRequest(BaseModel):
 
 class UpdateTripSettingsRequest(BaseModel):
     datetime_format: str | None = None
+    date_format: str | None = None
     distance_unit: str | None = None
 
 
@@ -78,6 +79,8 @@ async def update_trip_settings(
     current = trip.settings.model_dump()
     if body.datetime_format is not None:
         current["datetime_format"] = body.datetime_format
+    if body.date_format is not None:
+        current["date_format"] = body.date_format
     if body.distance_unit is not None:
         current["distance_unit"] = body.distance_unit
 

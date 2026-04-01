@@ -7,7 +7,7 @@ Four sub-projects in a monorepo. Single `travel-app` conda env for all Python.
 ```
 frontend/     Next.js 16.2 + React 19.2 + Tailwind 4 (pnpm)
 backend/      FastAPI + google-cloud-firestore[async] + google-genai
-shared/       Pydantic models + repositories + agent config + DAG logic (pip install -e)
+shared/       Pydantic models + repositories + agent config + DAG logic + services (pip install -e)
 mcpserver/    FastMCP server — streamable-http, per-request Bearer auth
 ```
 
@@ -16,14 +16,6 @@ Auth: Firebase Auth (frontend) -> `firebase-admin` token verification (backend).
 All Google Cloud auth via ADC — no service account JSON files.
 
 ## Deployment
-
-Three Cloud Run services in `europe-west1`, GCP project `as-dev-anze`.
-
-| Service | Cloud Run name | URL |
-|---|---|---|
-| Frontend | `smart-travel-buddy` | `https://smart-travel-buddy-px6atnevbq-ew.a.run.app` |
-| Backend | `smart-travel-buddy-backend` | `https://smart-travel-buddy-backend-px6atnevbq-ew.a.run.app` |
-| MCP Server | `smart-travel-buddy-mcpserver` | `https://smart-travel-buddy-mcpserver-px6atnevbq-ew.a.run.app` |
 
 Deploy script: `./deploy/deploy.sh [setup|all|frontend|backend|mcpserver]`. Images stored in Artifact Registry (`europe-west1-docker.pkg.dev/as-dev-anze/stb-images`), tagged by git SHA. See `deploy/` for Dockerfiles and Cloud Build configs.
 
@@ -94,14 +86,14 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 | Service | Key methods |
 |---|---|
 | `TripService` | `create_trip` (caller=Admin, stores `display_name` in participant), `get_trip` (verifies participant), `list_trips` |
-| `DAGService` | `create_plan_from_assembly`, `get_full_dag`, `create_node` (+connect), `delete_node` (+reconnect), `create_branch`, `update_node_with_cascade_preview` (BFS, auto-recalculates connected polylines on lat_lng change), `confirm_cascade`, `create_standalone_edge`, `delete_edge_by_id`, `split_edge` (atomic: delete old edge + create node + 2 new edges via batch write, proportional travel-time splitting), `create_connected_node` (multi-connection with cycle detection via `detect_cycle`, batch write), `cleanup_stale_participant_ids`. `_create_edge_if_new()` prevents duplicates + fires background polyline fetch. `_recalculate_connected_polylines()` fires background polyline fetch for all non-flight edges connected to a node. |
-| `AgentService` | `import_chat` (Gemini->ImportChatResponse), `build_dag` (spine+branches->assemble_dag), `ongoing_chat` (AFC with DAG tools+grounding) |
+| `DAGService` | **Now in `shared/shared/services/`**. `create_plan_from_assembly`, `get_full_dag`, `create_node`, `delete_node` (+reconnect), `create_branch`, `update_node_with_cascade_preview` (BFS, auto-recalculates connected polylines on lat_lng change), `confirm_cascade`, `create_standalone_edge` (auto-fetches route data synchronously from Routes API), `delete_edge_by_id`, `split_edge`, `create_connected_node` (multi-connection with cycle detection), `cleanup_stale_participant_ids`. |
+| `AgentService` | `import_chat` (Gemini->ImportChatResponse), `build_dag` (spine+branches->assemble_dag), `ongoing_chat` (AFC with DAG tools+grounding). Uses shared `format_trip_context()` for context formatting. |
 | `PlanService` | `clone_plan` (deep clone, new UUIDs), `promote_plan` (swap active, demote old to draft), `delete_plan` (non-active only, batched: parallel list + WriteBatch delete of edges/actions/nodes/plan) |
 | `NotificationService` | `create_notification`, `notify_member_joined`, `notify_unresolved_paths` |
 | `InviteService` | `generate_invite` (token), `claim_invite` (adds participant with `display_name`) |
 | `UserService` | `ensure_user` (upsert on sign-in), `update_user` (name, location tracking), `get_users_batch` (bulk name+setting lookup) |
-| `RouteService` | `get_polyline(from_latlng, to_latlng, travel_mode)`, `fetch_and_patch_polyline` (fire-and-forget background task). Uses ADC + `x-goog-user-project` header for Google Routes API v2. Returns `None` for flights. |
-| `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge` to DAGService. Tracks `actions_taken`. |
+| `RouteService` | **Now in `shared/shared/services/`**. `get_route_data()` returns `RouteData(polyline, travel_time_hours, distance_km)`. `get_polyline()` convenience wrapper. `fetch_and_patch_route_data()` background task patches all route fields. Uses ADC + Google Routes API v2. |
+| `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge` to DAGService. Tracks `actions_taken`. Agent tools are atomic: `add_node` (no connection params), `add_edge` (no travel data params — auto-fetched). |
 
 ### API Endpoints (`backend/src/api/`)
 
@@ -142,7 +134,16 @@ All Pydantic `BaseModel` with `StrEnum` for enums. Barrel export from `__init__.
 
 - **`schemas.py`**: `ImportChatResponse(reply, notes, ready_to_build)`, `AgentReply(reply, preferences_extracted)`, `OngoingChatResponse(reply, actions_taken, preferences_extracted)`.
 - **`config.py`**: `IMPORT_SYSTEM_PROMPT`, `ONGOING_SYSTEM_PROMPT` (confirm-before-acting). Grounding tools are SDK built-ins.
-- **`definitions.py`**: `DAG_TOOL_DEFINITIONS` — SDK-agnostic dicts with JSON Schema (reference only). Actual AFC tools live in `backend/src/services/agent_tools.py` as async callables with type hints + docstrings that the SDK auto-converts to FunctionDeclarations. Five tools: `add_node`, `update_node`, `delete_node`, `add_edge`, `delete_edge`.
+- **`definitions.py`**: `DAG_TOOL_DEFINITIONS` — SDK-agnostic dicts with JSON Schema (reference only). Actual AFC tools live in `backend/src/services/agent_tools.py` as async callables with type hints + docstrings that the SDK auto-converts to FunctionDeclarations. Five tools: `add_node` (standalone, no connection params), `update_node`, `delete_node`, `add_edge` (travel time/distance auto-fetched from Routes API), `delete_edge`.
+
+### Services (`shared/shared/services/`)
+
+- **`dag_service.py`**: `DAGService` — shared by both backend and MCP server. Manages plan creation, node CRUD, edge CRUD, cascade engine, cycle detection, polyline management. `create_standalone_edge()` auto-fetches route data (polyline, travel_time, distance) synchronously from Routes API when not provided.
+- **`route_service.py`**: `RouteService` — Google Routes API v2 client. `get_route_data()` returns `RouteData(polyline, duration_seconds, distance_meters)` with computed properties `travel_time_hours` and `distance_km`. `fetch_and_patch_route_data()` for background edge patching.
+
+### Tools (`shared/shared/tools/`)
+
+- **`trip_context.py`**: `format_trip_context()` — shared markdown formatter for trip DAG state. Used by both in-app agent (`build_trip_context`) and MCP server (`get_trip_context`).
 
 ### DAG (`shared/shared/dag/`)
 
@@ -234,16 +235,18 @@ Reads: `API_KEY_HMAC_SECRET`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_MAPS_API_KEY`, `MC
 ### Services (`mcpserver/src/services/`)
 | Service | Notes |
 |---|---|
-| `TripService` | Read/write trip DAG operations via shared repositories |
+| `TripService` | Read-only trip queries + action management. Mutation operations use shared `DAGService` directly. |
 | `PlacesService` | Google Places API wrapper for location search |
 
 ### Tools (`mcpserver/src/tools/`)
 | File | Tools |
 |---|---|
-| `trips.py` | List and read trips |
-| `modify.py` | Add/update/delete nodes and edges |
+| `trips.py` | `get_trips`, `get_trip_versions`, `get_trip_context` (uses shared `format_trip_context()`) |
+| `nodes.py` | `add_node` (atomic, no connection params), `update_node` (with auto-cascade), `delete_node` (with reconnection) |
+| `edges.py` | `add_edge` (atomic, route data auto-fetched), `delete_edge` |
 | `actions.py` | Manage node actions (notes, todos, places) |
 | `places.py` | Search for places via Google Places |
+| `_helpers.py` | `resolve_trip_plan()` — shared auth + plan resolution for mutation tools |
 
 ---
 
@@ -252,7 +255,7 @@ Reads: `API_KEY_HMAC_SECRET`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_MAPS_API_KEY`, `MC
 - SDK: `google-genai`. Client: `genai.Client(vertexai=True)`. Model: env `GEMINI_MODEL` (default `gemini-3-flash-preview`).
 - Structured output: `response_mime_type="application/json"` + `response_schema` (Pydantic model).
 - **Grounding tools**: `types.Tool(google_maps=types.GoogleMaps())`, `types.Tool(google_search=types.GoogleSearch())`.
-- **DAG tools (AFC)**: Async callables via `AutomaticFunctionCallingConfig(maximum_remote_calls=10)`. `ToolExecutor` dispatches to `DAGService`. Actions tracked by executor, not LLM.
+- **DAG tools (AFC)**: Async callables via `AutomaticFunctionCallingConfig(maximum_remote_calls=50)`. `ToolExecutor` dispatches to `DAGService`. Actions tracked by executor, not LLM. Tools are atomic: `add_node` creates a standalone stop, `add_edge` connects two stops (travel data auto-fetched from Routes API).
 - **Confirm-first**: Agent proposes changes, executes only after user confirms.
 - **Import flow**: Ephemeral (full `messages` array per request). Build step: Gemini returns JSON -> `assemble_dag()`.
 
@@ -272,4 +275,4 @@ Reads: `API_KEY_HMAC_SECRET`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_MAPS_API_KEY`, `MC
 - **Duplicate edge prevention**: `DAGService._create_edge_if_new()` on all user-facing creation paths.
 - **Bottom sheet state**: `DivergenceResolver` uses `hidden` prop (not conditional render) to preserve collapsed state.
 - **Node popups**: One `InfoWindow` at a time via parent-controlled `selectedNodeId`.
-- **Route polyline flow**: Frontend `useDirections` computes polyline via client-side Routes API → passed through API to backend → stored on Edge. Agent-created edges get polyline via backend `RouteService` fire-and-forget task. Node location updates trigger `_recalculate_connected_polylines()` which fires background polyline fetch for all connected non-flight edges; frontend tracks recalculating state and clears it when Firestore `onSnapshot` delivers updated polylines. Fan-out tethers and edge polylines use `clickable: false` / `pointerEvents: "none"` to avoid intercepting node/edge clicks.
+- **Route data flow**: `RouteService.get_route_data()` returns `RouteData(polyline, travel_time_hours, distance_km)` in a single API call. `create_standalone_edge()` fetches route data synchronously before writing (agent/MCP tool calls get complete data immediately). Frontend `useDirections` computes polyline via client-side Routes API → passed through API to backend → stored on Edge. Node location updates trigger `_recalculate_connected_polylines()` which fires background route data fetch for all connected non-flight edges; frontend tracks recalculating state and clears it when Firestore `onSnapshot` delivers updated data. Fan-out tethers and edge polylines use `clickable: false` / `pointerEvents: "none"` to avoid intercepting node/edge clicks.

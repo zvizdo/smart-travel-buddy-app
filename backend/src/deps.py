@@ -3,11 +3,11 @@ from backend.src.repositories.invite_link_repository import InviteLinkRepository
 from backend.src.repositories.notification_repository import NotificationRepository
 from backend.src.repositories.preference_repository import PreferenceRepository
 from backend.src.services.agent_service import AgentService
-from backend.src.services.dag_service import DAGService
+from shared.services.dag_service import DAGService
 from backend.src.services.invite_service import InviteService
 from backend.src.services.notification_service import NotificationService
 from backend.src.services.plan_service import PlanService
-from backend.src.services.route_service import RouteService
+from shared.services.route_service import RouteService
 from backend.src.services.trip_service import TripService
 from backend.src.services.user_service import UserService
 from fastapi import Depends, Request
@@ -75,10 +75,40 @@ def get_chat_history_repo(gcs: GCSClient = Depends(get_gcs)) -> ChatHistoryRepos
     return ChatHistoryRepository(gcs)
 
 
+def get_preference_repo(
+    db: AsyncClient = Depends(get_firestore),
+) -> PreferenceRepository:
+    return PreferenceRepository(db)
+
+
+def get_action_repo(
+    db: AsyncClient = Depends(get_firestore),
+) -> ActionRepository:
+    return ActionRepository(db)
+
+
 def get_trip_service(
     trip_repo: TripRepository = Depends(get_trip_repo),
+    plan_repo: PlanRepository = Depends(get_plan_repo),
+    node_repo: NodeRepository = Depends(get_node_repo),
+    edge_repo: EdgeRepository = Depends(get_edge_repo),
+    action_repo: ActionRepository = Depends(get_action_repo),
+    notification_repo: NotificationRepository = Depends(get_notification_repo),
+    location_repo: LocationRepository = Depends(get_location_repo),
+    invite_link_repo: InviteLinkRepository = Depends(get_invite_link_repo),
+    preference_repo: PreferenceRepository = Depends(get_preference_repo),
 ) -> TripService:
-    return TripService(trip_repo)
+    return TripService(
+        trip_repo,
+        plan_repo,
+        node_repo,
+        edge_repo,
+        action_repo,
+        notification_repo,
+        location_repo,
+        invite_link_repo,
+        preference_repo,
+    )
 
 
 def get_route_service(request: Request) -> RouteService | None:
@@ -108,18 +138,6 @@ def get_notification_service(
     notification_repo: NotificationRepository = Depends(get_notification_repo),
 ) -> NotificationService:
     return NotificationService(notification_repo)
-
-
-def get_preference_repo(
-    db: AsyncClient = Depends(get_firestore),
-) -> PreferenceRepository:
-    return PreferenceRepository(db)
-
-
-def get_action_repo(
-    db: AsyncClient = Depends(get_firestore),
-) -> ActionRepository:
-    return ActionRepository(db)
 
 
 def get_plan_service(

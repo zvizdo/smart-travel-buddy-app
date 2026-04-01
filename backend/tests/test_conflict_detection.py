@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from backend.src.services.dag_service import DAGService
+from shared.services.dag_service import DAGService
 
 from shared.models import Node, Participant, Trip, TripRole
 

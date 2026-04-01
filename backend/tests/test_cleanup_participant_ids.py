@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from backend.src.services.dag_service import DAGService
+from shared.services.dag_service import DAGService
 
 
 def _make_service():

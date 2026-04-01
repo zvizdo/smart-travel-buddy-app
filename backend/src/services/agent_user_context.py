@@ -23,6 +23,8 @@ def build_user_context(
     display_name: str,
     nodes: list[dict],
     edges: list[dict],
+    plan_id: str,
+    active_plan_id: str | None,
 ) -> UserContext:
     """Build user context from trip data and DAG topology.
 
@@ -32,9 +34,18 @@ def build_user_context(
         display_name: The user's display name, resolved from the users collection.
         nodes: All nodes in the current plan.
         edges: All edges in the current plan.
+        plan_id: The plan the user is currently viewing/chatting about.
+        active_plan_id: The trip's active plan ID (may be None).
     """
     participant = trip.participants[user_id]
-    can_mutate = participant.role in (TripRole.ADMIN, TripRole.PLANNER)
+
+    if participant.role == TripRole.ADMIN:
+        can_mutate = True
+    elif participant.role == TripRole.PLANNER:
+        can_mutate = plan_id != active_plan_id
+    else:
+        can_mutate = False
+
     resolved_path = _compute_user_path(user_id, nodes, edges)
 
     return UserContext(
@@ -81,7 +92,15 @@ def build_user_context_text(ctx: UserContext) -> str:
         "  - viewer: Can view and discuss the trip but CANNOT modify it.",
     ]
 
-    if not ctx.can_mutate:
+    if not ctx.can_mutate and ctx.role == TripRole.PLANNER:
+        lines.append("")
+        lines.append(
+            "This user is a PLANNER viewing the ACTIVE plan. You must NOT call add_node, "
+            "update_node, delete_node, add_edge, or delete_edge on this plan. If they ask "
+            "for changes, explain that planners can only modify draft/alternative plans, "
+            "not the active plan. Suggest they create or switch to a draft plan to make changes."
+        )
+    elif not ctx.can_mutate:
         lines.append("")
         lines.append(
             "This user is a VIEWER. You must NOT call add_node, update_node, "
