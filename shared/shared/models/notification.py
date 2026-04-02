@@ -11,6 +11,8 @@ class NotificationType(StrEnum):
     SCHEDULE_CHANGED = "schedule_changed"
     EDIT_CONFLICT = "edit_conflict"
     MEMBER_JOINED = "member_joined"
+    MEMBER_REMOVED = "member_removed"
+    ROLE_CHANGED = "role_changed"
     UNRESOLVED_PATH = "unresolved_path"
 
 

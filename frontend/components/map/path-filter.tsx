@@ -7,7 +7,7 @@ interface PathFilterProps {
 
 export function PathFilter({ mode, onModeChange }: PathFilterProps) {
   return (
-    <div className="absolute top-20 right-3 z-10 flex rounded-full glass-panel-dense shadow-soft overflow-hidden">
+    <div className="flex rounded-full glass-panel-dense shadow-soft overflow-hidden">
       <button
         onClick={() => onModeChange("mine")}
         className={`px-4 py-2 text-xs font-semibold transition-all ${

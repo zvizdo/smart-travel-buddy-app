@@ -147,6 +147,12 @@ export default function TripSettingsPage() {
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // Participant management
+  const [removeConfirm, setRemoveConfirm] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [changingRoleId, setChangingRoleId] = useState<string | null>(null);
+
   async function handleGenerateInvite() {
     setGenerating(true);
     try {
@@ -202,9 +208,49 @@ export default function TripSettingsPage() {
     }
   }
 
+  async function handleRemoveParticipant(uid: string) {
+    if (removeConfirm !== uid) {
+      setRemoveConfirm(uid);
+      return;
+    }
+    setRemovingId(uid);
+    setRemoveError(null);
+    try {
+      const result = await api.delete<{ self_removal: boolean }>(
+        `/trips/${tripId}/participants/${uid}`,
+      );
+      setRemoveConfirm(null);
+      if (result.self_removal) {
+        router.replace("/");
+      } else {
+        refetch();
+      }
+    } catch {
+      setRemoveError("Could not remove participant. Please try again.");
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
+  async function handleChangeRole(uid: string, newRole: string) {
+    setChangingRoleId(uid);
+    try {
+      await api.patch(`/trips/${tripId}/participants/${uid}`, { role: newRole });
+      refetch();
+    } catch {
+      // Error handled by api client
+    } finally {
+      setChangingRoleId(null);
+    }
+  }
+
   const participants = trip?.participants
     ? Object.entries(trip.participants)
     : [];
+
+  const adminCount = participants.filter(
+    ([, p]) => (p as { role: string }).role === "admin",
+  ).length;
 
   const settingsChanged =
     datetimeFormat !== (settings.datetime_format ?? "24h") ||
@@ -333,21 +379,107 @@ export default function TripSettingsPage() {
             Participants
           </h2>
           <div className="space-y-2">
-            {participants.map(([uid, p]) => (
-              <div
-                key={uid}
-                className="flex items-center justify-between rounded-2xl bg-surface-lowest px-4 py-3 shadow-soft"
-              >
-                <span className="text-sm font-medium text-on-surface truncate">
-                  {formatUserName((p as { role: string; display_name?: string }).display_name, uid)}
-                </span>
-                <span
-                  className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${ROLE_COLORS[(p as { role: string }).role] || ROLE_COLORS.viewer}`}
+            {participants.map(([uid, p]) => {
+              const role = (p as { role: string }).role;
+              const displayName = (p as { role: string; display_name?: string }).display_name;
+              const isSelf = uid === user?.uid;
+              const isRemoving = removingId === uid;
+              const isSoleAdmin = role === "admin" && adminCount <= 1;
+
+              return (
+                <div
+                  key={uid}
+                  className={`flex items-center gap-2 rounded-2xl bg-surface-lowest px-4 py-3 shadow-soft transition-opacity ${isRemoving ? "opacity-50 pointer-events-none" : ""}`}
                 >
-                  {(p as { role: string }).role}
-                </span>
+                  <span className="text-sm font-medium text-on-surface truncate flex-1 min-w-0">
+                    {isSelf ? "You" : formatUserName(displayName, uid)}
+                  </span>
+
+                  {/* Role: selector for admins viewing others, static badge otherwise */}
+                  {isAdmin && !isSelf ? (
+                    <select
+                      value={role}
+                      onChange={(e) => handleChangeRole(uid, e.target.value)}
+                      disabled={changingRoleId === uid || !online || (isSoleAdmin && role === "admin")}
+                      className={`appearance-none rounded-full px-2.5 py-0.5 text-xs font-medium capitalize cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed ${ROLE_COLORS[role] || ROLE_COLORS.viewer}`}
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="planner">Planner</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                  ) : (
+                    <span
+                      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${ROLE_COLORS[role] || ROLE_COLORS.viewer}`}
+                    >
+                      {role}
+                    </span>
+                  )}
+
+                  {/* Remove / Leave button — admin only */}
+                  {isAdmin && online && (
+                    isSelf ? (
+                      <button
+                        onClick={() => handleRemoveParticipant(uid)}
+                        disabled={isRemoving || isSoleAdmin}
+                        className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
+                          removeConfirm === uid
+                            ? "bg-error text-on-error"
+                            : "bg-error/10 text-error"
+                        }`}
+                      >
+                        {isRemoving
+                          ? "..."
+                          : removeConfirm === uid
+                            ? "Confirm"
+                            : "Leave"}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleRemoveParticipant(uid)}
+                        disabled={isRemoving || removingId !== null}
+                        className={`shrink-0 h-7 w-7 rounded-full flex items-center justify-center transition-all active:scale-95 disabled:opacity-40 ${
+                          removeConfirm === uid
+                            ? "bg-error text-on-error"
+                            : "text-on-surface-variant/60 hover:text-error hover:bg-error/10"
+                        }`}
+                        aria-label={`Remove ${formatUserName(displayName, uid)}`}
+                      >
+                        {removeConfirm === uid ? (
+                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                          </svg>
+                        ) : (
+                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                          </svg>
+                        )}
+                      </button>
+                    )
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Last admin warning */}
+            {isAdmin && adminCount <= 1 && (
+              <p className="text-xs text-on-surface-variant mt-2 px-1">
+                You are the only admin. Add another admin before leaving.
+              </p>
+            )}
+
+            {/* Remove error */}
+            {removeError && (
+              <div className="rounded-xl bg-error/10 px-4 py-3 flex items-center justify-between" role="alert">
+                <span className="text-xs font-medium text-error">{removeError}</span>
+                <button
+                  onClick={() => setRemoveError(null)}
+                  className="text-error/60 hover:text-error ml-3 text-sm"
+                  aria-label="Dismiss error"
+                >
+                  &times;
+                </button>
               </div>
-            ))}
+            )}
           </div>
         </section>
 

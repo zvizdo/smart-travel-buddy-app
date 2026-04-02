@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { useTripContext, type PlanData } from "@/app/trips/[tripId]/layout";
 import { useAuth } from "@/components/auth/auth-provider";
 import { api } from "@/lib/api";
@@ -28,6 +29,9 @@ import { Toast } from "@/components/ui/toast";
 import { ProfileAvatar } from "@/components/ui/profile-avatar";
 import { AgentOverlay } from "@/components/chat/agent-overlay";
 import { EdgeDisambiguationPicker } from "@/components/dag/edge-disambiguation-picker";
+import { TimelineView } from "@/components/timeline/timeline-view";
+import { TimelineViewToggle } from "@/components/timeline/timeline-view-toggle";
+import type { TimelineZoomLevel } from "@/lib/timeline-layout";
 
 interface NodeData {
   id: string;
@@ -64,7 +68,7 @@ interface CascadePreviewData {
 }
 
 export default function TripMapPage() {
-  const { tripId, trip, mapFitted, markMapFitted, mapCamera, setMapCamera, viewedPlanId, setViewedPlanId, setPlans } = useTripContext();
+  const { tripId, trip, plans, mapFitted, markMapFitted, mapCamera, setMapCamera, viewedPlanId, setViewedPlanId, setPlans } = useTripContext();
   const { user } = useAuth();
   const activePlanId = trip?.active_plan_id ?? null;
 
@@ -147,10 +151,30 @@ export default function TripMapPage() {
   const [cascadeLoading, setCascadeLoading] = useState(false);
 
   const [pathMode, setPathMode] = useState<"all" | "mine">("all");
+  const pathModeInitialized = useRef(false);
 
   const [addNodePlace, setAddNodePlace] = useState<PlaceResult | null>(null);
   const [insertEdgeId, setInsertEdgeId] = useState<string | null>(null);
   const [recalculatingEdges, setRecalculatingEdges] = useState<Set<string>>(new Set());
+
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const viewMode = searchParams.get("view") === "timeline" ? "timeline" : "map";
+  const setViewMode = useCallback(
+    (mode: "map" | "timeline") => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (mode === "timeline") {
+        params.set("view", "timeline");
+      } else {
+        params.delete("view");
+      }
+      const qs = params.toString();
+      router.replace(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false });
+    },
+    [searchParams, router, pathname],
+  );
+  const [timelineZoom, setTimelineZoom] = useState<TimelineZoomLevel>(0);
 
   const [activeTab, setActiveTab] = useState<"map" | "agent" | "settings">("map");
   const [showCreateDraft, setShowCreateDraft] = useState(false);
@@ -231,6 +255,25 @@ export default function TripMapPage() {
     if (nodes.length === 0 || edges.length === 0) return null;
     return computeParticipantPaths(nodes, edges, participantIds);
   }, [nodes, edges, participantIds]);
+
+  // Default to "my path" view when the user has any resolved path choices
+  useEffect(() => {
+    if (pathModeInitialized.current || !pathResult || !user?.uid) return;
+    pathModeInitialized.current = true;
+
+    const myPath = pathResult.paths.get(user.uid);
+    if (!myPath || myPath.length === 0) return;
+
+    // Check if the user has explicitly chosen at any divergence
+    const hasAnyChoice = nodes.some((node) => {
+      const pids = node.participant_ids;
+      return pids && pids.includes(user.uid);
+    });
+
+    if (hasAnyChoice) {
+      setPathMode("mine");
+    }
+  }, [pathResult, user, nodes]);
 
   const edgeColors = useMemo(() => {
     if (!pathResult) return new Map<string, string>();
@@ -513,7 +556,24 @@ export default function TripMapPage() {
     // Keep the edge selected, open a map click handler
     setInsertEdgeId(selectedEdge.id);
     setSelectedEdgeId(null);
-    setToastMessage("Tap the map to place your new stop");
+    if (viewMode === "map") {
+      setToastMessage("Tap the map to place your new stop");
+    }
+  }
+
+  function handleTimelineInsertStop(edgeId: string) {
+    if (!canEdit) return;
+    setInsertEdgeId(edgeId);
+    setSelectedEdgeId(null);
+    // In timeline mode, open AddNodeSheet in search-first mode (no map tap needed)
+    setAddNodePlace({ name: "", placeId: "", lat: 0, lng: 0, types: [] } as PlaceResult);
+  }
+
+  function handleTimelineAddNode() {
+    if (!canEdit) return;
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setAddNodePlace({ name: "", placeId: "", lat: 0, lng: 0, types: [] } as PlaceResult);
   }
 
   function handleDisambiguationPick(edgeId: string) {
@@ -641,16 +701,23 @@ export default function TripMapPage() {
     <div className="flex flex-col h-full relative overflow-hidden" style={{ "--bottom-nav-height": "56px" } as React.CSSProperties}>
       {/* Glass Header */}
       <header className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-4 py-3 glass-panel-dense">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <Link
             href="/"
-            className="h-9 w-9 rounded-full bg-surface-lowest/80 flex items-center justify-center text-on-surface-variant shadow-soft"
+            className="h-9 w-9 rounded-full bg-surface-lowest/80 flex items-center justify-center text-on-surface-variant shadow-soft shrink-0"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
             </svg>
           </Link>
-          <h1 className="text-sm font-bold text-on-surface truncate max-w-[140px]">{trip?.name}</h1>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-sm font-bold text-on-surface truncate">{trip?.name}</h1>
+            {viewedPlanId && viewedPlanId !== activePlanId && (
+              <p className="text-[10px] text-on-surface-variant truncate">
+                {plans.find((p: PlanData) => p.id === viewedPlanId)?.name ?? "Draft"}
+              </p>
+            )}
+          </div>
           <PlanSwitcher
             activePlanId={displayPlanId}
             onPlanSelect={(planId) =>
@@ -658,48 +725,80 @@ export default function TripMapPage() {
             }
             userRole={userRole}
             onCreateDraft={handleCloneToDraft}
+            isViewingDraft={!!viewedPlanId && viewedPlanId !== activePlanId}
           />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0 ml-2">
           <NotificationBell tripId={tripId} />
           <ProfileAvatar name={user?.displayName} size="sm" />
         </div>
       </header>
 
-      <div className="absolute top-12 left-0 right-0 z-20">
+      {/* Sub-toolbar: view toggle + path filter */}
+      <div className="absolute top-[60px] left-0 right-0 z-10 flex items-center justify-between px-4 py-1.5">
+        <TimelineViewToggle viewMode={viewMode} onToggle={setViewMode} />
+        {hasBranches && <PathFilter mode={pathMode} onModeChange={setPathMode} />}
+      </div>
+
+      <div className="absolute top-[104px] left-0 right-0 z-20">
         <OfflineBanner />
       </div>
 
-      {hasBranches && <PathFilter mode={pathMode} onModeChange={setPathMode} />}
-
-      <div className="flex-1 pt-12 min-h-0">
+      <div className="flex-1 pt-[104px] min-h-0">
         {loading ? (
           <div className="flex flex-1 items-center justify-center h-full">
             <div className="h-8 w-8 animate-spin rounded-full border-3 border-surface-high border-t-primary" />
           </div>
         ) : (
-          <TripMap
-            nodes={nodes}
-            edges={edges}
-            edgeColors={edgeColors}
-            mergeNodeIds={mergeNodeIds}
-            myNodeIds={myNodeIds}
-            myEdgeKeys={myEdgeKeys}
-            onNodeSelect={handleNodeSelect}
-            onEdgeSelect={handleEdgeSelect}
-            onMapClick={handleMapClick}
-            selectedNodeId={selectedNodeId}
-            selectedEdgeId={selectedEdgeId}
-            skipInitialFit={mapFitted}
-            onInitialFitDone={markMapFitted}
-            savedCamera={mapCamera}
-            onCameraChange={setMapCamera}
-            pulseLocations={liveLocations}
-            participants={trip?.participants}
-            currentUserId={user?.uid}
-            distanceUnit={distanceUnit}
-            recalculatingEdges={recalculatingEdges}
-          />
+          <>
+            <div className={viewMode === "timeline" ? "hidden" : "h-full"}>
+              <TripMap
+                nodes={nodes}
+                edges={edges}
+                edgeColors={edgeColors}
+                mergeNodeIds={mergeNodeIds}
+                myNodeIds={myNodeIds}
+                myEdgeKeys={myEdgeKeys}
+                onNodeSelect={handleNodeSelect}
+                onEdgeSelect={handleEdgeSelect}
+                onMapClick={handleMapClick}
+                selectedNodeId={selectedNodeId}
+                selectedEdgeId={selectedEdgeId}
+                skipInitialFit={mapFitted}
+                onInitialFitDone={markMapFitted}
+                savedCamera={mapCamera}
+                onCameraChange={setMapCamera}
+                pulseLocations={liveLocations}
+                participants={trip?.participants}
+                currentUserId={user?.uid}
+                distanceUnit={distanceUnit}
+                recalculatingEdges={recalculatingEdges}
+              />
+            </div>
+            <div className={viewMode === "map" ? "hidden" : "h-full"}>
+              <TimelineView
+                tripId={tripId}
+                nodes={nodes}
+                edges={edges}
+                pathResult={pathResult}
+                pathMode={pathMode}
+                currentUserId={user?.uid ?? null}
+                participants={trip?.participants ?? {}}
+                selectedNodeId={selectedNodeId}
+                selectedEdgeId={selectedEdgeId}
+                onNodeSelect={handleNodeSelect}
+                onEdgeSelect={handleEdgeSelect}
+                onInsertStop={handleTimelineInsertStop}
+                onAddNodeRequest={handleTimelineAddNode}
+                canEdit={canEdit}
+                datetimeFormat={datetimeFormat}
+                dateFormat={dateFormat}
+                distanceUnit={distanceUnit}
+                zoomLevel={timelineZoom}
+                onZoomChange={setTimelineZoom}
+              />
+            </div>
+          </>
         )}
       </div>
 
@@ -801,7 +900,8 @@ export default function TripMapPage() {
             !!addNodePlace ||
             !!cascadePreview ||
             !!insertEdgeId ||
-            !!disambiguationEdges
+            !!disambiguationEdges ||
+            viewMode === "timeline"
           }
         />
       )}
@@ -812,6 +912,7 @@ export default function TripMapPage() {
         activeTab={activeTab}
         onTabChange={handleTabChange}
         onPulseToast={setToastMessage}
+        showPulse={trip?.participants[user?.uid ?? ""]?.location_tracking_enabled === true}
       />
 
       {/* Agent overlay */}

@@ -8,6 +8,8 @@ interface PlanSwitcherProps {
   onPlanSelect: (planId: string) => void;
   userRole?: string;
   onCreateDraft?: () => void;
+  isViewingDraft?: boolean;
+  draftName?: string | null;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -21,11 +23,12 @@ export function PlanSwitcher({
   onPlanSelect,
   userRole,
   onCreateDraft,
+  isViewingDraft,
+  draftName,
 }: PlanSwitcherProps) {
   const { plans, plansLoading } = useTripContext();
   const [open, setOpen] = useState(false);
 
-  const activePlan = plans.find((p) => p.id === activePlanId);
   const hasMultiplePlans = plans.length > 1;
   const hasDraft = plans.some((p) => p.status === "draft");
   const showDraftPill = userRole === "planner" && !hasDraft && onCreateDraft;
@@ -48,13 +51,20 @@ export function PlanSwitcher({
       ) : null}
       <button
         onClick={() => setOpen(!open)}
-        className={`flex items-center gap-1.5 rounded-full bg-surface-lowest/80 px-3 py-1.5 text-xs font-semibold text-on-surface shadow-soft transition-all active:scale-95 ${!hasMultiplePlans ? "hidden" : ""}`}
+        className={`flex items-center gap-1 rounded-full bg-surface-lowest/80 px-2 py-1.5 text-on-surface shadow-soft transition-all active:scale-95 ${!hasMultiplePlans ? "hidden" : ""}`}
       >
-        <span className="truncate max-w-[100px]">
-          {activePlan?.name ?? "Plan"}
-        </span>
+        {/* Layers icon */}
+        <svg className="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" d="m12 2 10 6.5v7L12 22 2 15.5v-7L12 2Z" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="m2 8.5 10 6.5 10-6.5" />
+        </svg>
+        {isViewingDraft && (
+          <span className="inline-flex items-center rounded-full bg-tertiary-container/30 px-1.5 py-0.5 text-[9px] font-semibold text-on-tertiary-container">
+            Draft
+          </span>
+        )}
         <svg
-          className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`h-2.5 w-2.5 transition-transform ${open ? "rotate-180" : ""}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"

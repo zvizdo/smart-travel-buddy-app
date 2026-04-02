@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useState } from "react";
 import { ActionBadges } from "@/components/chat/action-badges";
+import { MarkdownContent } from "@/components/chat/markdown-content";
 import { api } from "@/lib/api";
 
 interface ActionTaken {
@@ -232,7 +233,11 @@ export function AgentOverlay({
                       : "self-start bg-surface-lowest text-on-surface shadow-soft"
                   }`}
                 >
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                  {msg.role === "user" ? (
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  ) : (
+                    <MarkdownContent content={msg.content} />
+                  )}
                 </div>
                 {msg.actions_taken && msg.actions_taken.length > 0 && (
                   <div className="max-w-[85%]">

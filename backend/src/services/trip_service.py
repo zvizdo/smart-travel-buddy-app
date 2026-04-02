@@ -3,6 +3,9 @@
 import asyncio
 from datetime import UTC, datetime
 
+from google.cloud.firestore_v1.transforms import DELETE_FIELD
+
+from backend.src.errors import ConflictError
 from backend.src.repositories.invite_link_repository import InviteLinkRepository
 from backend.src.repositories.notification_repository import NotificationRepository
 from backend.src.repositories.preference_repository import PreferenceRepository
@@ -202,3 +205,122 @@ class TripService:
                 "active_plan_id": t.get("active_plan_id"),
             })
         return results
+
+    async def remove_participant(
+        self, trip_id: str, target_user_id: str, actor_user_id: str
+    ) -> dict:
+        """Remove a participant from a trip.
+
+        Admins can remove anyone. Any participant can remove themselves (leave).
+        Cleans up participant_ids on all nodes and deletes location data.
+        """
+        from backend.src.auth.permissions import require_role
+
+        trip = await self.get_trip(trip_id, actor_user_id)
+
+        if actor_user_id != target_user_id:
+            require_role(trip, actor_user_id, TripRole.ADMIN)
+
+        if target_user_id not in trip.participants:
+            raise LookupError(f"User {target_user_id} is not a participant of this trip")
+
+        # Last-admin guard
+        if trip.participants[target_user_id].role == TripRole.ADMIN:
+            admin_count = sum(
+                1 for p in trip.participants.values() if p.role == TripRole.ADMIN
+            )
+            if admin_count <= 1:
+                raise ConflictError(
+                    "Cannot remove the last admin. Promote another participant to admin first, or delete the trip."
+                )
+
+        # Node cleanup: remove target from participant_ids across all plans
+        plans = await self._plan_repo.list_all(trip_id=trip_id)
+        nodes_cleaned = 0
+
+        if plans:
+            nodes_per_plan = await asyncio.gather(
+                *[self._node_repo.list_by_plan(trip_id, p["id"]) for p in plans]
+            )
+
+            db = self._trip_repo._db
+            batch = db.batch()
+            batch_count = 0
+
+            for plan, nodes in zip(plans, nodes_per_plan):
+                plan_id = plan["id"]
+                for node in nodes:
+                    pids = node.get("participant_ids")
+                    if pids and target_user_id in pids:
+                        new_pids = [pid for pid in pids if pid != target_user_id]
+                        node_ref = self._node_repo._collection(
+                            trip_id=trip_id, plan_id=plan_id
+                        ).document(node["id"])
+                        batch.update(node_ref, {
+                            "participant_ids": new_pids if new_pids else None
+                        })
+                        batch_count += 1
+                        nodes_cleaned += 1
+
+                        if batch_count >= 500:
+                            await batch.commit()
+                            batch = db.batch()
+                            batch_count = 0
+
+            if batch_count > 0:
+                await batch.commit()
+
+        # Location cleanup
+        try:
+            await self._location_repo.delete(target_user_id, trip_id=trip_id)
+        except Exception:
+            pass  # Location doc may not exist
+
+        # Remove from trip participants map
+        await self._trip_repo.update_trip(trip_id, {
+            f"participants.{target_user_id}": DELETE_FIELD,
+            "updated_at": datetime.now(UTC).isoformat(),
+        })
+
+        return {
+            "removed_user_id": target_user_id,
+            "self_removal": actor_user_id == target_user_id,
+            "nodes_cleaned": nodes_cleaned,
+        }
+
+    async def change_participant_role(
+        self, trip_id: str, target_user_id: str, new_role: str, actor_user_id: str
+    ) -> dict:
+        """Change a participant's role. Admin only. Cannot change own role."""
+        from backend.src.auth.permissions import require_role
+
+        trip = await self.get_trip(trip_id, actor_user_id)
+        require_role(trip, actor_user_id, TripRole.ADMIN)
+
+        if actor_user_id == target_user_id:
+            raise ValueError("Cannot change your own role")
+
+        if target_user_id not in trip.participants:
+            raise LookupError(f"User {target_user_id} is not a participant of this trip")
+
+        new_role_enum = TripRole(new_role)
+
+        # Last-admin guard: prevent demoting the sole admin
+        if (
+            trip.participants[target_user_id].role == TripRole.ADMIN
+            and new_role_enum != TripRole.ADMIN
+        ):
+            admin_count = sum(
+                1 for p in trip.participants.values() if p.role == TripRole.ADMIN
+            )
+            if admin_count <= 1:
+                raise ConflictError(
+                    "Cannot demote the last admin. Promote another participant to admin first."
+                )
+
+        await self._trip_repo.update_trip(trip_id, {
+            f"participants.{target_user_id}.role": new_role_enum.value,
+            "updated_at": datetime.now(UTC).isoformat(),
+        })
+
+        return {"user_id": target_user_id, "new_role": new_role_enum.value}

@@ -50,6 +50,46 @@ class NotificationService:
             target_user_ids=targets,
         )
 
+    async def notify_member_removed(
+        self,
+        trip_id: str,
+        removed_user_name: str,
+        remaining_participant_ids: list[str],
+        self_removal: bool,
+    ) -> dict:
+        """Create a notification when a member is removed or leaves."""
+        if not remaining_participant_ids:
+            return {}
+        message = (
+            f"{removed_user_name} left the trip"
+            if self_removal
+            else f"{removed_user_name} was removed from the trip"
+        )
+        return await self.create_notification(
+            trip_id=trip_id,
+            notification_type=NotificationType.MEMBER_REMOVED,
+            message=message,
+            target_user_ids=remaining_participant_ids,
+        )
+
+    async def notify_role_changed(
+        self,
+        trip_id: str,
+        target_user_name: str,
+        actor_user_name: str,
+        new_role: str,
+        all_participant_ids: list[str],
+    ) -> dict:
+        """Create a notification when a participant's role is changed."""
+        if not all_participant_ids:
+            return {}
+        return await self.create_notification(
+            trip_id=trip_id,
+            notification_type=NotificationType.ROLE_CHANGED,
+            message=f"{actor_user_name} changed {target_user_name}'s role to {new_role}",
+            target_user_ids=all_participant_ids,
+        )
+
     async def notify_unresolved_paths(
         self,
         trip_id: str,

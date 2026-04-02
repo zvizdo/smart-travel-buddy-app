@@ -13,6 +13,7 @@ from backend.src.api import (
     invites,
     nodes,
     notifications,
+    participants,
     paths,
     plans,
     pulse,
@@ -23,6 +24,7 @@ from shared.services.route_service import RouteService
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from backend.src.errors import ConflictError
 from shared.dag.cycle import CycleDetectedError
 from google.cloud.firestore import AsyncClient
 from google.cloud.storage import Client as GCSClient
@@ -87,6 +89,14 @@ async def permission_error_handler(request: Request, exc: PermissionError):
     )
 
 
+@app.exception_handler(ConflictError)
+async def conflict_handler(request: Request, exc: ConflictError):
+    return JSONResponse(
+        status_code=409,
+        content={"error": {"code": "CONFLICT", "message": str(exc)}},
+    )
+
+
 @app.exception_handler(LookupError)
 async def not_found_handler(request: Request, exc: LookupError):
     return JSONResponse(
@@ -113,6 +123,7 @@ app.include_router(edges.router, prefix="/api/v1")
 app.include_router(invites.router, prefix="/api/v1")
 app.include_router(paths.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(participants.router, prefix="/api/v1")
 app.include_router(plans.router, prefix="/api/v1")
 app.include_router(pulse.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")

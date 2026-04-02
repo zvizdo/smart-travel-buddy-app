@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { api } from "@/lib/api";
 import { useOnlineStatus } from "@/components/ui/offline-banner";
 import { enqueuePulse } from "@/lib/offline-queue";
@@ -10,30 +10,13 @@ interface PulseButtonProps {
   onToast?: (message: string) => void;
 }
 
-interface UserProfile {
-  location_tracking_enabled?: boolean;
-}
-
 export function PulseButton({ tripId, onToast }: PulseButtonProps) {
   const [status, setStatus] = useState<
     "idle" | "locating" | "sending" | "done" | "error"
   >("idle");
   const online = useOnlineStatus();
-  const [locationEnabled, setLocationEnabled] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    api
-      .get<UserProfile>("/users/me")
-      .then((data) => setLocationEnabled(data.location_tracking_enabled ?? false))
-      .catch(() => setLocationEnabled(false));
-  }, []);
 
   const handlePulse = useCallback(async () => {
-    if (locationEnabled === false) {
-      onToast?.("Enable location sharing in your profile first");
-      return;
-    }
-
     setStatus("locating");
 
     if (!navigator.geolocation) {
@@ -85,19 +68,14 @@ export function PulseButton({ tripId, onToast }: PulseButtonProps) {
       setStatus("error");
       setTimeout(() => setStatus("idle"), 3000);
     }
-  }, [tripId, online, onToast, locationEnabled]);
-
-  // Don't render the button if location tracking is disabled
-  if (locationEnabled === false) {
-    return null;
-  }
+  }, [tripId, online, onToast]);
 
   const isActive = status === "locating" || status === "sending";
 
   return (
     <button
       onClick={handlePulse}
-      disabled={isActive || locationEnabled === null}
+      disabled={isActive}
       className={`h-8 w-8 rounded-full flex items-center justify-center transition-all active:scale-90 ${
         status === "done"
           ? "bg-secondary text-on-secondary"

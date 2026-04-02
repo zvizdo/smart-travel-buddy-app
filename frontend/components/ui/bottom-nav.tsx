@@ -10,6 +10,7 @@ interface BottomNavProps {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
   onPulseToast?: (message: string) => void;
+  showPulse?: boolean;
 }
 
 export function BottomNav({
@@ -17,6 +18,7 @@ export function BottomNav({
   activeTab,
   onTabChange,
   onPulseToast,
+  showPulse = true,
 }: BottomNavProps) {
   return (
     <nav className="relative z-30 flex items-center justify-around bg-surface-lowest px-2 py-2 shadow-[0_-2px_12px_rgba(0,0,0,0.06)]">
@@ -63,9 +65,9 @@ export function BottomNav({
       </Link>
 
       {/* Pulse */}
-      <div className="flex flex-col items-center gap-0.5">
+      {showPulse && (
         <PulseButton tripId={tripId} onToast={onPulseToast} />
-      </div>
+      )}
     </nav>
   );
 }

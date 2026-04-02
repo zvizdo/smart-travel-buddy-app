@@ -166,6 +166,31 @@ GCS: {bucket}/{user_id}/{trip_id}/chat-history.json  # 12h session, 7-day lifecy
 | `AgentOverlay` | Slide-up chat, sends `plan_id` to scope agent to viewed plan |
 | `PulseButton` / `PulseAvatars` | GPS check-in + other users' positions. Hidden when `location_tracking_enabled` is false. |
 | `OfflineBanner` | Disables edits when offline. Absolutely positioned below glass header (`top-12 z-20`). |
+| `TimelineView` | Vertical timeline with date gutter, multi-lane support, zoom controls (0-4), current-time indicator. |
+| `TimelineLane` | Renders one lane: positioned node blocks, edge connectors, gap indicators, diverge/merge chips. |
+| `TimelineNodeBlock` | Node card with type-colored left border, time display, shared-node badge. |
+| `TimelineEdgeConnector` | Travel mode icon, duration/distance label, timezone transition indicator, insert-stop button. |
+
+### Timeline Layout Engine (`lib/timeline-layout.ts`)
+
+Pure function `computeTimelineLayout()` — no React. Takes nodes, edges, path result, and zoom level; returns `TimelineLayout` with lanes, date markers, and total height.
+
+**Lane strategy** (`determineLanes`):
+1. **"mine" mode**: single lane scoped to current user's participant path.
+2. **"all" mode**: topology-based rendering — if the DAG has branches (out-degree≥2 or multiple roots), it uses `findAllPaths` algorithms via `computeTopologyLanes()` to map every distinct topological path to a lane. It ensures *all* underlying path possibilities are shown regardless of participant assignments. Labels are automatically determined from `participant_ids` using exclusively-taken nodes for each distinct path option.
+3. **Fallback**: single `__all__` lane.
+
+**Multi-lane alignment**: When `laneDefinitions.length > 1`, a global Y-position pass computes positions for all timed nodes across all lanes (sorted by arrival, with gap compression). Per-lane loops look up from this global map so shared nodes align at identical Y offsets.
+
+**Key invariant**: `earliestMs` and global positions are computed only from nodes in the lane definitions — nodes outside all lanes (e.g. unassigned roots) must not affect the time anchor.
+
+**Shared nodes**: Detected by counting node appearances across lane definitions. Nodes in 2+ lanes get `isShared=true`. `sharedNodeRole` is `"diverge"` (out-degree≥2) or `"merge"` (in-degree≥2), rendered as "Paths split"/"Paths rejoin" chips in `TimelineLane`.
+
+**Edge connectors**: Connector lines explicitly span the entire actual vertical distance gap between nodes visually (the original `MAX_CONNECTOR_HEIGHT_MULTI_LANE_PX` cap was intentionally removed) to prevent visual disconnections when space is shared with dense alternate multi-lanes.
+
+**Gap compression**: Idle periods > 8h between consecutive nodes are compressed to 40px indicators showing "~Xh idle" or "~X days idle".
+
+**Frontend path computation** (`lib/path-computation.ts`): mirrors `shared/shared/dag/paths.py`. `computeParticipantPaths()` — BFS per participant with multi-root `__root__` divergence handling. Used by both timeline and map views.
 
 ---
 
@@ -200,3 +225,5 @@ FastMCP server for external AI agents via Model Context Protocol. Transport: `st
 - **Duplicate edge prevention**: `DAGService._create_edge_if_new()` on all creation paths.
 - **Route data flow**: `create_standalone_edge()` fetches route data synchronously. `_recalculate_connected_polylines()` only fires when `lat_lng` actually changes (old vs new comparison). Frontend sets `recalculatingEdges` shimmer only on real coordinate changes, cleared on `onSnapshot`.
 - **Implicit branching**: No `branch_id` on edges. Paths derived at runtime from DAG topology + `participant_ids`. Divergence = out-degree>1 or multiple root nodes.
+- **Timeline zoom**: 5 levels (0-4), `PX_PER_HOUR` = [8, 16, 32, 60, 120]. Scroll position anchored on zoom change so content stays centered.
+- **Timeline lane alignment**: Multi-lane Y positions are computed globally, not per-lane. Adding per-lane gap compression or independent Y computation breaks cross-lane alignment of shared nodes. A `START_OFFSET_PX` is mathematically added to initial Y positions everywhere to reserve visual padding inside the scroll container without destroying CSS `sticky top-0` behaviors for sticky participant lane labels.

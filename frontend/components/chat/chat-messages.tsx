@@ -1,5 +1,7 @@
 "use client";
 
+import { MarkdownContent } from "@/components/chat/markdown-content";
+
 interface Note {
   category: string;
   content: string;
@@ -39,7 +41,11 @@ export function ChatMessages({ messages, notes, loading }: ChatMessagesProps) {
               : "self-start bg-surface-lowest text-on-surface shadow-soft"
           }`}
         >
-          <p className="whitespace-pre-wrap">{msg.content}</p>
+          {msg.role === "user" ? (
+            <p className="whitespace-pre-wrap">{msg.content}</p>
+          ) : (
+            <MarkdownContent content={msg.content} />
+          )}
         </div>
       ))}
 
