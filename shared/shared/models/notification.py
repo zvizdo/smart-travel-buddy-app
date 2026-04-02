@@ -13,7 +13,6 @@ class NotificationType(StrEnum):
     MEMBER_JOINED = "member_joined"
     MEMBER_REMOVED = "member_removed"
     ROLE_CHANGED = "role_changed"
-    UNRESOLVED_PATH = "unresolved_path"
 
 
 class RelatedEntity(BaseModel):

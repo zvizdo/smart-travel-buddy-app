@@ -190,23 +190,3 @@ select {
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%);
 }
 
-.gradient-hero {
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 60%, var(--secondary-container) 100%);
-}
-
-/* Ghost border — for same-background containers (15% opacity outline-variant) */
-.ghost-border {
-  box-shadow: inset 0 0 0 1px rgba(166, 175, 174, 0.15);
-}
-
-/* ========================================================================
-   Scrollbar Hiding
-   ======================================================================== */
-
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}

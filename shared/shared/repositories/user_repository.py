@@ -1,7 +1,6 @@
 from typing import Any
 
 from google.cloud.firestore import AsyncClient
-from google.cloud.firestore_v1.base_query import FieldFilter
 
 from shared.models import ApiKey, User
 from shared.repositories.base_repository import BaseRepository
@@ -40,20 +39,6 @@ class UserRepository(BaseRepository):
         """List all API keys for a user."""
         docs = self._db.collection(f"users/{user_id}/api_keys").stream()
         return [doc.to_dict() async for doc in docs]
-
-    async def get_api_key_by_hash(
-        self, user_id: str, key_hash: str
-    ) -> dict[str, Any] | None:
-        """Find an active API key by its hash."""
-        docs = (
-            self._db.collection(f"users/{user_id}/api_keys")
-            .where(filter=FieldFilter("key_hash", "==", key_hash))
-            .where(filter=FieldFilter("is_active", "==", True))
-            .stream()
-        )
-        async for doc in docs:
-            return doc.to_dict()
-        return None
 
     async def deactivate_api_key(self, user_id: str, key_id: str) -> None:
         """Deactivate an API key."""

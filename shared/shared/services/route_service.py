@@ -153,19 +153,6 @@ class RouteService:
             )
             return None
 
-    async def get_polyline(
-        self,
-        from_latlng: dict | None,
-        to_latlng: dict | None,
-        travel_mode: str,
-    ) -> str | None:
-        """Return an encoded polyline string for the given route, or None.
-
-        Convenience wrapper around get_route_data() for callers that only need the polyline.
-        """
-        route_data = await self.get_route_data(from_latlng, to_latlng, travel_mode)
-        return route_data.polyline if route_data else None
-
     async def fetch_and_patch_route_data(
         self,
         trip_id: str,

@@ -26,25 +26,6 @@ export function formatDate(
 }
 
 /**
- * Format a UTC ISO string as date + time.
- * Uses the node's timezone if provided, otherwise browser local.
- * Example: "Jun 1, 10:00 AM"
- */
-export function formatDateTime(
-  iso: string | null | undefined,
-  timezone?: string,
-): string {
-  if (!iso) return "-";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: timezone || browserTz(),
-  }).format(new Date(iso));
-}
-
-/**
  * Format a UTC ISO string as a relative date for notifications.
  * Example: "Jun 1, 2026"
  */

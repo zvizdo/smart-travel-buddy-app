@@ -6,7 +6,6 @@
  */
 
 import { computeParticipantPaths, type PathResult } from "@/lib/path-computation";
-import { formatDate } from "@/lib/dates";
 import { formatUserName } from "@/lib/user-display";
 
 // ---------------------------------------------------------------------------
@@ -107,7 +106,6 @@ interface EdgeData {
 
 const MIN_NODE_HEIGHT_PX = 56;
 const MIN_CONNECTOR_HEIGHT_PX = 40;
-const MAX_CONNECTOR_HEIGHT_MULTI_LANE_PX = 96;
 const GAP_THRESHOLD_HOURS = 8;
 const GAP_COMPRESSED_HEIGHT_PX = 40;
 const ORPHAN_SPACING_PX = 72;

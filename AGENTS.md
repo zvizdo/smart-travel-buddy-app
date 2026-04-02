@@ -8,7 +8,7 @@ Four sub-projects in a monorepo. Single `travel-app` conda env for all Python.
 frontend/     Next.js 16.2 + React 19.2 + Tailwind 4 (pnpm)
 backend/      FastAPI + google-cloud-firestore[async] + google-genai
 shared/       Pydantic models + repositories + agent config + DAG logic + services (pip install -e)
-mcpserver/    FastMCP server — streamable-http, per-request Bearer auth
+mcpserver/    FastMCP server — streamable-http | sse | stdio, per-request Bearer auth
 ```
 
 Storage: Firestore (Native mode) + GCS for chat history.
@@ -40,7 +40,7 @@ Deploy: `./deploy/deploy.sh [setup|all|frontend|backend|mcpserver]`. Images in A
 ## Backend Architecture
 
 ### Entry Point (`backend/src/main.py`)
-Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `RouteService(http_client)`. CORS from `CORS_ORIGINS`. Exception handlers: `CycleDetectedError`->400, `ValueError`->422, `PermissionError`->403, `LookupError`->404. All routers under `/api/v1`. Health: `GET /health`.
+Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `RouteService(http_client)`. CORS from `CORS_ORIGINS`. Exception handlers: `CycleDetectedError`->400, `ConflictError`->409, `ValueError`->422, `PermissionError`->403, `LookupError`->404. All routers under `/api/v1`. Health: `GET /health`.
 
 ### Auth (`backend/src/auth/`)
 `get_current_user()`: `HTTPBearer` -> `auth.verify_id_token`. Returns decoded token dict (key: `uid`).
@@ -58,11 +58,12 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 |---|---|
 | `TripService` | `create_trip`, `get_trip` (verifies participant), `list_trips` |
 | `DAGService` | **In `shared/shared/services/`**. Node/edge CRUD, cascade engine, cycle detection, polyline management. `create_standalone_edge()` rejects cycles via `would_create_cycle()` before auto-fetching route data. |
-| `AgentService` | `import_chat` (Gemini->ImportChatResponse), `build_dag` (AFC with tools, constructs DAG step-by-step), `ongoing_chat` (AFC with DAG tools+grounding). |
+| `AgentService` | `import_chat`, `build_dag` (AFC with tools), `ongoing_chat` (AFC with DAG tools+grounding). |
+| `AgentUserContext` | `build_user_context()` — computes role, can_mutate, resolved path for the chatting user. |
 | `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge`, `get_plan` to DAGService. Converts `lat/lng` to `lat_lng` sub-object. Tracks `actions_taken`. |
 | `PlanService` | `clone_plan`, `promote_plan`, `delete_plan` (cascading batch delete) |
 | `RouteService` | **In `shared/shared/services/`**. Google Routes API v2. `get_route_data()` -> `RouteData(polyline, travel_time_hours, distance_km)`. |
-| `NotificationService` | `create_notification`, `notify_member_joined`, `notify_unresolved_paths` |
+| `NotificationService` | `create_notification`, `notify_member_joined`, `notify_member_removed`, `notify_role_changed` |
 | `InviteService` | `generate_invite` (token), `claim_invite` (adds participant) |
 | `UserService` | `ensure_user`, `update_user`, `get_users_batch` |
 
@@ -71,15 +72,16 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 | File | Endpoints |
 |---|---|
 | `trips.py` | `POST/GET /trips`, `GET/DELETE /trips/{id}`, `PATCH /trips/{id}/settings` |
-| `agent.py` | `POST .../import/chat`, `POST .../import/build` (creates plan + AFC build), `POST .../agent/chat` |
+| `agent.py` | `POST .../import/chat`, `POST .../import/build`, `GET/DELETE .../agent/history`, `POST .../agent/chat` |
 | `nodes.py` | CRUD + `POST .../nodes/connected`, `POST .../branch`, `POST .../cascade/confirm`, `PATCH .../participants`, `POST/DELETE .../choose` |
-| `edges.py` | `GET .../edges`, `POST .../edges/{edge_id}/split` |
+| `edges.py` | `GET .../edges`, `PATCH .../edges/{edge_id}`, `POST .../edges/{edge_id}/split` |
 | `paths.py` | `GET .../paths`, `GET .../warnings` |
 | `plans.py` | `POST/GET /trips/{id}/plans`, `DELETE .../plans/{id}`, `POST .../plans/{id}/promote` |
+| `participants.py` | `DELETE/PATCH /trips/{id}/participants/{user_id}` |
 | `notifications.py` | `GET /trips/{id}/notifications`, `PATCH .../notifications/{id}` |
 | `invites.py` | `POST .../invites`, `POST .../invites/{token}/claim` |
 | `pulse.py` | `POST /trips/{id}/pulse` |
-| `users.py` | `GET/PATCH /users/me`, `POST /users/batch` |
+| `users.py` | `GET/PATCH /users/me`, `POST /users/batch`, `POST/GET /users/me/api-keys`, `DELETE /users/me/api-keys/{id}` |
 
 ---
 
@@ -92,15 +94,15 @@ All Pydantic `BaseModel` with `StrEnum`. **All datetimes UTC-aware** via `dateti
 |---|---|
 | `Trip` | `id, name, created_by, active_plan_id, participants: dict[str, Participant], settings: TripSettings` |
 | `Plan` | `id, name, status: PlanStatus (active/draft/archived), created_by, parent_plan_id` |
-| `Node` | `id, name, type: NodeType (city/hotel/restaurant/place/activity), lat_lng, arrival_time, departure_time, duration_hours, timezone, participant_ids, place_id, created_by` |
+| `Node` | `id, name, type: NodeType (city/hotel/restaurant/place/activity), lat_lng, arrival_time, departure_time, timezone, participant_ids, order_index, place_id, created_by` |
 | `Edge` | `id, from_node_id, to_node_id, travel_mode (drive/flight/transit/walk), travel_time_hours, distance_km, route_polyline` |
 | `Notification` | `id, type, message, target_user_ids, read_by, expire_at` (7-day TTL) |
-| `Preference` | `id, content, category, extracted_from` |
+| `Preference` | `id, content, category, extracted_from, created_by` |
 
 ### Agent (`shared/shared/agent/`)
 
 - **`schemas.py`**: `ImportChatResponse(reply, notes, ready_to_build)`, `AgentReply(reply, preferences_extracted)`, `OngoingChatResponse(reply, actions_taken, preferences_extracted)`, `BuildDagReply(summary, node_count, edge_count)`, `BuildDagResponse(summary, actions_taken, node_count, edge_count)`.
-- **`config.py`**: `IMPORT_SYSTEM_PROMPT`, `ONGOING_SYSTEM_PROMPT` (confirm-before-acting), `BUILD_SYSTEM_PROMPT` (4-phase: spine nodes → branch nodes → edges → verify). Response schemas: `RESPONSE_SCHEMA`, `ONGOING_RESPONSE_SCHEMA`, `BUILD_RESPONSE_SCHEMA`.
+- **`config.py`**: `IMPORT_SYSTEM_PROMPT`, `ONGOING_SYSTEM_PROMPT` (confirm-before-acting), `BUILD_SYSTEM_PROMPT` (4-phase: spine nodes -> branch nodes -> edges -> verify). Response schemas: `RESPONSE_SCHEMA`, `ONGOING_RESPONSE_SCHEMA`, `BUILD_RESPONSE_SCHEMA`.
 
 ### Agent Tools (`backend/src/services/agent_tools.py`)
 
@@ -110,10 +112,14 @@ All Pydantic `BaseModel` with `StrEnum`. **All datetimes UTC-aware** via `dateti
 
 ### DAG (`shared/shared/dag/`)
 - **`cycle.py`**: `detect_cycle()` — iterative DFS for multi-connection node insertion. `would_create_cycle(from_id, to_id, edges)` — BFS check for standalone edge creation. `CycleDetectedError`, `get_ancestors/get_descendants`.
-- **`paths.py`**: `compute_participant_paths()` — BFS per participant. Multi-root `__root__` divergence handling. Frontend mirror: `frontend/lib/path-computation.ts`.
+- **`paths.py`**: `compute_participant_paths()` — BFS per participant. Multi-root `__root__` divergence handling. `detect_divergence_points()`. Frontend mirror: `frontend/lib/path-computation.ts`.
+- **`cascade.py`**: `compute_cascade()` — pure BFS cascade propagation of schedule changes downstream through the DAG. No I/O.
 
 ### Tools (`shared/shared/tools/`)
 - **`trip_context.py`**: `format_trip_context()` — shared markdown formatter used by both in-app agent and MCP server.
+- **`definitions.py`**: `DAG_TOOL_DEFINITIONS` — SDK-agnostic tool schemas consumed by both Gemini AFC and MCP `@mcp.tool()` handlers.
+- **`timezone.py`**: `resolve_timezone(lat, lng)` — IANA timezone resolution via `timezonefinder`.
+- **`id_gen.py`**: `node_id()`, `edge_id()`, `plan_id()`, `trip_id()`, `action_id()` — short typed IDs (e.g. `n_k3xd9mpq`).
 
 ---
 
@@ -159,13 +165,13 @@ GCS: {bucket}/{user_id}/{trip_id}/chat-history.json  # 12h session, 7-day lifecy
 | `TripMap` | Google Map with markers + polylines. Fan-out for co-located nodes. `fitBounds` with zoom clamp 3-14. |
 | `NodeMarker` | Type-colored icon badge, name label. Exports `TYPE_TOKENS` / `FALLBACK_TOKEN`. |
 | `EdgePolyline` | Route polylines with mode dash patterns, midpoint badge. `recalculating` shimmer animation. |
-| `BuildProgress` | Build animation: SVG node graph canvas, activity feed, phase indicators (preparing→nodes→edges→verifying→complete). |
+| `BuildProgress` | Build animation: SVG node graph canvas, activity feed, phase indicators (preparing->nodes->edges->verifying->complete). |
 | `NodeDetailSheet` | Bottom sheet: view/edit/branch modes with two-click delete |
 | `AddNodeSheet` | Add nodes with insert mode (`insertBetween`) and multi-connection mode (`ConnectionSelector`). |
 | `DivergenceResolver` | Path choices overlay. Handles out-degree>1 and `__root__` divergence. Uses `hidden` prop. |
 | `AgentOverlay` | Slide-up chat, sends `plan_id` to scope agent to viewed plan |
 | `PulseButton` / `PulseAvatars` | GPS check-in + other users' positions. Hidden when `location_tracking_enabled` is false. |
-| `OfflineBanner` | Disables edits when offline. Absolutely positioned below glass header (`top-12 z-20`). |
+| `OfflineBanner` | Inline banner with offline status via `useOnlineStatus()` hook. Disables edits when offline. |
 | `TimelineView` | Vertical timeline with date gutter, multi-lane support, zoom controls (0-4), current-time indicator. |
 | `TimelineLane` | Renders one lane: positioned node blocks, edge connectors, gap indicators, diverge/merge chips. |
 | `TimelineNodeBlock` | Node card with type-colored left border, time display, shared-node badge. |
@@ -177,28 +183,26 @@ Pure function `computeTimelineLayout()` — no React. Takes nodes, edges, path r
 
 **Lane strategy** (`determineLanes`):
 1. **"mine" mode**: single lane scoped to current user's participant path.
-2. **"all" mode**: topology-based rendering — if the DAG has branches (out-degree≥2 or multiple roots), it uses `findAllPaths` algorithms via `computeTopologyLanes()` to map every distinct topological path to a lane. It ensures *all* underlying path possibilities are shown regardless of participant assignments. Labels are automatically determined from `participant_ids` using exclusively-taken nodes for each distinct path option.
+2. **"all" mode**: topology-based — if DAG has branches (out-degree>=2 or multiple roots), uses `computeTopologyLanes()` to map every distinct topological path to a lane. Labels auto-determined from `participant_ids`.
 3. **Fallback**: single `__all__` lane.
 
-**Multi-lane alignment**: When `laneDefinitions.length > 1`, a global Y-position pass computes positions for all timed nodes across all lanes (sorted by arrival, with gap compression). Per-lane loops look up from this global map so shared nodes align at identical Y offsets.
+**Multi-lane alignment**: Global Y-position pass computes positions for all timed nodes across all lanes (sorted by arrival, with gap compression). Per-lane loops look up from this global map so shared nodes align at identical Y offsets.
 
-**Key invariant**: `earliestMs` and global positions are computed only from nodes in the lane definitions — nodes outside all lanes (e.g. unassigned roots) must not affect the time anchor.
+**Key invariant**: `earliestMs` and global positions are computed only from nodes in the lane definitions — nodes outside all lanes must not affect the time anchor.
 
-**Shared nodes**: Detected by counting node appearances across lane definitions. Nodes in 2+ lanes get `isShared=true`. `sharedNodeRole` is `"diverge"` (out-degree≥2) or `"merge"` (in-degree≥2), rendered as "Paths split"/"Paths rejoin" chips in `TimelineLane`.
+**Shared nodes**: Nodes in 2+ lanes get `isShared=true`. `sharedNodeRole` is `"diverge"` (out-degree>=2) or `"merge"` (in-degree>=2), rendered as "Paths split"/"Paths rejoin" chips.
 
-**Edge connectors**: Connector lines explicitly span the entire actual vertical distance gap between nodes visually (the original `MAX_CONNECTOR_HEIGHT_MULTI_LANE_PX` cap was intentionally removed) to prevent visual disconnections when space is shared with dense alternate multi-lanes.
+**Gap compression**: Idle periods > 8h compressed to 40px indicators showing "~Xh idle" or "~X days idle".
 
-**Gap compression**: Idle periods > 8h between consecutive nodes are compressed to 40px indicators showing "~Xh idle" or "~X days idle".
-
-**Frontend path computation** (`lib/path-computation.ts`): mirrors `shared/shared/dag/paths.py`. `computeParticipantPaths()` — BFS per participant with multi-root `__root__` divergence handling. Used by both timeline and map views.
+**Frontend path computation** (`lib/path-computation.ts`): mirrors `shared/shared/dag/paths.py`. `computeParticipantPaths()` — BFS per participant with multi-root `__root__` divergence handling.
 
 ---
 
 ## MCP Server (`mcpserver/`)
 
-FastMCP server for external AI agents via Model Context Protocol. Transport: `streamable-http` (Cloud Run) or `stdio` (local). Auth: HMAC API keys via `ApiKeyTokenVerifier`.
+FastMCP server for external AI agents via Model Context Protocol. Transport: `streamable-http` (Cloud Run), `sse`, or `stdio` (local). Auth: HMAC API keys via `ApiKeyTokenVerifier`.
 
-**Tools**: `get_trips`, `get_trip_versions`, `get_trip_context` | `add_node`, `update_node`, `delete_node` | `add_edge`, `delete_edge` | action CRUD | `search_places`. Shared `DAGService` for mutations, shared `format_trip_context()` for context.
+**Tools**: `get_trips`, `get_trip_versions`, `get_trip_context` | `add_node`, `update_node`, `delete_node` | `add_edge`, `delete_edge` | `add_action` | `search_places`, `suggest_stop`. Shared `DAGService` for mutations, shared `format_trip_context()` for context, shared `DAG_TOOL_DEFINITIONS` for tool schemas.
 
 ---
 
@@ -221,9 +225,10 @@ FastMCP server for external AI agents via Model Context Protocol. Transport: `st
 - **User display names**: `formatUserName()` returns "FirstName L." format. Never show raw UIDs.
 - **Location tracking**: `User.location_tracking_enabled`. Backend rejects pulse if disabled. Disabling deletes all location docs.
 - **CSS height chain**: Google Maps needs `html.h-full > body.h-full > container.h-full > map.h-full`. Use `min-h-0` on flex children.
-- **Overlay stacking**: Glass header `z-20`, OfflineBanner `top-12 z-20`, DivergenceResolver `bottom-[nav] z-20`, Bottom nav `z-30`.
+- **Overlay stacking**: Glass header `z-20`, DivergenceResolver `bottom-[nav] z-20`, Bottom nav `z-30`.
 - **Duplicate edge prevention**: `DAGService._create_edge_if_new()` on all creation paths.
 - **Route data flow**: `create_standalone_edge()` fetches route data synchronously. `_recalculate_connected_polylines()` only fires when `lat_lng` actually changes (old vs new comparison). Frontend sets `recalculatingEdges` shimmer only on real coordinate changes, cleared on `onSnapshot`.
 - **Implicit branching**: No `branch_id` on edges. Paths derived at runtime from DAG topology + `participant_ids`. Divergence = out-degree>1 or multiple root nodes.
 - **Timeline zoom**: 5 levels (0-4), `PX_PER_HOUR` = [8, 16, 32, 60, 120]. Scroll position anchored on zoom change so content stays centered.
-- **Timeline lane alignment**: Multi-lane Y positions are computed globally, not per-lane. Adding per-lane gap compression or independent Y computation breaks cross-lane alignment of shared nodes. A `START_OFFSET_PX` is mathematically added to initial Y positions everywhere to reserve visual padding inside the scroll container without destroying CSS `sticky top-0` behaviors for sticky participant lane labels.
+- **Timeline lane alignment**: Multi-lane Y positions are computed globally, not per-lane. Adding per-lane gap compression or independent Y computation breaks cross-lane alignment of shared nodes. `START_OFFSET_PX` reserves visual padding without breaking CSS `sticky top-0` lane labels.
+- **ID format**: Short typed IDs (`n_`, `e_`, `p_`, `t_`, `a_` prefixes + 8 alphanumeric chars) for agent-friendliness. Generated by `shared/shared/tools/id_gen.py`.

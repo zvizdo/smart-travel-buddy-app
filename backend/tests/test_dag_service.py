@@ -279,6 +279,114 @@ class TestCascadeEdgeCases:
         assert affected_ids == ["B", "C", "D", "E"]
 
 
+# ── Cascade Guard (update_node_with_cascade_preview) ─────────────
+
+
+class TestCascadeGuard:
+    """Test that cascade preview only triggers when effective departure changes."""
+
+    @pytest.fixture()
+    def linear_dag_nodes_edges(self):
+        nodes = [
+            _make_node_dict("A", "Paris", "2026-06-01T10:00:00+00:00", 24),
+            _make_node_dict("B", "Lyon", "2026-06-02T12:00:00+00:00", 24),
+        ]
+        edges = [_make_edge_dict("A", "B", 2)]
+        return nodes, edges
+
+    @pytest.mark.asyncio
+    async def test_name_only_update_no_cascade(self, linear_dag_nodes_edges):
+        """Updating only the name should not compute cascade."""
+        nodes, edges = linear_dag_nodes_edges
+        svc = _make_service()
+
+        from shared.models import Node
+
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=Node(**nodes[0]))
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        result = await svc.update_node_with_cascade_preview(
+            "trip1", "plan1", "A", {"name": "New Paris"}
+        )
+
+        assert result["cascade_preview"]["affected_nodes"] == []
+        # list_by_plan should NOT be called (cascade was skipped)
+        svc._node_repo.list_by_plan.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_departure_change_triggers_cascade(self, linear_dag_nodes_edges):
+        """Changing departure_time should trigger cascade computation."""
+        nodes, edges = linear_dag_nodes_edges
+        svc = _make_service()
+
+        from shared.models import Node
+
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=Node(**nodes[0]))
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        result = await svc.update_node_with_cascade_preview(
+            "trip1", "plan1", "A",
+            {"departure_time": "2026-06-03T10:00:00+00:00"},
+        )
+
+        assert len(result["cascade_preview"]["affected_nodes"]) == 1
+        assert result["cascade_preview"]["affected_nodes"][0]["id"] == "B"
+
+    @pytest.mark.asyncio
+    async def test_arrival_change_with_departure_set_no_cascade(
+        self, linear_dag_nodes_edges
+    ):
+        """Changing arrival_time when departure_time is set should NOT cascade."""
+        nodes, edges = linear_dag_nodes_edges
+        svc = _make_service()
+
+        from shared.models import Node
+
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=Node(**nodes[0]))
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        result = await svc.update_node_with_cascade_preview(
+            "trip1", "plan1", "A",
+            {"arrival_time": "2026-06-01T08:00:00+00:00"},
+        )
+
+        assert result["cascade_preview"]["affected_nodes"] == []
+        svc._node_repo.list_by_plan.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_arrival_change_without_departure_triggers_cascade(self):
+        """Changing arrival_time when departure_time is None should cascade."""
+        node_dict = _make_node_dict("A", "Paris", "2026-06-01T10:00:00+00:00")
+        node_dict["departure_time"] = None  # No departure set
+        node_b = _make_node_dict("B", "Lyon", "2026-06-02T12:00:00+00:00", 24)
+        edges = [_make_edge_dict("A", "B", 2)]
+
+        svc = _make_service()
+
+        from shared.models import Node
+
+        svc._node_repo.get_node_or_raise = AsyncMock(
+            return_value=Node(**node_dict)
+        )
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=[node_dict, node_b])
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        result = await svc.update_node_with_cascade_preview(
+            "trip1", "plan1", "A",
+            {"arrival_time": "2026-06-02T10:00:00+00:00"},
+        )
+
+        # Cascade should be computed since effective departure changed
+        svc._node_repo.list_by_plan.assert_awaited_once()
+
+
 # ── Delete Node ──────────────────────────────────────────────────
 class TestDeleteNodeLinear:
     """Test delete_node on a linear DAG: A -> B -> C."""

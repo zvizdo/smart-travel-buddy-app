@@ -90,23 +90,3 @@ class NotificationService:
             target_user_ids=all_participant_ids,
         )
 
-    async def notify_unresolved_paths(
-        self,
-        trip_id: str,
-        unresolved: list[dict],
-        admin_ids: list[str],
-    ) -> list[dict]:
-        """Create notifications for unresolved participant flows at divergence points."""
-        results = []
-        for item in unresolved:
-            result = await self.create_notification(
-                trip_id=trip_id,
-                notification_type=NotificationType.UNRESOLVED_PATH,
-                message="Participant needs assignment at divergence point",
-                target_user_ids=admin_ids,
-                related_entity=RelatedEntity(
-                    type="node", id=item["divergence_node_id"]
-                ),
-            )
-            results.append(result)
-        return results

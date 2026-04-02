@@ -79,10 +79,6 @@ def format_trip_context(
         if departure:
             time_info += f", departs: {departure}"
 
-        duration = n.get("duration_hours")
-        if duration:
-            time_info += f", duration: {duration}h"
-
         tz_str = f", tz: {tz}" if tz else ""
 
         pids = n.get("participant_ids")

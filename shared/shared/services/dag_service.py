@@ -484,9 +484,17 @@ class DAGService:
                 )
 
         updated_node = Node(**node_dict)
-        cascade_preview = await self._compute_cascade_preview(
-            trip_id, plan_id, updated_node
-        )
+
+        # Only compute cascade when effective departure actually changed
+        old_effective = node.departure_time or node.arrival_time
+        new_effective = updated_node.departure_time or updated_node.arrival_time
+
+        if old_effective != new_effective and new_effective is not None:
+            cascade_preview = await self._compute_cascade_preview(
+                trip_id, plan_id, updated_node
+            )
+        else:
+            cascade_preview = {"affected_nodes": [], "conflicts": []}
 
         return {
             "node": node_dict,
