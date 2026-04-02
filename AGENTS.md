@@ -59,7 +59,7 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 | `TripService` | `create_trip`, `get_trip` (verifies participant), `list_trips` |
 | `DAGService` | **In `shared/shared/services/`**. Node/edge CRUD, cascade engine, cycle detection, polyline management. `create_standalone_edge()` rejects cycles via `would_create_cycle()` before auto-fetching route data. |
 | `AgentService` | `import_chat` (Gemini->ImportChatResponse), `build_dag` (AFC with tools, constructs DAG step-by-step), `ongoing_chat` (AFC with DAG tools+grounding). |
-| `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge`, `get_plan` to DAGService. Tracks `actions_taken`. |
+| `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge`, `get_plan` to DAGService. Converts `lat/lng` to `lat_lng` sub-object. Tracks `actions_taken`. |
 | `PlanService` | `clone_plan`, `promote_plan`, `delete_plan` (cascading batch delete) |
 | `RouteService` | **In `shared/shared/services/`**. Google Routes API v2. `get_route_data()` -> `RouteData(polyline, travel_time_hours, distance_km)`. |
 | `NotificationService` | `create_notification`, `notify_member_joined`, `notify_unresolved_paths` |
@@ -198,5 +198,5 @@ FastMCP server for external AI agents via Model Context Protocol. Transport: `st
 - **CSS height chain**: Google Maps needs `html.h-full > body.h-full > container.h-full > map.h-full`. Use `min-h-0` on flex children.
 - **Overlay stacking**: Glass header `z-20`, OfflineBanner `top-12 z-20`, DivergenceResolver `bottom-[nav] z-20`, Bottom nav `z-30`.
 - **Duplicate edge prevention**: `DAGService._create_edge_if_new()` on all creation paths.
-- **Route data flow**: `create_standalone_edge()` fetches route data synchronously. Node location updates trigger `_recalculate_connected_polylines()` background fetch. Frontend tracks `recalculatingEdges` state, cleared on `onSnapshot`.
+- **Route data flow**: `create_standalone_edge()` fetches route data synchronously. `_recalculate_connected_polylines()` only fires when `lat_lng` actually changes (old vs new comparison). Frontend sets `recalculatingEdges` shimmer only on real coordinate changes, cleared on `onSnapshot`.
 - **Implicit branching**: No `branch_id` on edges. Paths derived at runtime from DAG topology + `participant_ids`. Divergence = out-degree>1 or multiple root nodes.

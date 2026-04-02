@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useMapsLibrary } from "@vis.gl/react-google-maps";
 import {
   utcToLocalInput,
   localInputToUtc,
@@ -82,8 +83,29 @@ export function NodeEditForm({
   const [locationState, setLocationState] = useState<"chip" | "searching">("chip");
   const [searchKey, setSearchKey] = useState(0);
 
-  // The chip label: show updated place name if location changed, otherwise current node name
-  const chipLabel = locationUpdate ? locationUpdate.name : node.name;
+  // Resolve place_id to Google Place display name on mount
+  const places = useMapsLibrary("places");
+  const [resolvedPlaceName, setResolvedPlaceName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!places || !node.place_id || locationUpdate) return;
+    const p = new places.Place({ id: node.place_id as string });
+    p.fetchFields({ fields: ["displayName"] }).then(() => {
+      if (p.displayName) setResolvedPlaceName(p.displayName);
+    }).catch(() => {});
+  }, [places, node.place_id, locationUpdate]);
+
+  // The chip label: show resolved Google Place name when anchored, otherwise node name
+  const chipLabel = locationUpdate
+    ? locationUpdate.name
+    : (resolvedPlaceName ?? node.name);
+
+  // Search initial value: resolved Google name if anchored, empty if no place_id
+  const searchInitialValue = locationUpdate
+    ? locationUpdate.name
+    : node.place_id
+      ? (resolvedPlaceName ?? node.name)
+      : "";
 
   const departureBeforeArrival =
     !!arrivalTime && !!departureTime && departureTime <= arrivalTime;
@@ -211,7 +233,7 @@ export function NodeEditForm({
               <PlacesAutocomplete
                 key={searchKey}
                 onPlaceSelect={handlePlaceSelect}
-                initialValue={chipLabel}
+                initialValue={searchInitialValue}
                 placeholder="Search for a place..."
                 autoFocus
                 locationBias={node.lat_lng ?? undefined}

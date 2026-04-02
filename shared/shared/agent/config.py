@@ -43,6 +43,12 @@ Thursday" or "in 2 weeks", confirm the actual date you interpret.
 Do NOT set ready_to_build until you have at least a start date and a rough duration \
 for each stop. These are required to build a usable schedule.
 
+When the user describes a multi-day stay at one location (e.g., "Day 2: arrive in \
+Strasbourg. Day 3: explore Strasbourg"), consolidate it into a single stop with the \
+full duration. In your summary, present it as one entry (e.g., "Strasbourg — 2 nights") \
+rather than listing each day separately. Each unique location should appear once with its \
+total stay duration.
+
 If the itinerary suggests the group might split up at any point, ask to confirm:
 - Who goes where (which participants to which city/destination)?
 - Where and when does the group reunite?
@@ -187,6 +193,15 @@ very short (<3 km), "drive" otherwise. Pass as `travel_mode`.
 correct? dates/times reasonable?
 - If something is missing or wrong, fix it with additional tool calls.
 - When everything looks correct, provide your final response.
+
+## Multi-day stays
+A single location visited over consecutive days is ONE node, not multiple nodes. \
+The node's `arrival_time` should be when the traveler arrives, and `departure_time` \
+when they leave — even if that spans multiple days/nights. For example, if a traveler \
+arrives in Salzburg on Day 1 and leaves on Day 3, create one "Salzburg" node with \
+`arrival_time` on Day 1 and `departure_time` on Day 3. Do NOT create separate nodes \
+for each day at the same location. The duration of the stay is captured entirely by \
+the arrival/departure time window.
 
 ## Rules
 - Build nodes BEFORE connecting them with edges (you need the returned IDs).

@@ -27,6 +27,7 @@ import { BottomNav } from "@/components/ui/bottom-nav";
 import { Toast } from "@/components/ui/toast";
 import { ProfileAvatar } from "@/components/ui/profile-avatar";
 import { AgentOverlay } from "@/components/chat/agent-overlay";
+import { EdgeDisambiguationPicker } from "@/components/dag/edge-disambiguation-picker";
 
 interface NodeData {
   id: string;
@@ -132,6 +133,7 @@ export default function TripMapPage() {
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [disambiguationEdges, setDisambiguationEdges] = useState<EdgeData[] | null>(null);
 
   const { data: nodeActions, loading: actionsLoading } = useNodeActions(
     tripId,
@@ -288,13 +290,32 @@ export default function TripMapPage() {
   function handleNodeSelect(nodeId: string) {
     setSelectedEdgeId(null);
     setAddNodePlace(null);
+    setDisambiguationEdges(null);
     setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
   }
 
-  function handleEdgeSelect(edgeId: string) {
+  function handleEdgeSelect(edgeId: string, overlappingEdgeIds?: string[]) {
     setSelectedNodeId(null);
     setAddNodePlace(null);
-    setSelectedEdgeId((prev) => (prev === edgeId ? null : edgeId));
+
+    // Toggle off if already selected
+    if (selectedEdgeId === edgeId) {
+      setSelectedEdgeId(null);
+      return;
+    }
+
+    // Multiple edges near tap point — show disambiguation picker
+    if (overlappingEdgeIds && overlappingEdgeIds.length > 0) {
+      const allIds = [edgeId, ...overlappingEdgeIds];
+      const allEdges = allIds
+        .map((id) => edges.find((e) => e.id === id))
+        .filter((e): e is EdgeData => e != null);
+      setSelectedEdgeId(null);
+      setDisambiguationEdges(allEdges);
+    } else {
+      setDisambiguationEdges(null);
+      setSelectedEdgeId(edgeId);
+    }
   }
 
   function handleCloneToDraft() {
@@ -325,6 +346,7 @@ export default function TripMapPage() {
     if (!canEdit) return;
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setDisambiguationEdges(null);
     setAddNodePlace(place);
     // Keep insertEdgeId if in insert mode — the AddNodeSheet will use it
   }
@@ -335,8 +357,18 @@ export default function TripMapPage() {
   ) {
     if (!displayPlanId) return;
 
-    // Track recalculating edges when location changes
-    const locationChanged = updates.lat != null || updates.lng != null;
+    // Track recalculating edges only when location actually changes
+    let locationChanged = false;
+    if (updates.lat != null || updates.lng != null) {
+      const currentNode = nodes.find((n) => n.id === nodeId);
+      if (currentNode?.lat_lng) {
+        locationChanged =
+          updates.lat !== currentNode.lat_lng.lat ||
+          updates.lng !== currentNode.lat_lng.lng;
+      } else {
+        locationChanged = true;
+      }
+    }
     if (locationChanged) {
       const connectedEdgeIds = edges
         .filter((e) => e.from_node_id === nodeId || e.to_node_id === nodeId)
@@ -484,6 +516,15 @@ export default function TripMapPage() {
     setToastMessage("Tap the map to place your new stop");
   }
 
+  function handleDisambiguationPick(edgeId: string) {
+    setDisambiguationEdges(null);
+    setSelectedEdgeId(edgeId);
+  }
+
+  function handleDisambiguationClose() {
+    setDisambiguationEdges(null);
+  }
+
   const insertBetween = useMemo(() => {
     if (!insertEdgeId) return null;
     const edge = edges.find((e) => e.id === insertEdgeId);
@@ -597,7 +638,7 @@ export default function TripMapPage() {
   }
 
   return (
-    <div className="flex flex-col h-full relative" style={{ "--bottom-nav-height": "56px" } as React.CSSProperties}>
+    <div className="flex flex-col h-full relative overflow-hidden" style={{ "--bottom-nav-height": "56px" } as React.CSSProperties}>
       {/* Glass Header */}
       <header className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-4 py-3 glass-panel-dense">
         <div className="flex items-center gap-2">
@@ -684,7 +725,7 @@ export default function TripMapPage() {
         />
       )}
 
-      {selectedEdge && (
+      {selectedEdge && !disambiguationEdges && (
         <EdgeDetail
           edge={selectedEdge}
           fromNode={nodeMap.get(selectedEdge.from_node_id)}
@@ -695,6 +736,16 @@ export default function TripMapPage() {
           canEdit={canEdit}
           onInsertStop={handleInsertStop}
           onClose={() => setSelectedEdgeId(null)}
+        />
+      )}
+
+      {disambiguationEdges && (
+        <EdgeDisambiguationPicker
+          edges={disambiguationEdges}
+          nodeMap={nodeMap}
+          distanceUnit={distanceUnit}
+          onPick={handleDisambiguationPick}
+          onClose={handleDisambiguationClose}
         />
       )}
 
@@ -749,7 +800,8 @@ export default function TripMapPage() {
             !!selectedEdge ||
             !!addNodePlace ||
             !!cascadePreview ||
-            !!insertEdgeId
+            !!insertEdgeId ||
+            !!disambiguationEdges
           }
         />
       )}

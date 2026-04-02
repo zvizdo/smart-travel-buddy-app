@@ -343,9 +343,9 @@ export function AddNodeSheet({
       : `Travel to ${targetNode?.name ?? "destination"}`;
 
   return (
-    <div className="absolute bottom-[var(--bottom-nav-height,0px)] left-0 right-0 z-10 rounded-t-3xl bg-surface-lowest shadow-float animate-slide-up">
-      <div className="flex justify-center pt-3 pb-1"><div className="h-1 w-10 rounded-full bg-surface-high" /></div>
-      <div className="flex items-center justify-between px-4 pt-2 pb-2">
+    <div className="absolute bottom-[var(--bottom-nav-height,0px)] left-0 right-0 z-10 rounded-t-3xl bg-surface-lowest shadow-float animate-slide-up max-h-[70vh] flex flex-col">
+      <div className="flex justify-center pt-3 pb-1 shrink-0"><div className="h-1 w-10 rounded-full bg-surface-high" /></div>
+      <div className="flex items-center justify-between px-4 pt-2 pb-2 shrink-0">
         <div>
           <h2 className="text-base font-semibold text-on-surface">
             {insertBetween ? "Insert Stop" : "Add Node"}
@@ -368,7 +368,7 @@ export function AddNodeSheet({
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-3 px-4 pb-4">
+      <form onSubmit={handleSubmit} className="space-y-3 px-4 pb-4 overflow-y-auto min-h-0">
         {/* Row 1: Name + Type */}
         <div className="grid grid-cols-[1fr_auto] gap-2">
           <div>

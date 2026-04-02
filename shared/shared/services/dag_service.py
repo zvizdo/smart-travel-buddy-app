@@ -472,13 +472,16 @@ class DAGService:
 
         await self._node_repo.update_node(trip_id, plan_id, node_id, node_dict)
 
-        # Recalculate polylines for connected edges when location changed
+        # Recalculate polylines for connected edges when location actually changed
         if "lat_lng" in updates:
-            lat_lng = updates["lat_lng"]
-            new_latlng = {"lat": lat_lng.get("lat"), "lng": lat_lng.get("lng")}
-            await self._recalculate_connected_polylines(
-                trip_id, plan_id, node_id, new_latlng
-            )
+            old_lat = node.lat_lng.lat if node.lat_lng else None
+            old_lng = node.lat_lng.lng if node.lat_lng else None
+            new_lat = updates["lat_lng"].get("lat")
+            new_lng = updates["lat_lng"].get("lng")
+            if new_lat != old_lat or new_lng != old_lng:
+                await self._recalculate_connected_polylines(
+                    trip_id, plan_id, node_id, {"lat": new_lat, "lng": new_lng}
+                )
 
         updated_node = Node(**node_dict)
         cascade_preview = await self._compute_cascade_preview(

@@ -22,7 +22,7 @@ interface TripMapProps {
   myNodeIds?: Set<string> | null;
   myEdgeKeys?: Set<string> | null;
   onNodeSelect?: (nodeId: string) => void;
-  onEdgeSelect?: (edgeId: string) => void;
+  onEdgeSelect?: (edgeId: string, overlappingEdgeIds?: string[]) => void;
   onMapClick?: (place: PlaceResult) => void;
   selectedNodeId?: string | null;
   selectedEdgeId?: string | null;
@@ -185,6 +185,29 @@ export function TripMap({
 
   const placesLib = useMapsLibrary("places");
   const geocodingLib = useMapsLibrary("geocoding");
+  const geometryLib = useMapsLibrary("geometry");
+
+  // Decode all edge polylines for click-time proximity detection
+  const decodedEdgePaths = useMemo(() => {
+    const m = new Map<string, (google.maps.LatLng | { lat: number; lng: number })[]>();
+    for (const edge of edges) {
+      const from = nodeMap.get(edge.from_node_id);
+      const to = nodeMap.get(edge.to_node_id);
+      if (!from?.lat_lng || !to?.lat_lng) continue;
+
+      if (edge.route_polyline && edge.travel_mode !== "flight" && geometryLib) {
+        try {
+          m.set(edge.id, google.maps.geometry.encoding.decodePath(edge.route_polyline));
+          continue;
+        } catch { /* fall through */ }
+      }
+      m.set(edge.id, [
+        { lat: from.lat_lng.lat, lng: from.lat_lng.lng },
+        { lat: to.lat_lng.lat, lng: to.lat_lng.lng },
+      ]);
+    }
+    return m;
+  }, [edges, nodeMap, geometryLib]);
 
   const handleClick = useCallback(
     async (e: MapMouseEvent) => {
@@ -259,15 +282,56 @@ export function TripMap({
     [onCameraChange],
   );
 
+  // Set of dimmed edge IDs — used to exclude them from proximity detection
+  const dimmedEdgeIds = useMemo(() => {
+    if (!myEdgeKeys) return new Set<string>();
+    const dimmed = new Set<string>();
+    for (const edge of edges) {
+      const edgeKey = `${edge.from_node_id}->${edge.to_node_id}`;
+      if (!myEdgeKeys.has(edgeKey)) dimmed.add(edge.id);
+    }
+    return dimmed;
+  }, [edges, myEdgeKeys]);
+
   // Memoized per-edge click handlers — stable references prevent polyline re-mounts
   // when unrelated state changes (e.g. selectedEdgeId) trigger a parent re-render.
+  // Also performs click-time proximity detection for overlapping edges.
   const edgeClickHandlers = useMemo(() => {
-    const m = new Map<string, () => void>();
+    const m = new Map<string, (clickLatLng?: { lat: number; lng: number }) => void>();
     for (const edge of edges) {
-      m.set(edge.id, () => onEdgeSelect?.(edge.id));
+      m.set(edge.id, (clickLatLng) => {
+        if (!onEdgeSelect) return;
+
+        // No click coords or no geometry lib — skip proximity check
+        if (!clickLatLng || !geometryLib) {
+          onEdgeSelect(edge.id);
+          return;
+        }
+
+        // Find all non-dimmed edges whose polyline passes near the click point
+        const clickPoint = new google.maps.LatLng(clickLatLng.lat, clickLatLng.lng);
+        const nearby: string[] = [];
+        for (const [otherId, path] of decodedEdgePaths) {
+          if (otherId === edge.id) continue;
+          if (dimmedEdgeIds.has(otherId)) continue;
+          const polyPath = path.map(p =>
+            p instanceof google.maps.LatLng ? p : new google.maps.LatLng(p.lat, p.lng),
+          );
+          // tolerance ~0.0005 degrees ≈ ~50m, reasonable for shared road detection
+          if (google.maps.geometry.poly.isLocationOnEdge(
+            clickPoint,
+            new google.maps.Polyline({ path: polyPath }),
+            0.0005,
+          )) {
+            nearby.push(otherId);
+          }
+        }
+
+        onEdgeSelect(edge.id, nearby.length > 0 ? nearby : undefined);
+      });
     }
     return m;
-  }, [edges, onEdgeSelect]);
+  }, [edges, onEdgeSelect, decodedEdgePaths, geometryLib, dimmedEdgeIds]);
 
   // Memoized per-node click handlers — same rationale as edgeClickHandlers.
   const nodeClickHandlers = useMemo(() => {
@@ -553,6 +617,8 @@ export function TripMap({
             timingWarning={timingWarning}
             recalculating={recalculatingEdges?.has(edge.id)}
             pixelDistance={edgePixelDistances.get(edge.id)}
+            fromNodeName={from.name}
+            toNodeName={to.name}
             onClick={edgeClickHandlers.get(edge.id)}
           />
         );

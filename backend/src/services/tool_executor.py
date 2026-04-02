@@ -86,9 +86,12 @@ class ToolExecutor:
         node_id = args["node_id"]
         updates = {k: v for k, v in args.items() if k != "node_id" and v is not None}
 
-        # Rename 'type' to match Firestore field name
-        if "type" in updates:
-            updates["type"] = updates["type"]
+        # Convert lat/lng into lat_lng sub-object (same as REST endpoint)
+        if "lat" in updates or "lng" in updates:
+            updates["lat_lng"] = {
+                "lat": updates.pop("lat", None),
+                "lng": updates.pop("lng", None),
+            }
 
         result = await self._dag.update_node_with_cascade_preview(
             trip_id=self._trip_id,

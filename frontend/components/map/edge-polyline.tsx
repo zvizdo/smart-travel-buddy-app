@@ -22,7 +22,11 @@ interface EdgePolylineProps {
   recalculating?: boolean;
   /** Pixel distance between the from/to nodes at current zoom. Used to hide label when too close. */
   pixelDistance?: number;
-  onClick?: () => void;
+  /** Display name of the source node (for directional badge) */
+  fromNodeName?: string;
+  /** Display name of the destination node (for directional badge) */
+  toNodeName?: string;
+  onClick?: (clickLatLng?: { lat: number; lng: number }) => void;
 }
 
 const MODE_COLORS: Record<string, string> = {
@@ -44,6 +48,34 @@ const MODE_DASH: Record<string, number[]> = {
   flight: [10, 5],
   walk: [4, 5],
 };
+
+/** Build a repeating directional arrow icon for the fill polyline */
+function buildFillArrows(
+  fillColor: string,
+  opacity: number,
+  selected: boolean,
+  pixelDistance?: number,
+): google.maps.IconSequence {
+  const singleArrow = pixelDistance !== undefined && pixelDistance < 160;
+  return {
+    icon: {
+      path: google.maps.SymbolPath.FORWARD_OPEN_ARROW,
+      scale: selected ? 3.5 : 2.5,
+      strokeColor: fillColor,
+      strokeOpacity: opacity,
+      strokeWeight: 1.5,
+    },
+    offset: "50%",
+    repeat: singleArrow ? "0" : "160px",
+  };
+}
+
+/** First 3 uppercase alpha chars of a name, for badge direction labels */
+function abbreviate(name?: string): string {
+  if (!name) return "???";
+  return name.replace(/[^a-zA-Z]/g, "").slice(0, 3).toUpperCase()
+    || name.slice(0, 3).toUpperCase();
+}
 
 const MODE_ICON_SVG: Record<string, string> = {
   drive: `<path d="M19 17H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h11l4 4v4a2 2 0 0 1-2 2z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="7" cy="17" r="2" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="17" cy="17" r="2" stroke="currentColor" stroke-width="2" fill="none"/>`,
@@ -91,6 +123,8 @@ export function EdgePolyline({
   timingWarning,
   recalculating,
   pixelDistance,
+  fromNodeName,
+  toNodeName,
   onClick,
 }: EdgePolylineProps) {
   const map = useMap();
@@ -115,6 +149,7 @@ export function EdgePolyline({
   const durationSpanRef = useRef<HTMLSpanElement | null>(null);
   const distanceSpanRef = useRef<HTMLSpanElement | null>(null);
   const warnSpanRef = useRef<HTMLSpanElement | null>(null);
+  const directionSpanRef = useRef<HTMLSpanElement | null>(null);
 
   // Animated opacity state for dimmed transitions
   const currentOpacityRef = useRef<number>(dimmed ? 0.12 : 0.85);
@@ -204,7 +239,8 @@ export function EdgePolyline({
     const initialCasingWeight = selected ? 7 : dimmed ? 3 : 4.5;
     const casingOpacity = Math.min(initialOpacity, dimmed ? 0.08 : 0.5);
 
-    // Small direction hint arrow on the casing layer
+    // Direction hint arrow on the casing layer (repeating, aligned with fill arrows)
+    const singleArrow = pixelDistance !== undefined && pixelDistance < 160;
     const hint: google.maps.IconSequence = {
       icon: {
         path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
@@ -215,7 +251,8 @@ export function EdgePolyline({
         fillColor: initialCasingColor,
         fillOpacity: dimmed ? 0.08 : 0.6,
       },
-      offset: "75%",
+      offset: "50%",
+      repeat: singleArrow ? "0" : "160px",
     };
 
     // Casing polyline (wider, darker, rendered underneath)
@@ -232,6 +269,7 @@ export function EdgePolyline({
     casingRef.current = casing;
 
     // Fill polyline (narrower, brighter, rendered on top)
+    const fillArrows = dimmed ? [] : [buildFillArrows(initialFillColor, initialOpacity, !!selected, pixelDistance)];
     const polyline = new google.maps.Polyline({
       path,
       strokeColor: initialFillColor,
@@ -240,7 +278,7 @@ export function EdgePolyline({
       map,
       clickable: !dimmed,
       zIndex: 2,
-      icons: [],
+      icons: initialDash ? [] : fillArrows,
     });
 
     if (initialDash) {
@@ -257,11 +295,15 @@ export function EdgePolyline({
             offset: "0",
             repeat: `${initialDash[0] + initialDash[1]}px`,
           },
+          ...fillArrows,
         ],
       });
     }
 
-    polyline.addListener("click", () => onClickRef.current?.());
+    polyline.addListener("click", (e: google.maps.MapMouseEvent) => {
+      const ll = e.latLng;
+      onClickRef.current?.(ll ? { lat: ll.lat(), lng: ll.lng() } : undefined);
+    });
     polylineRef.current = polyline;
 
     // Invisible wide polyline for easier touch targeting
@@ -274,7 +316,10 @@ export function EdgePolyline({
       clickable: !dimmed,
       zIndex: 3,
     });
-    hitPoly.addListener("click", () => onClickRef.current?.());
+    hitPoly.addListener("click", (e: google.maps.MapMouseEvent) => {
+      const ll = e.latLng;
+      onClickRef.current?.(ll ? { lat: ll.lat(), lng: ll.lng() } : undefined);
+    });
     hitPolylineRef.current = hitPoly;
 
     return () => {
@@ -303,6 +348,7 @@ export function EdgePolyline({
     // Update casing + direction hint
     if (casing) {
       const hintOpacity = dimmed ? 0.08 : 0.6;
+      const singleArrowB = pixelDistance !== undefined && pixelDistance < 160;
       const hint: google.maps.IconSequence = {
         icon: {
           path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
@@ -313,7 +359,8 @@ export function EdgePolyline({
           fillColor: casingColor,
           fillOpacity: hintOpacity,
         },
-        offset: "75%",
+        offset: "50%",
+        repeat: singleArrowB ? "0" : "160px",
       };
       casing.setOptions({
         strokeColor: casingColor,
@@ -324,6 +371,7 @@ export function EdgePolyline({
     }
 
     // Update fill
+    const fillArrowsB = dimmed ? [] : [buildFillArrows(fillColor, currentOpacity, !!selected, pixelDistance)];
     if (dash) {
       polyline.setOptions({
         strokeColor: fillColor,
@@ -341,6 +389,7 @@ export function EdgePolyline({
             offset: "0",
             repeat: `${dash[0] + dash[1]}px`,
           },
+          ...fillArrowsB,
         ],
       });
     } else {
@@ -349,7 +398,7 @@ export function EdgePolyline({
         strokeOpacity: currentOpacity,
         strokeWeight: fillWeight,
         clickable: !dimmed,
-        icons: [],
+        icons: fillArrowsB,
       });
     }
 
@@ -524,6 +573,12 @@ export function EdgePolyline({
     iconWrapRef.current = iconWrap;
     el.appendChild(iconWrap);
 
+    // Direction label: "PAR → LON"
+    const dirSpan = document.createElement("span");
+    dirSpan.style.cssText = "font-size:10px;font-weight:600;letter-spacing:0.02em;display:none";
+    directionSpanRef.current = dirSpan;
+    el.appendChild(dirSpan);
+
     // Duration span
     const durSpan = document.createElement("span");
     durationSpanRef.current = durSpan;
@@ -540,7 +595,8 @@ export function EdgePolyline({
     el.appendChild(sep);
     el.appendChild(distSpan);
 
-    // Stop map click propagation from the badge
+    // Stop map click propagation from the badge — no LatLng needed since
+    // the badge belongs to a specific edge (no disambiguation)
     el.addEventListener("click", (e) => {
       e.stopPropagation();
       onClickRef.current?.();
@@ -568,6 +624,7 @@ export function EdgePolyline({
       durationSpanRef.current = null;
       distanceSpanRef.current = null;
       warnSpanRef.current = null;
+      directionSpanRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // onClick intentionally excluded — handled via onClickRef
@@ -604,6 +661,20 @@ export function EdgePolyline({
         iconWrapRef.current.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border:2px solid #d4d4d8;border-top-color:#71717a;border-radius:50%;animation:spin 1s linear infinite"></span>`;
       } else {
         iconWrapRef.current.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24">${iconSvg}</svg>`;
+      }
+    }
+
+    // Update direction label
+    if (directionSpanRef.current) {
+      if (recalculating || !fromNodeName || !toNodeName) {
+        directionSpanRef.current.style.display = "none";
+      } else {
+        const from = abbreviate(fromNodeName);
+        const to = abbreviate(toNodeName);
+        directionSpanRef.current.innerHTML =
+          `${from} <span style="color:${badgeColor};margin:0 1px">\u2192</span> ${to}`;
+        directionSpanRef.current.style.display = "";
+        directionSpanRef.current.style.color = "#283030";
       }
     }
 
@@ -662,6 +733,8 @@ export function EdgePolyline({
     distanceKm,
     distanceUnit,
     midpoint,
+    fromNodeName,
+    toNodeName,
   ]);
 
   return null;
