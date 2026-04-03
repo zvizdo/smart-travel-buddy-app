@@ -18,13 +18,13 @@ from dataclasses import dataclass, field
 
 import firebase_admin
 from google.cloud.firestore import AsyncClient
-from mcp.server.auth.provider import AccessToken
-from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
-from pydantic import AnyHttpUrl
+from mcp.server.transport_security import TransportSecuritySettings
 
 import httpx
-from mcpserver.src.auth.api_key_auth import ApiKeyTokenVerifier, resolve_user_from_api_key
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
+from mcpserver.src.auth.api_key_auth import resolve_user_from_api_key
+from mcpserver.src.auth.oauth_provider import InMemoryOAuthProvider
 from mcpserver.src.config import get_config
 from mcpserver.src.services.places_service import PlacesService
 from mcpserver.src.services.trip_service import TripService
@@ -57,21 +57,39 @@ class AppContext:
     stdio_user_id: str | None = field(default=None)
 
 
-# --- Lazy TokenVerifier ---------------------------------------------------
-# FastMCP must be instantiated at module level (so @mcp.tool() decorators work),
-# but the real ApiKeyTokenVerifier needs a Firestore db created in the lifespan.
-# This wrapper delegates to the real verifier once set.
+# --- Eager Firebase + config initialization -----------------------------------
 
-_verifier: ApiKeyTokenVerifier | None = None
+if not firebase_admin._apps:
+    firebase_admin.initialize_app()
 
+_db = AsyncClient()
+_config = get_config()
 
-class _LazyTokenVerifier:
-    """Delegates to the real ApiKeyTokenVerifier once the lifespan has set it."""
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        if _verifier is None:
-            return None
-        return await _verifier.verify_token(token)
+# Build auth components for HTTP transports (streamable-http / sse).
+# Using auth_server_provider (not token_verifier) so FastMCP serves ALL
+# OAuth discovery + auth endpoints that Claude Code's SDK expects:
+#   - /.well-known/oauth-protected-resource
+#   - /.well-known/oauth-authorization-server
+#   - /register, /authorize, /token
+# The InMemoryOAuthProvider.load_access_token validates Bearer API keys
+# via HMAC+Firestore, so the actual OAuth flow is never needed — the
+# API key from .mcp.json headers works on every request.
+_is_http_transport = _config["mcp_transport"] in ("streamable-http", "sse")
+_oauth_provider = (
+    InMemoryOAuthProvider(_db, _config["api_key_hmac_secret"])
+    if _is_http_transport
+    else None
+)
+_auth_settings = (
+    AuthSettings(
+        issuer_url=_config["mcp_server_url"],
+        resource_server_url=_config["mcp_server_url"],
+        required_scopes=[],
+        client_registration_options=ClientRegistrationOptions(enabled=True),
+    )
+    if _is_http_transport
+    else None
+)
 
 
 # --- Lifespan --------------------------------------------------------------
@@ -79,18 +97,8 @@ class _LazyTokenVerifier:
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    """Initialize Firebase, Firestore, and build services."""
-    global _verifier
+    """Build services for MCP tools. Firebase/Firestore already initialized."""
     config = get_config()
-
-    # Initialize Firebase Admin (idempotent)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app()
-
-    db = AsyncClient()
-
-    # Set the real verifier now that db is available
-    _verifier = ApiKeyTokenVerifier(db, config["api_key_hmac_secret"])
 
     # Resolve user for stdio mode only (local dev)
     stdio_user_id = None
@@ -98,7 +106,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         api_key = os.environ.get("MCP_API_KEY", "")
         if api_key:
             stdio_user_id = await resolve_user_from_api_key(
-                db, api_key, config["api_key_hmac_secret"]
+                _db, api_key, config["api_key_hmac_secret"]
             )
             logger.info("stdio mode: authenticated as user %s", stdio_user_id)
         else:
@@ -107,13 +115,13 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             )
 
     # Build repositories
-    trip_repo = TripRepository(db)
-    plan_repo = PlanRepository(db)
-    node_repo = NodeRepository(db)
-    edge_repo = EdgeRepository(db)
-    action_repo = ActionRepository(db)
-    location_repo = LocationRepository(db)
-    user_repo = UserRepository(db)
+    trip_repo = TripRepository(_db)
+    plan_repo = PlanRepository(_db)
+    node_repo = NodeRepository(_db)
+    edge_repo = EdgeRepository(_db)
+    action_repo = ActionRepository(_db)
+    location_repo = LocationRepository(_db)
+    user_repo = UserRepository(_db)
 
     # Build services
     trip_service = TripService(
@@ -130,7 +138,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     try:
         yield AppContext(
-            db=db,
+            db=_db,
             trip_service=trip_service,
             dag_service=dag_service,
             places_service=places_service,
@@ -139,26 +147,27 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             stdio_user_id=stdio_user_id,
         )
     finally:
-        _verifier = None
         await places_service.close()
         await http_client.aclose()
-        db.close()
 
 
 # --- FastMCP instance ------------------------------------------------------
 
-_config = get_config()
-_server_url = _config["mcp_server_url"]
-_lazy_verifier = _LazyTokenVerifier()
+# Disable DNS rebinding protection for non-localhost hosts (e.g. Cloud Run).
+_transport_security = (
+    None  # FastMCP auto-enables for localhost
+    if _config["mcp_host"] in ("127.0.0.1", "localhost", "::1")
+    else TransportSecuritySettings(enable_dns_rebinding_protection=False)
+)
 
 mcp = FastMCP(
     "smart-travel-buddy",
     lifespan=app_lifespan,
-    token_verifier=_lazy_verifier,
-    auth=AuthSettings(
-        issuer_url=AnyHttpUrl(_server_url),
-        resource_server_url=AnyHttpUrl(_server_url),
-    ),
+    host=_config["mcp_host"],
+    port=_config["mcp_port"],
+    transport_security=_transport_security,
+    auth=_auth_settings,
+    auth_server_provider=_oauth_provider,
 )
 
 # Import tools to register them with the server
@@ -176,10 +185,20 @@ def main():
     transport = config["mcp_transport"]
 
     if transport == "sse":
-        uvicorn.run(mcp.sse_app(), host=config["mcp_host"], port=config["mcp_port"])
+        # FastMCP's sse_app() includes auth middleware + discovery routes
+        # when auth/token_verifier are configured.
+        app = mcp.sse_app()
+        uvicorn.run(app, host=config["mcp_host"], port=config["mcp_port"])
     elif transport == "streamable-http":
+        # FastMCP's streamable_http_app() includes:
+        #   - Session manager lifespan (task group init)
+        #   - BearerAuthBackend + AuthContextMiddleware
+        #   - RequireAuthMiddleware on /mcp endpoint
+        #   - /.well-known/oauth-protected-resource metadata
+        # No wrapping needed -- this preserves the lifespan chain.
+        app = mcp.streamable_http_app()
         uvicorn.run(
-            mcp.streamable_http_app(),
+            app,
             host=config["mcp_host"],
             port=config["mcp_port"],
         )

@@ -38,3 +38,6 @@ Thumbs.db
 
 # Deploy scripts contain secrets — never commit
 deploy/deploy.sh
+
+# MCP configuration with API keys
+.mcp.json

@@ -152,6 +152,8 @@ export default function TripMapPage() {
 
   const [pathMode, setPathMode] = useState<"all" | "mine">("all");
   const pathModeInitialized = useRef(false);
+  // Tracks whether the path mode decision has been made (so map can wait for it)
+  const [pathModeReady, setPathModeReady] = useState(false);
 
   const [addNodePlace, setAddNodePlace] = useState<PlaceResult | null>(null);
   const [insertEdgeId, setInsertEdgeId] = useState<string | null>(null);
@@ -256,13 +258,25 @@ export default function TripMapPage() {
     return computeParticipantPaths(nodes, edges, participantIds);
   }, [nodes, edges, participantIds]);
 
-  // Default to "my path" view when the user has any resolved path choices
+  // Default to "my path" view when the user has any resolved path choices.
+  // Also signals pathModeReady so the map can wait for this decision before fitting bounds.
   useEffect(() => {
-    if (pathModeInitialized.current || !pathResult || !user?.uid) return;
+    if (pathModeInitialized.current) return;
+
+    // If there's no branching DAG or no user yet, path mode stays "all" — mark ready
+    if (!pathResult || !user?.uid) {
+      // Only mark ready once nodes have loaded (pathResult is null for 0 nodes/edges)
+      if (!loading) setPathModeReady(true);
+      return;
+    }
+
     pathModeInitialized.current = true;
 
     const myPath = pathResult.paths.get(user.uid);
-    if (!myPath || myPath.length === 0) return;
+    if (!myPath || myPath.length === 0) {
+      setPathModeReady(true);
+      return;
+    }
 
     // Check if the user has explicitly chosen at any divergence
     const hasAnyChoice = nodes.some((node) => {
@@ -273,7 +287,8 @@ export default function TripMapPage() {
     if (hasAnyChoice) {
       setPathMode("mine");
     }
-  }, [pathResult, user, nodes]);
+    setPathModeReady(true);
+  }, [pathResult, user, nodes, loading]);
 
   const edgeColors = useMemo(() => {
     if (!pathResult) return new Map<string, string>();
@@ -764,7 +779,7 @@ export default function TripMapPage() {
                 onMapClick={handleMapClick}
                 selectedNodeId={selectedNodeId}
                 selectedEdgeId={selectedEdgeId}
-                skipInitialFit={mapFitted}
+                skipInitialFit={mapFitted || (!pathModeReady && !mapCamera)}
                 onInitialFitDone={markMapFitted}
                 savedCamera={mapCamera}
                 onCameraChange={setMapCamera}

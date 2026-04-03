@@ -28,4 +28,4 @@ ENV MCP_TRANSPORT=streamable-http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8080
 
-CMD exec sh -c "MCP_PORT=${PORT} python -m mcpserver.src.main"
+CMD exec sh -c "MCP_PORT=${PORT} python -m mcpserver.src"

@@ -130,58 +130,89 @@ export function TripMap({
   // Throttle zoom tick updates to at most once per 80ms to avoid excessive re-renders
   const zoomThrottleRef = useRef<number>(0);
 
-  // Fit map bounds to show all nodes on initial load (skip if returning from settings/agent)
-  useEffect(() => {
-    if (!map || skipInitialFit) return;
+  // Shared padding & fit helpers
+  const uiPadding = useMemo(() => {
+    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+    return {
+      top: Math.min(60, vh * 0.12),    // header + breathing room
+      right: 60,                         // path filter toggle
+      bottom: Math.min(100, vh * 0.20), // bottom nav + divergence button
+      left: 20,
+    };
+  }, []);
 
-    const validNodes = nodes.filter((n) => n.lat_lng);
+  const fitToNodes = useCallback((targetMap: google.maps.Map, targetNodes: DocumentData[], animate: boolean) => {
+    const validNodes = targetNodes.filter((n) => n.lat_lng);
 
-    // No nodes — world overview
     if (validNodes.length === 0) {
-      map.setCenter({ lat: 30, lng: 10 });
-      map.setZoom(typeof window !== "undefined" && window.innerWidth < 430 ? 1 : 2);
-      onInitialFitDone?.();
+      targetMap.setCenter({ lat: 30, lng: 10 });
+      targetMap.setZoom(typeof window !== "undefined" && window.innerWidth < 430 ? 1 : 2);
       return;
     }
 
-    // Single node — type-aware zoom
     if (validNodes.length === 1) {
       const node = validNodes[0];
       const zoom =
         node.type === "city" ? 11
           : node.type === "hotel" || node.type === "restaurant" || node.type === "activity" ? 14
             : 12;
-      map.setCenter({ lat: node.lat_lng.lat, lng: node.lat_lng.lng });
-      map.setZoom(zoom);
-      // Nudge south to account for header vs bottom nav offset
-      map.panBy(0, 20);
-      onInitialFitDone?.();
+      if (animate) {
+        targetMap.panTo({ lat: node.lat_lng.lat, lng: node.lat_lng.lng });
+        targetMap.setZoom(zoom);
+      } else {
+        targetMap.setCenter({ lat: node.lat_lng.lat, lng: node.lat_lng.lng });
+        targetMap.setZoom(zoom);
+        targetMap.panBy(0, 20);
+      }
       return;
     }
 
-    // Multiple nodes — fit bounds with UI-aware asymmetric padding
     const bounds = new google.maps.LatLngBounds();
     for (const n of validNodes) {
       bounds.extend({ lat: n.lat_lng.lat, lng: n.lat_lng.lng });
     }
-    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-    const padding = {
-      top: Math.min(60, vh * 0.12),    // header + breathing room
-      right: 60,                         // path filter toggle
-      bottom: Math.min(100, vh * 0.20), // bottom nav + divergence button
-      left: 20,
-    };
-    map.fitBounds(bounds, padding);
+    targetMap.fitBounds(bounds, uiPadding);
 
-    // Clamp zoom to prevent over-fitting on dense trips or extreme zoom-out
-    google.maps.event.addListenerOnce(map, "idle", () => {
-      const z = map.getZoom() ?? 10;
-      if (z > 14) map.setZoom(14);
-      if (z < 3) map.setZoom(3);
+    google.maps.event.addListenerOnce(targetMap, "idle", () => {
+      const z = targetMap.getZoom() ?? 10;
+      if (z > 14) targetMap.setZoom(14);
+      if (z < 3) targetMap.setZoom(3);
     });
+  }, [uiPadding]);
 
+  // Resolve which nodes to use for initial fit: scope to "my" nodes when in My Path mode
+  const initialFitNodes = useMemo(() => {
+    if (myNodeIds && myNodeIds.size > 0) {
+      return nodes.filter((n) => myNodeIds.has(n.id));
+    }
+    return nodes;
+  }, [nodes, myNodeIds]);
+
+  // Fit map bounds on initial load (skip if returning from settings/agent)
+  useEffect(() => {
+    if (!map || skipInitialFit) return;
+    fitToNodes(map, initialFitNodes, false);
     onInitialFitDone?.();
-  }, [map, nodes, skipInitialFit, onInitialFitDone]);
+  }, [map, initialFitNodes, skipInitialFit, onInitialFitDone, fitToNodes]);
+
+  // Re-fit bounds (animated) when user toggles path filter after initial load
+  const prevMyNodeIdsRef = useRef<Set<string> | null | undefined>(undefined);
+  useEffect(() => {
+    // Skip the very first render (initial fit handles it)
+    if (prevMyNodeIdsRef.current === undefined) {
+      prevMyNodeIdsRef.current = myNodeIds;
+      return;
+    }
+    // Only re-fit if myNodeIds actually changed (user toggled filter)
+    if (prevMyNodeIdsRef.current === myNodeIds) return;
+    prevMyNodeIdsRef.current = myNodeIds;
+
+    if (!map) return;
+    const targetNodes = myNodeIds && myNodeIds.size > 0
+      ? nodes.filter((n) => myNodeIds.has(n.id))
+      : nodes;
+    fitToNodes(map, targetNodes, true);
+  }, [myNodeIds, map, nodes, fitToNodes]);
 
   const placesLib = useMapsLibrary("places");
   const geocodingLib = useMapsLibrary("geocoding");

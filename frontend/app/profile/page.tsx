@@ -44,6 +44,7 @@ export default function ProfilePage() {
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [showKeyForm, setShowKeyForm] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
+  const [showSetupGuide, setShowSetupGuide] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -57,7 +58,7 @@ export default function ProfilePage() {
         setProfile(data);
         setNameValue(data.display_name);
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setLoading(false));
 
     // Fetch API keys
@@ -65,7 +66,7 @@ export default function ProfilePage() {
     api
       .get<{ api_keys: typeof apiKeys }>("/users/me/api-keys")
       .then((data) => setApiKeys(data.api_keys.filter((k) => k.is_active)))
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setLoadingKeys(false));
   }, [user, authLoading, router]);
 
@@ -328,18 +329,16 @@ export default function ProfilePage() {
                   aria-checked={profile?.location_tracking_enabled ?? false}
                   onClick={handleToggleLocation}
                   disabled={savingLocation || loading}
-                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors disabled:opacity-40 ${
-                    profile?.location_tracking_enabled
-                      ? "bg-primary"
-                      : "bg-surface-high"
-                  }`}
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors disabled:opacity-40 ${profile?.location_tracking_enabled
+                    ? "bg-primary"
+                    : "bg-surface-high"
+                    }`}
                 >
                   <span
-                    className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-on-primary shadow-soft transition-transform mt-1 ${
-                      profile?.location_tracking_enabled
-                        ? "translate-x-6 ml-0.5"
-                        : "translate-x-0.5"
-                    }`}
+                    className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-on-primary shadow-soft transition-transform mt-1 ${profile?.location_tracking_enabled
+                      ? "translate-x-6 ml-0.5"
+                      : "translate-x-0.5"
+                      }`}
                   />
                 </button>
               </div>
@@ -353,8 +352,8 @@ export default function ProfilePage() {
             </h3>
             <div className="rounded-2xl bg-surface-lowest p-5 shadow-soft space-y-4">
               <p className="text-xs text-on-surface-variant">
-                Connect external AI assistants (like Claude Desktop) to your
-                trips via the MCP server.
+                Let your AI assistant (Claude, OpenClaw, or others) view and
+                edit your trips directly.
               </p>
 
               {/* Created key alert — shown once */}
@@ -440,7 +439,7 @@ export default function ProfilePage() {
                     type="text"
                     value={newKeyName}
                     onChange={(e) => setNewKeyName(e.target.value)}
-                    placeholder="Key name (e.g., Claude Desktop)"
+                    placeholder="Key name (e.g., My laptop)"
                     maxLength={100}
                     autoFocus
                     onKeyDown={(e) => {
@@ -468,6 +467,82 @@ export default function ProfilePage() {
                   + Generate New Key
                 </button>
               )}
+
+              {/* Setup guide */}
+              <div className="border-t border-outline/10 pt-3">
+                <button
+                  onClick={() => setShowSetupGuide(!showSetupGuide)}
+                  className="flex w-full items-center justify-between text-xs font-medium text-on-surface-variant"
+                >
+                  <span>How to connect your AI assistant</span>
+                  <svg
+                    className={`h-4 w-4 transition-transform ${showSetupGuide ? "rotate-180" : ""}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {showSetupGuide && (
+                  <div className="mt-3 space-y-3 text-xs text-on-surface-variant">
+                    <p>
+                      Your AI assistant needs two things to connect: the{" "}
+                      <span className="font-medium text-on-surface">server address</span> and your{" "}
+                      <span className="font-medium text-on-surface">API key</span>.
+                    </p>
+
+                    <ol className="list-decimal list-inside space-y-2 text-on-surface-variant">
+                      <li>
+                        <span className="font-medium text-on-surface">Generate a key</span> &mdash; tap &ldquo;Generate New Key&rdquo; above and copy it. You&apos;ll only see it once.
+                      </li>
+                      <li>
+                        <span className="font-medium text-on-surface">Open your AI app&apos;s settings</span> &mdash; look for &ldquo;MCP Servers&rdquo;, &ldquo;Integrations&rdquo;, or &ldquo;Connections&rdquo;. (Check your app&apos;s docs if you&apos;re not sure where.)
+                      </li>
+                      <li>
+                        <span className="font-medium text-on-surface">Add a new server</span> with these details:
+                      </li>
+                    </ol>
+
+                    <div className="rounded-xl bg-surface-high p-4 space-y-2">
+                      <div className="flex items-start gap-2">
+                        <span className="shrink-0 font-medium text-on-surface">Server URL:</span>
+                        <code className="font-mono text-on-surface break-all select-all">{`${process.env.NEXT_PUBLIC_MCP_SERVER_URL || "http://localhost:8080"}/mcp`}</code>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="shrink-0 font-medium text-on-surface">API Key:</span>
+                        <span className="text-on-surface">paste the key you copied in step 1</span>
+                      </div>
+                    </div>
+
+                    <p>
+                      If your app asks for a config file instead, paste this (replacing{" "}
+                      <code className="rounded bg-surface-high px-1 py-0.5 font-mono text-on-surface">YOUR_API_KEY</code>):
+                    </p>
+                    <pre className="overflow-x-auto rounded-xl bg-surface-high p-4 text-xs font-mono text-on-surface leading-relaxed select-all">
+                      {`{
+  "mcpServers": {
+    "smart-travel-buddy": {
+      "type": "http",
+      "url": "${process.env.NEXT_PUBLIC_MCP_SERVER_URL || "http://localhost:8080"}/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}`}
+                    </pre>
+
+                    <ol start={4} className="list-decimal list-inside space-y-1.5 text-on-surface-variant">
+                      <li>
+                        <span className="font-medium text-on-surface">Restart your AI app</span> &mdash; it should now be able to see and edit your trips.
+                      </li>
+                    </ol>
+                  </div>
+                )}
+              </div>
             </div>
           </section>
 

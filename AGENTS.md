@@ -200,9 +200,26 @@ Pure function `computeTimelineLayout()` — no React. Takes nodes, edges, path r
 
 ## MCP Server (`mcpserver/`)
 
-FastMCP server for external AI agents via Model Context Protocol. Transport: `streamable-http` (Cloud Run), `sse`, or `stdio` (local). Auth: HMAC API keys via `ApiKeyTokenVerifier`.
+FastMCP server for external AI agents via Model Context Protocol. Transport: `streamable-http` (Cloud Run), `sse`, or `stdio` (local).
 
-**Tools**: `get_trips`, `get_trip_versions`, `get_trip_context` | `add_node`, `update_node`, `delete_node` | `add_edge`, `delete_edge` | `add_action` | `search_places`, `suggest_stop`. Shared `DAGService` for mutations, shared `format_trip_context()` for context, shared `DAG_TOOL_DEFINITIONS` for tool schemas.
+**Entry point**: `python -m mcpserver.src` (via `__main__.py`). **Never** `python -m mcpserver.src.main` — causes Python's `__main__` double-import, creating two `mcp` instances; tools register on the wrong one → empty `tools/list`.
+
+**Auth architecture** (critical — do not change without understanding the full flow):
+
+MCP SDK clients (Claude Code, etc.) always probe `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` for `type: "http"` servers.
+
+1. **`auth_server_provider`** (not `token_verifier`) — creates all OAuth discovery endpoints. `token_verifier` alone omits the authorization server metadata endpoint → 404 → SDK breaks.
+2. **`InMemoryOAuthProvider`** (`auth/oauth_provider.py`) — auto-approving OAuth provider. `load_access_token()` validates OAuth-issued tokens first, then falls back to HMAC-SHA256 + Firestore API key lookup.
+3. **`AuthSettings`** needs `ClientRegistrationOptions(enabled=True)` — SDK requires dynamic client registration.
+4. **No custom wrapping** — `mcp.streamable_http_app()` / `mcp.sse_app()` directly with uvicorn. Mounting inside parent Starlette breaks session manager lifespan.
+5. **`TransportSecuritySettings(enable_dns_rebinding_protection=False)`** for non-localhost (Cloud Run).
+6. **stdio mode**: resolves user once at startup via `MCP_API_KEY` env var.
+
+**Key files**: `auth/oauth_provider.py` (OAuth + API key fallback), `auth/api_key_auth.py` (`resolve_user_from_api_key()` HMAC→Firestore, `get_user_id(ctx)` for tool handlers), `config.py` (env vars).
+
+**Client config** (`.mcp.json`): `type: "http"`, `url: ".../mcp"`, `headers: { "Authorization": "Bearer <api_key>" }`.
+
+**Tools**: `get_trips`, `get_trip_versions`, `get_trip_context` | `add_node`, `update_node`, `delete_node` | `add_edge`, `delete_edge` | `add_action` | `search_places`, `suggest_stop`. Shared `DAGService` for mutations, shared `format_trip_context()` for context.
 
 ---
 

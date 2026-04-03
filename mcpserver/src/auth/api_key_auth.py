@@ -4,7 +4,7 @@ Validates API keys by computing HMAC-SHA256 and looking up the hash
 across all users' api_keys subcollections via a collection group query.
 
 Multi-user mode (streamable-http): each request carries its own
-Authorization: Bearer <key> header, resolved per-request via TokenVerifier.
+Authorization: Bearer <key> header, resolved per-request via InMemoryOAuthProvider.
 
 Single-user mode (stdio): MCP_API_KEY env var resolved once at startup.
 """
@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 from google.cloud.firestore import AsyncClient
 from google.cloud.firestore_v1.base_query import FieldFilter
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.provider import AccessToken
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -33,6 +32,15 @@ logger = logging.getLogger(__name__)
 _cache: dict[str, tuple[str, float]] = {}
 _CACHE_TTL_SECONDS = 300  # 5 minutes
 _CACHE_MAX_ENTRIES = 1000
+
+# Rate limiting: track failed auth attempts by key hash prefix
+_fail_tracker: dict[str, list[float]] = {}
+_RATE_LIMIT_WINDOW = 60  # seconds
+_RATE_LIMIT_MAX_FAILURES = 10
+
+
+class RateLimitError(PermissionError):
+    """Raised when auth attempts exceed the rate limit."""
 
 
 async def resolve_user_from_api_key(
@@ -51,8 +59,19 @@ async def resolve_user_from_api_key(
         hmac_secret.encode(), api_key.encode(), hashlib.sha256
     ).hexdigest()
 
-    # Check cache
+    # Rate limit check: reject if too many recent failures for this key prefix
     now = time.monotonic()
+    hash_prefix = key_hash[:8]
+    if hash_prefix in _fail_tracker:
+        _fail_tracker[hash_prefix] = [
+            t for t in _fail_tracker[hash_prefix] if now - t < _RATE_LIMIT_WINDOW
+        ]
+        if not _fail_tracker[hash_prefix]:
+            del _fail_tracker[hash_prefix]
+        elif len(_fail_tracker[hash_prefix]) >= _RATE_LIMIT_MAX_FAILURES:
+            raise RateLimitError("Too many failed authentication attempts")
+
+    # Check cache
     if key_hash in _cache:
         user_id, expiry = _cache[key_hash]
         if now < expiry:
@@ -72,11 +91,15 @@ async def resolve_user_from_api_key(
         break
 
     if matched_doc is None:
+        _fail_tracker.setdefault(hash_prefix, []).append(now)
         raise PermissionError("Invalid or revoked API key")
 
     # Extract user_id from document path: "users/{userId}/api_keys/{keyId}"
     path_parts = matched_doc.reference.path.split("/")
     user_id = path_parts[1]
+
+    # Clear failure tracker on successful auth
+    _fail_tracker.pop(hash_prefix, None)
 
     # Update last_used_at (non-critical)
     with contextlib.suppress(Exception):
@@ -93,26 +116,6 @@ async def resolve_user_from_api_key(
     logger.info("API key authenticated for user %s", user_id)
     return user_id
 
-
-class ApiKeyTokenVerifier:
-    """TokenVerifier implementation for FastMCP bearer auth.
-
-    Resolves API keys to user IDs via HMAC-SHA256 + Firestore lookup.
-    Used automatically by FastMCP's auth middleware stack.
-    """
-
-    def __init__(self, db: AsyncClient, hmac_secret: str) -> None:
-        self._db = db
-        self._hmac_secret = hmac_secret
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        try:
-            user_id = await resolve_user_from_api_key(
-                self._db, token, self._hmac_secret
-            )
-            return AccessToken(token=token, client_id=user_id, scopes=[])
-        except PermissionError:
-            return None
 
 
 def get_user_id(ctx: Context) -> str:
