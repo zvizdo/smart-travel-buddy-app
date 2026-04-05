@@ -85,10 +85,12 @@ Always default operations to the **active plan**. Pass `plan_id` only when expli
 | `add_edge` | admin/planner | Connects two existing nodes. Travel time, distance, polyline auto-computed. Mode heuristic: `>800km → flight`, `<3km → walk`, else `drive`. |
 | `delete_edge` | admin/planner | Removes a connection. |
 
-### Mutating — annotations
-| Tool | Role | Notes |
-|---|---|---|
-| `add_action` | any participant (incl. viewer) | Attach a `note`, `todo`, or `place` pin to a node. Cheapest write — good for capturing user ideas mid-conversation. |
+### Actions (annotations) — any participant, incl. viewer
+| Tool | Notes |
+|---|---|
+| `add_action` | Attach a `note`, `todo`, or `place` pin to a node. Cheapest write — good for capturing user ideas mid-conversation. For `type='place'`, you MUST pass both `place_name` and `place_id` (call `find_places` first to obtain the Google `place_id`); `place_lat`, `place_lng`, `place_category` are optional. For `note`/`todo`, leave all `place_*` fields unset. |
+| `list_actions` | **Read.** List all actions on a specific node with full detail (place data, completion state, timestamps, author). Use when the user wants details on one stop's annotations; for a trip-wide overview, `get_trip_context` is cheaper. |
+| `delete_action` | Remove a specific action from a node. Needs the `action_id` — get it from `list_actions` or `get_trip_context`. |
 
 ---
 
@@ -124,9 +126,9 @@ When the user asks to plan a new trip:
 
 ### The mutation contract (read carefully — this is the single most important section)
 
-Mutating tools are: `create_trip`, `delete_trip`, `update_trip_settings`, `create_plan`, `promote_plan`, `delete_plan`, `add_node`, `update_node`, `delete_node`, `add_edge`, `delete_edge`, `add_action`.
+Mutating tools are: `create_trip`, `delete_trip`, `update_trip_settings`, `create_plan`, `promote_plan`, `delete_plan`, `add_node`, `update_node`, `delete_node`, `add_edge`, `delete_edge`, `add_action`, `delete_action`.
 
-Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `find_places`) is **read-only** and can be called freely without asking.
+Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_actions`, `find_places`) is **read-only** and can be called freely without asking.
 
 **For mutating tools, the rule is absolute: state the plan, get confirmation, then act.** For every user request that would trigger mutations:
 
