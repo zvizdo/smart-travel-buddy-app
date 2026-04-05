@@ -1,10 +1,30 @@
-"""MCP TripService: thin composition layer over shared repos for read operations."""
+"""MCP TripService: thin composition layer over shared repos for read operations
+plus trip lifecycle mutations (create, delete, settings update).
 
+Trip lifecycle methods here intentionally mirror the backend's TripService
+(backend/src/services/trip_service.py) without pulling in the backend-only
+notification/invite/preference repositories. The backend remains the source of
+truth; if the cascading delete logic changes there, update it here too.
+"""
+
+import asyncio
 import math
+from datetime import UTC, datetime
 from typing import Any
 
+from google.cloud.firestore_v1.transforms import DELETE_FIELD
+
 from shared.dag.paths import compute_participant_paths
-from shared.models import Action
+from shared.models import (
+    Action,
+    ActionType,
+    Participant,
+    PlaceData,
+    Plan,
+    PlanStatus,
+    Trip,
+    TripRole,
+)
 from shared.repositories import (
     ActionRepository,
     EdgeRepository,
@@ -14,7 +34,7 @@ from shared.repositories import (
     TripRepository,
     UserRepository,
 )
-from shared.tools.id_gen import action_id
+from shared.tools.id_gen import action_id, plan_id as gen_plan_id, trip_id as gen_trip_id
 
 
 def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -62,6 +82,11 @@ class TripService:
         if role not in ("admin", "planner"):
             raise PermissionError("Requires admin or planner role")
 
+    def _require_admin(self, role: str) -> None:
+        """Require admin role."""
+        if role != "admin":
+            raise PermissionError("Requires admin role")
+
     async def get_trips(self, user_id: str) -> list[dict]:
         trips = await self._trip_repo.list_by_user(user_id)
         return [
@@ -75,15 +100,15 @@ class TripService:
             for t in trips
         ]
 
-    async def get_trip_versions(self, trip_id: str, user_id: str) -> dict:
+    async def get_trip_plans(self, trip_id: str, user_id: str) -> dict:
         trip_data = await self._trip_repo.get_or_raise(trip_id)
         self._verify_participant(trip_data, user_id)
 
         plans = await self._plan_repo.list_by_trip(trip_id)
-        versions = []
+        plan_summaries = []
         for p in plans:
             nodes = await self._node_repo.list_by_plan(trip_id, p["id"])
-            versions.append({
+            plan_summaries.append({
                 "id": p["id"],
                 "name": p["name"],
                 "status": p["status"],
@@ -93,7 +118,7 @@ class TripService:
         return {
             "trip_id": trip_id,
             "active_plan_id": trip_data.get("active_plan_id"),
-            "versions": versions,
+            "plans": plan_summaries,
         }
 
     async def get_trip_context(
@@ -276,23 +301,237 @@ class TripService:
 
         return result
 
+    async def create_trip(
+        self,
+        user_id: str,
+        name: str,
+        user_display_name: str = "",
+    ) -> dict:
+        """Create a new trip with the caller as the sole admin, plus an
+        initial active plan named "Main Route".
+
+        The initial plan bundling is MCP-specific: the backend's create_trip
+        leaves the trip planless and relies on import_build to create the
+        first plan. The MCP server has no equivalent follow-up, so bundling
+        here removes the dead-end between create_trip and add_node. The plan
+        name matches backend/src/api/agent.py:99 so trips created via MCP and
+        the web import flow look identical.
+        """
+        trip = Trip(
+            id=gen_trip_id(),
+            name=name,
+            created_by=user_id,
+            active_plan_id=None,
+            participants={
+                user_id: Participant(
+                    role=TripRole.ADMIN,
+                    display_name=user_display_name or user_id,
+                    joined_at=datetime.now(UTC),
+                )
+            },
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        await self._trip_repo.create(trip)
+
+        # Create the initial active plan and point the trip at it.
+        plan = Plan(
+            id=gen_plan_id(),
+            name="Main Route",
+            status=PlanStatus.ACTIVE,
+            created_by=user_id,
+            created_at=datetime.now(UTC),
+        )
+        await self._plan_repo.create_plan(trip.id, plan)
+        await self._trip_repo.update_trip(
+            trip.id,
+            {
+                "active_plan_id": plan.id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+        trip_dict = trip.model_dump(mode="json")
+        trip_dict["active_plan_id"] = plan.id
+        trip_dict["plan"] = plan.model_dump(mode="json")
+        return trip_dict
+
+    async def update_trip_settings(
+        self,
+        user_id: str,
+        trip_id: str,
+        datetime_format: str | None = None,
+        date_format: str | None = None,
+        distance_unit: str | None = None,
+    ) -> dict:
+        """Update trip-level display settings. Admin only.
+
+        The caller must already be resolved as admin via resolve_trip_admin;
+        this method does not re-check the role. It does re-fetch the trip
+        to merge settings cleanly.
+        """
+        trip_data = await self._trip_repo.get_or_raise(trip_id)
+        current = trip_data.get("settings") or {}
+        if datetime_format is not None:
+            current["datetime_format"] = datetime_format
+        if date_format is not None:
+            current["date_format"] = date_format
+        if distance_unit is not None:
+            current["distance_unit"] = distance_unit
+
+        await self._trip_repo.update(
+            trip_id,
+            {
+                "settings": current,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        return current
+
+    async def delete_trip(self, trip_id: str, user_id: str) -> dict:
+        """Cascading delete of a trip and every subcollection.
+
+        Admin-only at the tool boundary (enforced by resolve_trip_admin).
+
+        Mirrors backend TripService.delete_trip but uses raw Firestore
+        collection walks for the backend-only subcollections (notifications,
+        invite_links, preferences) since the MCP server doesn't have repos
+        for those. Source of truth remains backend/src/services/trip_service.py;
+        update both if the storage shape changes.
+        """
+        trip_data = await self._trip_repo.get_or_raise(trip_id)
+        participants = trip_data.get("participants", {})
+        participant = participants.get(user_id)
+        if participant is None or participant.get("role") != TripRole.ADMIN.value:
+            raise PermissionError("Only the trip admin can delete this trip")
+
+        db = self._trip_repo._db
+        trip_doc_ref = self._trip_repo._collection().document(trip_id)
+
+        # Phase 1: Parallel list all top-level subcollections
+        plans, locations = await asyncio.gather(
+            self._plan_repo.list_all(trip_id=trip_id),
+            self._location_repo.list_all(trip_id=trip_id),
+        )
+
+        # Backend-only subcollections — walk raw Firestore collections.
+        async def _list_subcollection_ids(name: str) -> list[str]:
+            col = trip_doc_ref.collection(name)
+            return [doc.id async for doc in col.stream()]
+
+        notif_ids, invite_ids, pref_ids = await asyncio.gather(
+            _list_subcollection_ids("notifications"),
+            _list_subcollection_ids("invite_links"),
+            _list_subcollection_ids("preferences"),
+        )
+
+        # Phase 2: For each plan, list nodes and edges in parallel
+        plan_nodes_edges: list[tuple[list[dict], list[dict]]] = []
+        if plans:
+            plan_nodes_edges = list(
+                await asyncio.gather(
+                    *[
+                        asyncio.gather(
+                            self._node_repo.list_by_plan(trip_id, p["id"]),
+                            self._edge_repo.list_by_plan(trip_id, p["id"]),
+                        )
+                        for p in plans
+                    ]
+                )
+            )
+
+        # For each plan's nodes, list actions in parallel
+        plan_actions: list[list[list[dict]]] = []
+        for plan_idx, (nodes, _edges) in enumerate(plan_nodes_edges):
+            if nodes:
+                actions_per_node = await asyncio.gather(
+                    *[
+                        self._action_repo.list_by_node(
+                            trip_id, plans[plan_idx]["id"], n["id"]
+                        )
+                        for n in nodes
+                    ]
+                )
+                plan_actions.append(list(actions_per_node))
+            else:
+                plan_actions.append([])
+
+        # Phase 3: Collect all document refs (innermost first for safe retry)
+        refs = []
+
+        for plan_idx, plan in enumerate(plans):
+            plan_id_val = plan["id"]
+            nodes, edges = plan_nodes_edges[plan_idx]
+            actions_lists = plan_actions[plan_idx]
+
+            # Actions (innermost)
+            for node, actions in zip(nodes, actions_lists):
+                action_col = self._action_repo._collection(
+                    trip_id=trip_id, plan_id=plan_id_val, node_id=node["id"]
+                )
+                for a in actions:
+                    refs.append(action_col.document(a["id"]))
+
+            # Edges
+            edge_col = self._edge_repo._collection(
+                trip_id=trip_id, plan_id=plan_id_val
+            )
+            for e in edges:
+                refs.append(edge_col.document(e["id"]))
+
+            # Nodes
+            node_col = self._node_repo._collection(
+                trip_id=trip_id, plan_id=plan_id_val
+            )
+            for n in nodes:
+                refs.append(node_col.document(n["id"]))
+
+            # Plan doc
+            refs.append(
+                self._plan_repo._collection(trip_id=trip_id).document(plan_id_val)
+            )
+
+        # Backend-only subcollection docs (raw refs via trip doc ref)
+        for nid in notif_ids:
+            refs.append(trip_doc_ref.collection("notifications").document(nid))
+        for iid in invite_ids:
+            refs.append(trip_doc_ref.collection("invite_links").document(iid))
+        for pid in pref_ids:
+            refs.append(trip_doc_ref.collection("preferences").document(pid))
+
+        # Locations
+        loc_col = self._location_repo._collection(trip_id=trip_id)
+        for loc in locations:
+            refs.append(loc_col.document(loc["id"]))
+
+        # Trip document last — if a batch fails mid-way, trip still exists for retry
+        refs.append(trip_doc_ref)
+
+        # Phase 4: Chunked batch delete (Firestore limit: 500 ops per batch)
+        batch_size = 500
+        for i in range(0, len(refs), batch_size):
+            batch = db.batch()
+            for ref in refs[i : i + batch_size]:
+                batch.delete(ref)
+            await batch.commit()
+
+        return {
+            "trip_id": trip_id,
+            "plans_deleted": len(plans),
+            "docs_deleted": len(refs),
+        }
+
     async def add_action(
         self,
         user_id: str,
         trip_id: str,
+        plan_id: str,
         node_id: str,
-        action_type: str,
+        action_type: ActionType,
         content: str,
-        place_data: dict | None = None,
+        place_data: PlaceData | None = None,
     ) -> dict:
-        trip_data = await self._trip_repo.get_or_raise(trip_id)
-        self._verify_participant(trip_data, user_id)
-
-        plan_id = trip_data.get("active_plan_id")
-        if not plan_id:
-            raise ValueError("Trip has no active plan")
-
-        # Verify node exists
+        # Verify node exists on the target plan.
         await self._node_repo.get_or_raise(node_id, trip_id=trip_id, plan_id=plan_id)
 
         action = Action(
@@ -311,4 +550,35 @@ class TripService:
             "content": result["content"],
             "node_id": node_id,
             "created_at": result.get("created_at"),
+        }
+
+    async def list_actions(
+        self,
+        trip_id: str,
+        plan_id: str,
+        node_id: str,
+    ) -> list[dict[str, Any]]:
+        # Verify node exists on the target plan so callers get a clean error
+        # instead of a silently empty list when the node_id is wrong.
+        await self._node_repo.get_or_raise(node_id, trip_id=trip_id, plan_id=plan_id)
+        return await self._action_repo.list_by_node(trip_id, plan_id, node_id)
+
+    async def delete_action(
+        self,
+        trip_id: str,
+        plan_id: str,
+        node_id: str,
+        action_id: str,
+    ) -> dict:
+        # Verify node and action exist before deleting so we return a proper
+        # LookupError (→ 404 on backend) rather than silently succeeding.
+        await self._node_repo.get_or_raise(node_id, trip_id=trip_id, plan_id=plan_id)
+        existing = await self._action_repo.get_or_raise(
+            action_id, trip_id=trip_id, plan_id=plan_id, node_id=node_id
+        )
+        await self._action_repo.delete_action(trip_id, plan_id, node_id, action_id)
+        return {
+            "action_id": action_id,
+            "type": existing.get("type"),
+            "node_id": node_id,
         }

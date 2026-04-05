@@ -8,6 +8,16 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 
+def _node_coords(n: dict) -> tuple[float, float] | None:
+    """Extract lat/lng from a node dict, tolerating both flat and nested shapes."""
+    if n.get("lat") is not None and n.get("lng") is not None:
+        return n["lat"], n["lng"]
+    ll = n.get("lat_lng")
+    if isinstance(ll, dict) and ll.get("lat") is not None and ll.get("lng") is not None:
+        return ll["lat"], ll["lng"]
+    return None
+
+
 def _format_dt(raw: str | None, tz_str: str | None) -> str | None:
     """Convert a stored datetime string to local time with timezone label."""
     if not raw:
@@ -81,6 +91,9 @@ def format_trip_context(
 
         tz_str = f", tz: {tz}" if tz else ""
 
+        coords = _node_coords(n)
+        coords_str = f", {coords[0]:.4f},{coords[1]:.4f}" if coords else ""
+
         pids = n.get("participant_ids")
         participant_info = ""
         # if pids:
@@ -88,7 +101,7 @@ def format_trip_context(
 
         lines.append(
             f"- [{n['id']}] {n['name']} ({n.get('type', 'place')}"
-            f"{tz_str}{time_info}){participant_info}"
+            f"{coords_str}{tz_str}{time_info}){participant_info}"
         )
 
         # Actions attached to nodes (MCP enriched format)
@@ -115,10 +128,10 @@ def format_trip_context(
         )
 
     # Preferences
-    if preferences:
-        lines.append(f"\n## Travel Preferences ({len(preferences)})")
-        for p in preferences:
-            lines.append(f"- [{p.get('category', 'general')}] {p.get('content', '')}")
+    # if preferences:
+    #     lines.append(f"\n## Travel Preferences ({len(preferences)})")
+    #     for p in preferences:
+    #         lines.append(f"- [{p.get('category', 'general')}] {p.get('content', '')}")
 
     # Paths
     if paths:

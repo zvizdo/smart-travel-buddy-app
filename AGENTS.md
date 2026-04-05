@@ -61,7 +61,7 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 | `AgentService` | `import_chat`, `build_dag` (AFC with tools), `ongoing_chat` (AFC with DAG tools+grounding). |
 | `AgentUserContext` | `build_user_context()` — computes role, can_mutate, resolved path for the chatting user. |
 | `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge`, `get_plan` to DAGService. Converts `lat/lng` to `lat_lng` sub-object. Tracks `actions_taken`. |
-| `PlanService` | `clone_plan`, `promote_plan`, `delete_plan` (cascading batch delete) |
+| `PlanService` | **In `shared/shared/services/`**. `clone_plan`, `promote_plan`, `delete_plan` (cascading batch delete). `notification_service` is optional — backend injects it, MCP passes `None` and `promote_plan` skips the notification step. |
 | `RouteService` | **In `shared/shared/services/`**. Google Routes API v2. `get_route_data()` -> `RouteData(polyline, travel_time_hours, distance_km)`. |
 | `NotificationService` | `create_notification`, `notify_member_joined`, `notify_member_removed`, `notify_role_changed` |
 | `InviteService` | `generate_invite` (token), `claim_invite` (adds participant) |
@@ -179,22 +179,7 @@ GCS: {bucket}/{user_id}/{trip_id}/chat-history.json  # 12h session, 7-day lifecy
 
 ### Timeline Layout Engine (`lib/timeline-layout.ts`)
 
-Pure function `computeTimelineLayout()` — no React. Takes nodes, edges, path result, and zoom level; returns `TimelineLayout` with lanes, date markers, and total height.
-
-**Lane strategy** (`determineLanes`):
-1. **"mine" mode**: single lane scoped to current user's participant path.
-2. **"all" mode**: topology-based — if DAG has branches (out-degree>=2 or multiple roots), uses `computeTopologyLanes()` to map every distinct topological path to a lane. Labels auto-determined from `participant_ids`.
-3. **Fallback**: single `__all__` lane.
-
-**Multi-lane alignment**: Global Y-position pass computes positions for all timed nodes across all lanes (sorted by arrival, with gap compression). Per-lane loops look up from this global map so shared nodes align at identical Y offsets.
-
-**Key invariant**: `earliestMs` and global positions are computed only from nodes in the lane definitions — nodes outside all lanes must not affect the time anchor.
-
-**Shared nodes**: Nodes in 2+ lanes get `isShared=true`. `sharedNodeRole` is `"diverge"` (out-degree>=2) or `"merge"` (in-degree>=2), rendered as "Paths split"/"Paths rejoin" chips.
-
-**Gap compression**: Idle periods > 8h compressed to 40px indicators showing "~Xh idle" or "~X days idle".
-
-**Frontend path computation** (`lib/path-computation.ts`): mirrors `shared/shared/dag/paths.py`. `computeParticipantPaths()` — BFS per participant with multi-root `__root__` divergence handling.
+Pure `computeTimelineLayout()` — no React. Takes nodes, edges, path result, zoom; returns `TimelineLayout` with lanes, date markers, total height. **Lane strategy** (`determineLanes`): "mine" = single lane scoped to current user's path; "all" = topology-based — if DAG has branches (out-degree>=2 or multiple roots), `computeTopologyLanes()` maps every distinct topological path to a lane, labels from `participant_ids`; fallback is a single `__all__` lane. **Multi-lane alignment**: global Y-position pass computes positions for all timed nodes across all lanes (sorted by arrival, with gap compression); per-lane loops look up from this global map so shared nodes align at identical Y offsets. **Key invariant**: `earliestMs` and global positions computed only from nodes in the lane definitions. **Shared nodes** in 2+ lanes get `isShared=true`; `sharedNodeRole` is `"diverge"` (out-degree>=2) or `"merge"` (in-degree>=2), rendered as "Paths split"/"Paths rejoin" chips. **Gap compression**: idle >8h compressed to 40px "~Xh/days idle" indicators. Frontend path computation (`lib/path-computation.ts`) mirrors `shared/shared/dag/paths.py`.
 
 ---
 
@@ -204,22 +189,19 @@ FastMCP server for external AI agents via Model Context Protocol. Transport: `st
 
 **Entry point**: `python -m mcpserver.src` (via `__main__.py`). **Never** `python -m mcpserver.src.main` — causes Python's `__main__` double-import, creating two `mcp` instances; tools register on the wrong one → empty `tools/list`.
 
-**Auth architecture** (critical — do not change without understanding the full flow):
-
-MCP SDK clients (Claude Code, etc.) always probe `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` for `type: "http"` servers.
-
-1. **`auth_server_provider`** (not `token_verifier`) — creates all OAuth discovery endpoints. `token_verifier` alone omits the authorization server metadata endpoint → 404 → SDK breaks.
-2. **`InMemoryOAuthProvider`** (`auth/oauth_provider.py`) — auto-approving OAuth provider. `load_access_token()` validates OAuth-issued tokens first, then falls back to HMAC-SHA256 + Firestore API key lookup.
-3. **`AuthSettings`** needs `ClientRegistrationOptions(enabled=True)` — SDK requires dynamic client registration.
-4. **No custom wrapping** — `mcp.streamable_http_app()` / `mcp.sse_app()` directly with uvicorn. Mounting inside parent Starlette breaks session manager lifespan.
-5. **`TransportSecuritySettings(enable_dns_rebinding_protection=False)`** for non-localhost (Cloud Run).
-6. **stdio mode**: resolves user once at startup via `MCP_API_KEY` env var.
+**Auth architecture** (critical — don't change without understanding the full flow): MCP SDK clients probe `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` for `type: "http"` servers. Use `auth_server_provider` (not `token_verifier` — alone it omits the authorization server metadata endpoint → 404 → SDK breaks). `InMemoryOAuthProvider` (`auth/oauth_provider.py`) auto-approves; `load_access_token()` validates OAuth tokens first, then falls back to HMAC-SHA256 + Firestore API key lookup. `AuthSettings` needs `ClientRegistrationOptions(enabled=True)` for dynamic client registration. No custom wrapping — `mcp.streamable_http_app()` / `mcp.sse_app()` directly with uvicorn (mounting inside parent Starlette breaks session manager lifespan). `TransportSecuritySettings(enable_dns_rebinding_protection=False)` for Cloud Run. stdio mode resolves user once at startup via `MCP_API_KEY`.
 
 **Key files**: `auth/oauth_provider.py` (OAuth + API key fallback), `auth/api_key_auth.py` (`resolve_user_from_api_key()` HMAC→Firestore, `get_user_id(ctx)` for tool handlers), `config.py` (env vars).
 
 **Client config** (`.mcp.json`): `type: "http"`, `url: ".../mcp"`, `headers: { "Authorization": "Bearer <api_key>" }`.
 
-**Tools**: `get_trips`, `get_trip_versions`, `get_trip_context` | `add_node`, `update_node`, `delete_node` | `add_edge`, `delete_edge` | `add_action` | `search_places`, `suggest_stop`. Shared `DAGService` for mutations, shared `format_trip_context()` for context.
+**Tools**: `get_trips`, `get_trip_plans`, `get_trip_context` | `create_trip`, `delete_trip`, `update_trip_settings` | `create_plan`, `promote_plan`, `delete_plan` | `add_node`, `update_node`, `delete_node` | `add_edge`, `delete_edge` | `add_action`, `list_actions`, `delete_action` | `find_places`. Shared `DAGService` + `PlanService` for mutations, shared `format_trip_context()` for context. `add_action` takes flattened place params (`place_name`, `place_id`, `place_lat`, `place_lng`, `place_category`) and requires `place_id` when `type='place'`.
+
+**MCP-specific behaviors** (diverge from backend on purpose):
+- `create_trip` bundles an initial active plan named "Main Route" so `add_node` works immediately. Backend's `POST /trips` stays planless — web flow creates the first plan inside `import_build`.
+- `update_node` updates only the target node via `DAGService.update_node_only`; it does NOT cascade schedule changes to downstream stops (backend still cascades via `update_node_with_cascade_preview`).
+
+**Auth gates** (`mcpserver/src/tools/_helpers.py`): every `@mcp.tool()` calls exactly one on its first line — Gate A `resolve_trip_plan` (editor: admin/planner), Gate B participant check (in `add_action`), Gate C `resolve_trip_admin` (admin only), Gate D `get_user_id` (auth only, for `create_trip` / `find_places`).
 
 ---
 

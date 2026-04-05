@@ -6,7 +6,7 @@ from backend.src.services.agent_service import AgentService
 from shared.services.dag_service import DAGService
 from backend.src.services.invite_service import InviteService
 from backend.src.services.notification_service import NotificationService
-from backend.src.services.plan_service import PlanService
+from shared.services.plan_service import PlanService
 from shared.services.route_service import RouteService
 from backend.src.services.trip_service import TripService
 from backend.src.services.user_service import UserService

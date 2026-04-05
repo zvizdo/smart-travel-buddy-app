@@ -71,7 +71,10 @@ async def update_node(
 ) -> str:
     """Update an existing stop. Only provide the fields you want to change.
 
-    Schedule changes cascade downstream automatically. Requires Admin or Planner role.
+    Updates only this node. Does NOT propagate schedule changes to downstream
+    stops — if you shift this node's arrival/departure and want later stops
+    to move as well, update each of them explicitly.
+    Role required: Admin or Planner.
 
     Args:
         trip_id: The trip identifier.
@@ -81,10 +84,10 @@ async def update_node(
         type: New type - one of: city, hotel, restaurant, place, activity.
         lat: New latitude.
         lng: New longitude.
-        arrival_time: New ISO 8601 arrival datetime.
+        arrival_time: New ISO 8601 arrival datetime, e.g. "2026-04-10T14:00:00Z".
         departure_time: New ISO 8601 departure datetime.
     """
-    user_id, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
+    _, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
     app: AppContext = ctx.request_context.lifespan_context
 
     updates: dict = {}
@@ -102,28 +105,13 @@ async def update_node(
     if not updates:
         return "No fields to update."
 
-    result = await app.dag_service.update_node_with_cascade_preview(
+    node = await app.dag_service.update_node_only(
         trip_id=trip_id,
         plan_id=resolved_plan_id,
         node_id=node_id,
         updates=updates,
     )
-
-    # Auto-confirm cascade
-    cascade = result.get("cascade_preview", {})
-    affected = cascade.get("affected_nodes", [])
-    if affected:
-        await app.dag_service.confirm_cascade(
-            trip_id=trip_id,
-            plan_id=resolved_plan_id,
-            node_id=node_id,
-        )
-
-    node = result["node"]
-    lines = [f"Updated: {node.get('name', node_id)}"]
-    if affected:
-        lines.append(f"Cascaded to {len(affected)} downstream nodes")
-    return "\n".join(lines)
+    return f"Updated: {node.get('name', node_id)}"
 
 
 @mcp.tool()

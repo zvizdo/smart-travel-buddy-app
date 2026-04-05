@@ -415,6 +415,41 @@ class DAGService:
             "merge_edge": merge_edge_dict,
         }
 
+    async def update_node_only(
+        self,
+        trip_id: str,
+        plan_id: str,
+        node_id: str,
+        updates: dict[str, Any],
+    ) -> dict:
+        """Update a single node. Does not cascade schedule changes downstream
+        and does not touch connected edges.
+
+        Used by the MCP server where external LLMs expect a targeted update to
+        be targeted. If lat_lng changes, the node's timezone is re-resolved;
+        no polylines are recomputed and no downstream arrival/departure times
+        are adjusted.
+
+        Returns the updated node dict.
+        """
+        node = await self._node_repo.get_node_or_raise(trip_id, plan_id, node_id)
+        node_dict = node.model_dump(mode="json")
+
+        for key, value in updates.items():
+            node_dict[key] = value
+        node_dict["updated_at"] = datetime.now(UTC).isoformat()
+
+        # Re-resolve timezone if location changed
+        if "lat_lng" in updates:
+            lat_lng = node_dict.get("lat_lng", {})
+            lat = lat_lng.get("lat") if isinstance(lat_lng, dict) else getattr(lat_lng, "lat", None)
+            lng = lat_lng.get("lng") if isinstance(lat_lng, dict) else getattr(lat_lng, "lng", None)
+            if lat is not None and lng is not None:
+                node_dict["timezone"] = resolve_timezone(lat, lng)
+
+        await self._node_repo.update_node(trip_id, plan_id, node_id, node_dict)
+        return node_dict
+
     async def update_node_with_cascade_preview(
         self,
         trip_id: str,

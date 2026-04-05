@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { type DocumentData } from "firebase/firestore";
 import { NodeEditForm } from "@/components/dag/node-edit-form";
 import { BranchForm } from "@/components/dag/branch-form";
@@ -25,7 +25,11 @@ interface NodeDetailSheetProps {
   onDelete?: (nodeId: string) => void;
   onAddAction?: (nodeId: string, data: AddActionData) => void;
   onDeleteAction?: (nodeId: string, actionId: string) => void;
-  onToggleAction?: (nodeId: string, actionId: string, isCompleted: boolean) => void;
+  onToggleAction?: (
+    nodeId: string,
+    actionId: string,
+    isCompleted: boolean,
+  ) => void | Promise<void>;
   plannerReadOnly?: boolean;
   onBranch?: (
     nodeId: string,
@@ -85,6 +89,63 @@ export function NodeDetailSheet({
   const [mode, setMode] = useState<"view" | "edit" | "branch">("view");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [actionTab, setActionTab] = useState<ActionTab>("note");
+  const [dragY, setDragY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const dragStart = useRef<{ y: number; t: number } | null>(null);
+  const lastMove = useRef<{ y: number; t: number } | null>(null);
+
+  const canDrag = mode === "view";
+
+  function handleDragPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (!canDrag) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const now = performance.now();
+    dragStart.current = { y: e.clientY, t: now };
+    lastMove.current = { y: e.clientY, t: now };
+    setIsDragging(true);
+  }
+
+  function handleDragPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!isDragging || !dragStart.current) return;
+    const dy = Math.max(0, e.clientY - dragStart.current.y);
+    setDragY(dy);
+    lastMove.current = { y: e.clientY, t: performance.now() };
+  }
+
+  function handleDragPointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    if (!isDragging || !dragStart.current) {
+      setIsDragging(false);
+      return;
+    }
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    const height = sheetRef.current?.offsetHeight ?? 1;
+    const dy = dragY;
+    let velocity = 0;
+    if (lastMove.current && dragStart.current) {
+      const dt = lastMove.current.t - dragStart.current.t;
+      if (dt > 0) {
+        velocity = ((lastMove.current.y - dragStart.current.y) / dt) * 1000;
+      }
+    }
+    setIsDragging(false);
+    dragStart.current = null;
+    lastMove.current = null;
+    if (dy > height * 0.3 || velocity > 500) {
+      onClose();
+    } else {
+      setDragY(0);
+    }
+  }
+
+  function handleHandleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClose();
+    }
+  }
 
   const tz = node.timezone ?? undefined;
   const arrivalDate = node.arrival_time
@@ -125,9 +186,26 @@ export function NodeDetailSheet({
   const canEdit = online && (userRole === "admin" || userRole === "planner");
 
   return (
-    <div className="absolute bottom-[var(--bottom-nav-height,0px)] left-0 right-0 z-10 rounded-t-3xl bg-surface-lowest shadow-float animate-slide-up max-h-[70vh] flex flex-col">
-      {/* Handle */}
-      <div className="flex justify-center pt-3 pb-1 shrink-0">
+    <div
+      ref={sheetRef}
+      className="absolute bottom-[var(--bottom-nav-height,0px)] left-0 right-0 z-10 rounded-t-3xl bg-surface-lowest shadow-float animate-slide-up max-h-[70vh] flex flex-col"
+      style={{
+        transform: dragY > 0 ? `translateY(${dragY}px)` : undefined,
+        transition: isDragging ? "none" : "transform 0.25s ease-out",
+      }}
+    >
+      {/* Handle — swipe down to close (view mode only) */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label="Drag down or press Enter to close"
+        onPointerDown={handleDragPointerDown}
+        onPointerMove={handleDragPointerMove}
+        onPointerUp={handleDragPointerUp}
+        onPointerCancel={handleDragPointerUp}
+        onKeyDown={handleHandleKeyDown}
+        className={`flex justify-center py-3 shrink-0 touch-none ${canDrag ? "cursor-grab active:cursor-grabbing" : "cursor-default"}`}
+      >
         <div className="h-1 w-10 rounded-full bg-surface-high" />
       </div>
 
@@ -179,6 +257,7 @@ export function NodeDetailSheet({
           )}
           <button
             onClick={onClose}
+            aria-label="Close panel"
             className="h-8 w-8 rounded-full bg-surface-low flex items-center justify-center text-on-surface-variant transition-colors active:bg-surface-container ml-1"
           >
             <svg

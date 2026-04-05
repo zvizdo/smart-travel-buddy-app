@@ -499,14 +499,11 @@ export default function TripMapPage() {
     isCompleted: boolean,
   ) {
     if (!displayPlanId) return;
-    try {
-      await api.patch(
-        `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}/actions/${actionId}`,
-        { is_completed: isCompleted },
-      );
-    } catch {
-      // Error handled by api client
-    }
+    // Let errors propagate so ActionList can revert its optimistic state.
+    await api.patch(
+      `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}/actions/${actionId}`,
+      { is_completed: isCompleted },
+    );
   }
 
   async function handleBranch(

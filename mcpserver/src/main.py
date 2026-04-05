@@ -38,6 +38,7 @@ from shared.repositories import (
     UserRepository,
 )
 from shared.services.dag_service import DAGService
+from shared.services.plan_service import PlanService
 from shared.services.route_service import RouteService
 
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +52,7 @@ class AppContext:
     db: AsyncClient
     trip_service: TripService
     dag_service: DAGService
+    plan_service: PlanService
     places_service: PlacesService
     config: dict
     http_client: httpx.AsyncClient | None = field(default=None)
@@ -134,6 +136,17 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         trip_repo, plan_repo, node_repo, edge_repo,
         route_service=route_service,
     )
+    # PlanService is shared with the backend. notification_service is None here
+    # so promote_plan skips the in-app notification step — MCP callers don't
+    # use the notification subsystem.
+    plan_service = PlanService(
+        trip_repo,
+        plan_repo,
+        node_repo,
+        edge_repo,
+        notification_service=None,
+        action_repo=action_repo,
+    )
     places_service = PlacesService(config["google_maps_api_key"])
 
     try:
@@ -141,6 +154,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             db=_db,
             trip_service=trip_service,
             dag_service=dag_service,
+            plan_service=plan_service,
             places_service=places_service,
             config=config,
             http_client=http_client,
@@ -175,6 +189,7 @@ import mcpserver.src.tools.actions  # noqa: E402, F401
 import mcpserver.src.tools.nodes  # noqa: E402, F401
 import mcpserver.src.tools.edges  # noqa: E402, F401
 import mcpserver.src.tools.places  # noqa: E402, F401
+import mcpserver.src.tools.plans  # noqa: E402, F401
 import mcpserver.src.tools.trips  # noqa: E402, F401
 
 

@@ -1,9 +1,15 @@
-"""Plan service: deep clone plans, promote alternatives, manage plan versions."""
+"""Plan service: deep clone plans, promote alternatives, manage plan versions.
+
+Lives in shared/ so both the backend HTTP API and the MCP server can use the
+same implementation. The notification_service constructor arg is optional:
+the backend injects its NotificationService; the MCP server passes None and
+plan promotions skip the notification step.
+"""
 
 import asyncio
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from backend.src.services.notification_service import NotificationService
 from shared.tools.id_gen import action_id, edge_id, node_id, plan_id
 
 from shared.models import (
@@ -21,6 +27,12 @@ from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
 from shared.repositories.trip_repository import TripRepository
 
+if TYPE_CHECKING:
+    # Avoid a runtime import cycle: NotificationService lives in backend/.
+    # Any caller that passes a concrete instance satisfies the duck-typed
+    # create_notification(...) call below.
+    pass
+
 
 class PlanService:
     def __init__(
@@ -29,8 +41,8 @@ class PlanService:
         plan_repo: PlanRepository,
         node_repo: NodeRepository,
         edge_repo: EdgeRepository,
-        notification_service: NotificationService,
-        action_repo: ActionRepository,
+        notification_service=None,
+        action_repo: ActionRepository | None = None,
     ):
         self._trip_repo = trip_repo
         self._plan_repo = plan_repo
@@ -103,7 +115,7 @@ class PlanService:
 
         # Clone actions if requested
         actions_cloned = 0
-        if include_actions:
+        if include_actions and self._action_repo is not None:
             for old_node_id, new_node_id in node_id_map.items():
                 source_actions = await self._action_repo.list_by_node(
                     trip_id, source_plan_id, old_node_id
@@ -136,7 +148,9 @@ class PlanService:
     ) -> dict:
         """Promote a plan to active. Demote the current active plan to draft.
 
-        Sends plan_promoted notification to all participants.
+        Sends plan_promoted notification to all participants when a
+        notification_service was injected. Callers without one (e.g. the MCP
+        server) simply skip the notification step.
         """
         trip = await self._trip_repo.get_trip_or_raise(trip_id)
 
@@ -162,16 +176,17 @@ class PlanService:
             "updated_at": datetime.now(UTC).isoformat(),
         })
 
-        # Notify all participants
-        participant_ids = list(trip.participants.keys())
-        if participant_ids:
-            await self._notification_service.create_notification(
-                trip_id=trip_id,
-                notification_type=NotificationType.PLAN_PROMOTED,
-                message=f"Plan '{plan.name}' has been promoted to the active plan",
-                target_user_ids=participant_ids,
-                related_entity=RelatedEntity(type="plan", id=plan_id),
-            )
+        # Notify all participants (optional — only when a notification service was injected)
+        if self._notification_service is not None:
+            participant_ids = list(trip.participants.keys())
+            if participant_ids:
+                await self._notification_service.create_notification(
+                    trip_id=trip_id,
+                    notification_type=NotificationType.PLAN_PROMOTED,
+                    message=f"Plan '{plan.name}' has been promoted to the active plan",
+                    target_user_ids=participant_ids,
+                    related_entity=RelatedEntity(type="plan", id=plan_id),
+                )
 
         return {
             "plan_id": plan_id,
@@ -197,12 +212,16 @@ class PlanService:
             self._edge_repo.list_by_plan(trip_id, plan_id),
             self._node_repo.list_by_plan(trip_id, plan_id),
         )
-        action_lists = await asyncio.gather(
-            *[
-                self._action_repo.list_by_node(trip_id, plan_id, n["id"])
-                for n in nodes
-            ]
-        ) if nodes else []
+        action_lists = []
+        if nodes and self._action_repo is not None:
+            action_lists = list(
+                await asyncio.gather(
+                    *[
+                        self._action_repo.list_by_node(trip_id, plan_id, n["id"])
+                        for n in nodes
+                    ]
+                )
+            )
 
         # Phase 2: Collect all document refs for batched delete
         refs = []
@@ -211,13 +230,17 @@ class PlanService:
             refs.append(edge_col.document(e["id"]))
 
         node_col = self._node_repo._collection(trip_id=trip_id, plan_id=plan_id)
-        for node, actions in zip(nodes, action_lists):
-            action_col = self._action_repo._collection(
-                trip_id=trip_id, plan_id=plan_id, node_id=node["id"]
-            )
-            for a in actions:
-                refs.append(action_col.document(a["id"]))
-            refs.append(node_col.document(node["id"]))
+        if action_lists:
+            for node, actions in zip(nodes, action_lists):
+                action_col = self._action_repo._collection(
+                    trip_id=trip_id, plan_id=plan_id, node_id=node["id"]
+                )
+                for a in actions:
+                    refs.append(action_col.document(a["id"]))
+                refs.append(node_col.document(node["id"]))
+        else:
+            for node in nodes:
+                refs.append(node_col.document(node["id"]))
 
         # Plan doc last — if a batch fails mid-way, plan still exists for retry
         refs.append(
