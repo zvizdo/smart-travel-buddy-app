@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuth } from "@/components/auth/auth-provider";
-import { useTrip } from "@/lib/firestore-hooks";
+import { useTrip, useTripPlans } from "@/lib/firestore-hooks";
 
 export interface PlanData {
   id: string;
@@ -102,8 +102,37 @@ export default function TripLayout({ children }: { children: ReactNode }) {
     try { sessionStorage.setItem(`trip-map-camera:${tripId}`, JSON.stringify(camera)); } catch {}
   }, [tripId]);
   const [viewedPlanId, setViewedPlanId] = useState<string | null>(null);
-  const [plans, setPlans] = useState<PlanData[]>([]);
-  const [plansLoading, setPlansLoading] = useState(true);
+
+  // Real-time Firestore listener for plans. This keeps the plan list in sync
+  // when drafts are created/promoted/deleted anywhere (settings page, MCP,
+  // another tab) so we never need a manual refresh.
+  const { data: livePlans, loading: livePlansLoading } = useTripPlans(
+    user ? tripId : null,
+  );
+  // Local override layer: lets pages do optimistic updates (e.g. immediately
+  // after creating a draft). Reset to null whenever the live snapshot changes
+  // so we stop shadowing once Firestore catches up.
+  const [plansOverride, setPlansOverride] = useState<PlanData[] | null>(null);
+  useEffect(() => {
+    setPlansOverride(null);
+  }, [livePlans]);
+  const plans: PlanData[] = useMemo(
+    () => plansOverride ?? (livePlans as unknown as PlanData[]),
+    [plansOverride, livePlans],
+  );
+  const plansLoading = plansOverride === null && livePlansLoading;
+  const setPlans: React.Dispatch<React.SetStateAction<PlanData[]>> =
+    useCallback(
+      (value) => {
+        setPlansOverride((prev) => {
+          const base = prev ?? (livePlans as unknown as PlanData[]);
+          return typeof value === "function"
+            ? (value as (prev: PlanData[]) => PlanData[])(base)
+            : value;
+        });
+      },
+      [livePlans],
+    );
 
   function fetchTrip() {
     setApiLoading(true);
@@ -114,15 +143,6 @@ export default function TripLayout({ children }: { children: ReactNode }) {
       .finally(() => setApiLoading(false));
   }
 
-  function fetchPlans() {
-    setPlansLoading(true);
-    api
-      .get<{ plans: PlanData[] }>(`/trips/${tripId}/plans`)
-      .then((res) => setPlans(res.plans))
-      .catch(() => {})
-      .finally(() => setPlansLoading(false));
-  }
-
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
@@ -130,7 +150,6 @@ export default function TripLayout({ children }: { children: ReactNode }) {
       return;
     }
     fetchTrip();
-    fetchPlans();
   }, [tripId, authLoading, user, router]);
 
   // Merge: prefer real-time Firestore data once available, fall back to API data.

@@ -52,6 +52,40 @@ export function useTrip(tripId: string | null): UseDocResult<DocumentData> {
   return { data, loading, error };
 }
 
+export function useTripPlans(
+  tripId: string | null,
+): UseCollectionResult<DocumentData> {
+  const [data, setData] = useState<DocumentData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    if (!tripId) {
+      setData([]);
+      setLoading(false);
+      return;
+    }
+
+    const db = getFirestore();
+    const q = query(collection(db, `trips/${tripId}/plans`));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const plans = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setData(plans);
+        setLoading(false);
+      },
+      (err) => {
+        setError(err);
+        setLoading(false);
+      },
+    );
+    return unsub;
+  }, [tripId]);
+
+  return { data, loading, error };
+}
+
 export function useTripNodes(
   tripId: string | null,
   planId: string | null,

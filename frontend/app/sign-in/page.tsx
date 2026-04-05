@@ -188,7 +188,7 @@ export default function SignInPage() {
   // -----------------------------------------------------------------------
 
   return (
-    <div className="min-h-screen bg-surface text-on-surface">
+    <div className="min-h-screen overflow-x-clip bg-surface text-on-surface">
       {/* ============ TOP NAV ============ */}
       <header className="fixed top-0 inset-x-0 z-50">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-4">
@@ -342,7 +342,7 @@ export default function SignInPage() {
 
           <div className="mt-16 grid lg:grid-cols-5 gap-8 items-start">
             {/* Left: chat preview */}
-            <div className="lg:col-span-3 rounded-3xl bg-surface-lowest shadow-float ring-1 ring-black/5 overflow-hidden">
+            <div className="lg:col-span-3 min-w-0 rounded-3xl bg-surface-lowest shadow-float ring-1 ring-black/5 overflow-hidden">
               <div className="flex items-center justify-between px-5 py-3 border-b border-surface-high bg-surface-low">
                 <div className="flex items-center gap-2">
                   <div className="h-7 w-7 rounded-lg gradient-primary grid place-items-center">
@@ -383,7 +383,7 @@ export default function SignInPage() {
             </div>
 
             {/* Right: MCP .mcp.json */}
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-2 min-w-0">
               <div className="rounded-3xl bg-inverse-surface text-inverse-on-surface shadow-float ring-1 ring-black/20 overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/10">
                   <div className="flex items-center gap-1.5">

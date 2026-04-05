@@ -79,7 +79,7 @@ export function PlanSwitcher({
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-2 w-56 rounded-2xl bg-surface-lowest shadow-float z-50 overflow-hidden animate-fade-in">
+        <div className="absolute top-full right-0 mt-2 w-56 max-w-[calc(100vw-2rem)] rounded-2xl bg-surface-lowest shadow-float z-50 overflow-hidden animate-fade-in">
           {plans
             .sort((a, b) => {
               const order = { active: 0, draft: 1, archived: 2 };
