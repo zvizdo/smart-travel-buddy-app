@@ -1,1 +1,0 @@
-claude mcp add stitch --transport http https://stitch.googleapis.com/mcp --header "X-Goog-Api-Key: AQ.Ab8RN6KK-AuTLoBvZQqLfWmKTttjckFWkm9WjswKnTR5IdE1Fg" -s project

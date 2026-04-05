@@ -24,8 +24,5 @@ COPY --from=builder /app/mcpserver /app/mcpserver
 
 # Cloud Run injects PORT (default 8080)
 ENV PORT=8080
-ENV MCP_TRANSPORT=streamable-http
-ENV MCP_HOST=0.0.0.0
-ENV MCP_PORT=8080
 
-CMD exec sh -c "MCP_PORT=${PORT} python -m mcpserver.src"
+CMD exec uvicorn mcpserver.src.main:app --host 0.0.0.0 --port ${PORT}

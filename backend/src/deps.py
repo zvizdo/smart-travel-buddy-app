@@ -122,9 +122,17 @@ def get_dag_service(
     plan_repo: PlanRepository = Depends(get_plan_repo),
     node_repo: NodeRepository = Depends(get_node_repo),
     edge_repo: EdgeRepository = Depends(get_edge_repo),
+    action_repo: ActionRepository = Depends(get_action_repo),
 ) -> DAGService:
     route_service = get_route_service(request)
-    return DAGService(trip_repo, plan_repo, node_repo, edge_repo, route_service=route_service)
+    return DAGService(
+        trip_repo,
+        plan_repo,
+        node_repo,
+        edge_repo,
+        route_service=route_service,
+        action_repo=action_repo,
+    )
 
 
 def get_invite_service(

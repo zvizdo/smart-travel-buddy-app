@@ -145,6 +145,31 @@ export default function TripMapPage() {
     selectedNodeId,
   );
 
+  // Optimistically-deleted action IDs — hidden from UI immediately on delete.
+  // Cleared once the Firestore snapshot reflects the deletion (id no longer in data).
+  const [deletedActionIds, setDeletedActionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  useEffect(() => {
+    setDeletedActionIds((prev) => {
+      if (prev.size === 0) return prev;
+      const present = new Set(nodeActions.map((a) => a.id));
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of prev) {
+        if (!present.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [nodeActions]);
+  const visibleNodeActions = useMemo(
+    () => nodeActions.filter((a) => !deletedActionIds.has(a.id)),
+    [nodeActions, deletedActionIds],
+  );
+
   const [cascadePreview, setCascadePreview] =
     useState<CascadePreviewData | null>(null);
   const [cascadeNodeId, setCascadeNodeId] = useState<string | null>(null);
@@ -484,12 +509,24 @@ export default function TripMapPage() {
 
   async function handleDeleteAction(nodeId: string, actionId: string) {
     if (!displayPlanId) return;
+    // Optimistically hide the action; the snapshot cleanup effect will drop
+    // the id from the set once Firestore confirms deletion.
+    setDeletedActionIds((prev) => {
+      const next = new Set(prev);
+      next.add(actionId);
+      return next;
+    });
     try {
       await api.delete(
         `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}/actions/${actionId}`,
       );
     } catch {
-      // Error handled by api client
+      // Revert optimistic hide on failure so the item reappears.
+      setDeletedActionIds((prev) => {
+        const next = new Set(prev);
+        next.delete(actionId);
+        return next;
+      });
     }
   }
 
@@ -823,7 +860,7 @@ export default function TripMapPage() {
           plannerReadOnly={plannerReadOnly}
           datetimeFormat={datetimeFormat}
           dateFormat={dateFormat}
-          actions={nodeActions}
+          actions={visibleNodeActions}
           actionsLoading={actionsLoading}
           onClose={() => setSelectedNodeId(null)}
           onEdit={handleNodeEdit}

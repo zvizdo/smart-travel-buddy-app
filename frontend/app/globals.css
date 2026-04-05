@@ -190,3 +190,54 @@ select {
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%);
 }
 
+/* ========================================================================
+   Landing page — warm adventure gradients
+   ======================================================================== */
+
+.gradient-warm {
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 0%, rgba(253, 212, 0, 0.22) 0%, transparent 60%),
+    radial-gradient(ellipse 70% 55% at 85% 10%, rgba(255, 126, 95, 0.18) 0%, transparent 55%),
+    radial-gradient(ellipse 90% 70% at 50% 100%, rgba(64, 206, 243, 0.18) 0%, transparent 65%),
+    linear-gradient(180deg, #fff8ec 0%, #eff8f7 60%, #eff8f7 100%);
+}
+
+.gradient-warm-text {
+  background: linear-gradient(120deg, #b8860b 0%, #ff7e5f 35%, #006479 80%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.landing-grid-bg {
+  background-image:
+    linear-gradient(rgba(0, 100, 121, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 100, 121, 0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black 30%, transparent 75%);
+}
+
+.sunset-orb {
+  background: radial-gradient(circle, rgba(253, 212, 0, 0.55) 0%, rgba(255, 126, 95, 0.35) 40%, transparent 70%);
+  filter: blur(40px);
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+
+.animate-float-slow {
+  animation: float-slow 6s ease-in-out infinite;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+

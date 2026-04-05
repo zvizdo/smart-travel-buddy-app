@@ -147,6 +147,12 @@ export function NodeDetailSheet({
     }
   }
 
+  const mapsUrl = node.place_id
+    ? `https://www.google.com/maps/place/?q=place_id:${node.place_id}`
+    : node.lat_lng
+      ? `https://www.google.com/maps/@${node.lat_lng.lat},${node.lat_lng.lng},17z`
+      : null;
+
   const tz = node.timezone ?? undefined;
   const arrivalDate = node.arrival_time
     ? formatDateTimeWithPreference(
@@ -331,6 +337,29 @@ export function NodeDetailSheet({
                   </div>
                 );
               })()}
+            {mapsUrl && (
+              <a
+                href={mapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs font-medium text-primary/80 hover:text-primary"
+              >
+                <svg
+                  className="h-3 w-3"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"
+                  />
+                </svg>
+                Open in Maps
+              </a>
+            )}
             <ActionList
               actions={actions}
               loading={actionsLoading}

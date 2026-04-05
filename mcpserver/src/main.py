@@ -1,20 +1,22 @@
 """Smart Travel Buddy MCP Server entry point.
 
 Exposes trip management tools to external AI agents via the Model Context Protocol.
-
-Multi-user deployment: each request carries an Authorization: Bearer <key> header.
-The API key is resolved per-request to a user ID via HMAC-SHA256 + Firestore lookup.
-
-Local stdio mode: falls back to MCP_API_KEY env var (resolved once at startup).
+Transport is streamable-http only — each request carries an
+Authorization: Bearer <key> header that is resolved per-request to a user ID
+via HMAC-SHA256 + Firestore lookup.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 import firebase_admin
 from google.cloud.firestore import AsyncClient
@@ -22,9 +24,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 import httpx
-from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
-from mcpserver.src.auth.api_key_auth import resolve_user_from_api_key
-from mcpserver.src.auth.oauth_provider import InMemoryOAuthProvider
+from mcp.server.auth.settings import AuthSettings
+from mcpserver.src.auth.api_key_auth import ApiKeyTokenVerifier
 from mcpserver.src.config import get_config
 from mcpserver.src.services.places_service import PlacesService
 from mcpserver.src.services.trip_service import TripService
@@ -56,7 +57,6 @@ class AppContext:
     places_service: PlacesService
     config: dict
     http_client: httpx.AsyncClient | None = field(default=None)
-    stdio_user_id: str | None = field(default=None)
 
 
 # --- Eager Firebase + config initialization -----------------------------------
@@ -67,30 +67,25 @@ if not firebase_admin._apps:
 _db = AsyncClient()
 _config = get_config()
 
-# Build auth components for HTTP transports (streamable-http / sse).
-# Using auth_server_provider (not token_verifier) so FastMCP serves ALL
-# OAuth discovery + auth endpoints that Claude Code's SDK expects:
-#   - /.well-known/oauth-protected-resource
-#   - /.well-known/oauth-authorization-server
-#   - /register, /authorize, /token
-# The InMemoryOAuthProvider.load_access_token validates Bearer API keys
-# via HMAC+Firestore, so the actual OAuth flow is never needed — the
-# API key from .mcp.json headers works on every request.
-_is_http_transport = _config["mcp_transport"] in ("streamable-http", "sse")
-_oauth_provider = (
-    InMemoryOAuthProvider(_db, _config["api_key_hmac_secret"])
-    if _is_http_transport
-    else None
-)
-_auth_settings = (
-    AuthSettings(
-        issuer_url=_config["mcp_server_url"],
-        resource_server_url=_config["mcp_server_url"],
-        required_scopes=[],
-        client_registration_options=ClientRegistrationOptions(enabled=True),
-    )
-    if _is_http_transport
-    else None
+# Minimal TokenVerifier with NO OAuth advertisement.
+# By leaving resource_server_url=None and not passing auth_server_provider,
+# FastMCP mounts BearerAuthBackend + AuthContextMiddleware but serves none of
+# the OAuth discovery endpoints. Clients with a static Bearer header in
+# .mcp.json use it directly — no OAuth dance, no "Authenticate" click.
+#
+# Do NOT set resource_server_url here. A prior attempt (commit ff74061) set
+# it to the server URL, which mounted /.well-known/oauth-protected-resource
+# whose paired /.well-known/oauth-authorization-server did not exist (since
+# auth_server_provider was also not set) — clients broke on discovery. The
+# follow-up (914690e) "fixed" it by adding a full InMemoryOAuthProvider,
+# which is what caused the authenticate-click behavior. Leaving
+# resource_server_url=None removes both the route AND the resource_metadata
+# hint on WWW-Authenticate 401s, so clients never enter the OAuth flow.
+_token_verifier = ApiKeyTokenVerifier(_db, _config["api_key_hmac_secret"])
+_auth_settings = AuthSettings(
+    issuer_url=_config["mcp_server_url"],  # required by pydantic; unused without auth_server_provider
+    resource_server_url=None,
+    required_scopes=[],
 )
 
 
@@ -101,20 +96,6 @@ _auth_settings = (
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     """Build services for MCP tools. Firebase/Firestore already initialized."""
     config = get_config()
-
-    # Resolve user for stdio mode only (local dev)
-    stdio_user_id = None
-    if config["mcp_transport"] == "stdio":
-        api_key = os.environ.get("MCP_API_KEY", "")
-        if api_key:
-            stdio_user_id = await resolve_user_from_api_key(
-                _db, api_key, config["api_key_hmac_secret"]
-            )
-            logger.info("stdio mode: authenticated as user %s", stdio_user_id)
-        else:
-            logger.warning(
-                "stdio mode: MCP_API_KEY not set — tool calls will fail auth"
-            )
 
     # Build repositories
     trip_repo = TripRepository(_db)
@@ -135,6 +116,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     dag_service = DAGService(
         trip_repo, plan_repo, node_repo, edge_repo,
         route_service=route_service,
+        action_repo=action_repo,
     )
     # PlanService is shared with the backend. notification_service is None here
     # so promote_plan skips the in-app notification step — MCP callers don't
@@ -158,7 +140,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             places_service=places_service,
             config=config,
             http_client=http_client,
-            stdio_user_id=stdio_user_id,
         )
     finally:
         await places_service.close()
@@ -181,7 +162,7 @@ mcp = FastMCP(
     port=_config["mcp_port"],
     transport_security=_transport_security,
     auth=_auth_settings,
-    auth_server_provider=_oauth_provider,
+    token_verifier=_token_verifier,
 )
 
 # Import tools to register them with the server
@@ -193,33 +174,11 @@ import mcpserver.src.tools.plans  # noqa: E402, F401
 import mcpserver.src.tools.trips  # noqa: E402, F401
 
 
-def main():
-    import uvicorn
-
-    config = get_config()
-    transport = config["mcp_transport"]
-
-    if transport == "sse":
-        # FastMCP's sse_app() includes auth middleware + discovery routes
-        # when auth/token_verifier are configured.
-        app = mcp.sse_app()
-        uvicorn.run(app, host=config["mcp_host"], port=config["mcp_port"])
-    elif transport == "streamable-http":
-        # FastMCP's streamable_http_app() includes:
-        #   - Session manager lifespan (task group init)
-        #   - BearerAuthBackend + AuthContextMiddleware
-        #   - RequireAuthMiddleware on /mcp endpoint
-        #   - /.well-known/oauth-protected-resource metadata
-        # No wrapping needed -- this preserves the lifespan chain.
-        app = mcp.streamable_http_app()
-        uvicorn.run(
-            app,
-            host=config["mcp_host"],
-            port=config["mcp_port"],
-        )
-    else:
-        mcp.run(transport="stdio")
-
-
-if __name__ == "__main__":
-    main()
+# streamable-http only. FastMCP's streamable_http_app() includes:
+#   - Session manager lifespan (task group init)
+#   - BearerAuthBackend + AuthContextMiddleware
+#   - RequireAuthMiddleware on /mcp endpoint
+# No /.well-known/oauth-* routes are mounted (see auth wiring above).
+# Exposed as a module-level ASGI app so uvicorn can load it as
+# `mcpserver.src.main:app` -- mirrors the backend's entry point shape.
+app = mcp.streamable_http_app()

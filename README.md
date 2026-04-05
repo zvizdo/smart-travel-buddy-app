@@ -1,6 +1,15 @@
 # Smart Travel Buddy
 
-A collaborative trip planning app with an AI agent, real-time map, and MCP server for external AI agent access.
+**Your next trip, in every AI app you already use.** A collaborative, AI-first trip planner for your phone — chat your itinerary into existence, give every traveler their own path, and keep planning from Claude, ChatGPT, or Cursor via MCP.
+
+Highlights:
+
+- **Agent-first planning** — paste a group chat or describe your trip, and the agent builds the whole itinerary (stops, routes, timing) onto the map.
+- **A path for every traveler** — each person gets their own route through the trip; splits and merges are first-class, so the group can hike, drive, and meet for dinner without losing track of who's where.
+- **Map and timeline in one** — flip between a live Google Map and a zoomable multi-lane timeline, with time zones handled for you.
+- **Plan from your favorite AI app** — a built-in MCP server lets Claude, ChatGPT, or Cursor read and edit your trips with a personal API key.
+- **Real-time crew** — invite links, live participant pulse on the map, and notifications when the plan changes.
+- **Works in the mountains** — offline-aware editing, optimistic updates, and optional per-user location sharing.
 
 ## Architecture
 
@@ -58,9 +67,9 @@ cd backend && uvicorn src.main:app --reload --port 8000
 # Terminal 2 — frontend
 cd frontend && pnpm dev
 
-# MCP server (stdio mode for Claude Desktop)
+# MCP server (streamable-http on :8080)
 conda activate travel-app
-MCP_API_KEY=<your-key> python -m mcpserver.src.main
+cd mcpserver && uvicorn src.main:app --reload --port 8080
 ```
 
 ## Deployment

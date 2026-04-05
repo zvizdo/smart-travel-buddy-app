@@ -10,6 +10,7 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from shared.repositories.action_repository import ActionRepository
 from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
@@ -45,12 +46,14 @@ class DAGService:
         node_repo: NodeRepository,
         edge_repo: EdgeRepository,
         route_service: "RouteService | None" = None,
+        action_repo: ActionRepository | None = None,
     ):
         self._trip_repo = trip_repo
         self._plan_repo = plan_repo
         self._node_repo = node_repo
         self._edge_repo = edge_repo
         self._route_service = route_service
+        self._action_repo = action_repo
 
     async def _find_existing_edge(
         self,
@@ -287,7 +290,36 @@ class DAGService:
                 trip_id, plan_id, new_edge
             )
 
-        await self._node_repo.delete_node(trip_id, plan_id, node_id)
+        # Batch-delete the node's actions subcollection + node doc in one commit.
+        # Firestore does not cascade subcollection deletes, so orphans would
+        # remain if we just removed the node doc.
+        if self._action_repo is not None:
+            actions = await self._action_repo.list_by_node(
+                trip_id, plan_id, node_id
+            )
+            action_col = self._action_repo._collection(
+                trip_id=trip_id, plan_id=plan_id, node_id=node_id
+            )
+            node_col = self._node_repo._collection(
+                trip_id=trip_id, plan_id=plan_id
+            )
+            db = self._node_repo._db
+            # Chunk into 500-op batches to respect Firestore's per-batch cap.
+            # Node doc delete is appended to the final chunk so it lands last.
+            refs = [action_col.document(a["id"]) for a in actions]
+            refs.append(node_col.document(node_id))
+            batch_size = 500
+            for i in range(0, len(refs), batch_size):
+                batch = db.batch()
+                for ref in refs[i : i + batch_size]:
+                    batch.delete(ref)
+                await batch.commit()
+        else:
+            logger.debug(
+                "action_repo not configured, skipping action cleanup for node %s",
+                node_id,
+            )
+            await self._node_repo.delete_node(trip_id, plan_id, node_id)
 
         # Auto-cleanup stale participant_ids if DAG became linear
         cleaned = await self.cleanup_stale_participant_ids(trip_id, plan_id)

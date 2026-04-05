@@ -2,11 +2,8 @@
 
 Validates API keys by computing HMAC-SHA256 and looking up the hash
 across all users' api_keys subcollections via a collection group query.
-
-Multi-user mode (streamable-http): each request carries its own
-Authorization: Bearer <key> header, resolved per-request via InMemoryOAuthProvider.
-
-Single-user mode (stdio): MCP_API_KEY env var resolved once at startup.
+Each request carries its own Authorization: Bearer <key> header, resolved
+per-request via ApiKeyTokenVerifier.
 """
 
 from __future__ import annotations
@@ -22,6 +19,7 @@ from typing import TYPE_CHECKING
 from google.cloud.firestore import AsyncClient
 from google.cloud.firestore_v1.base_query import FieldFilter
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.provider import AccessToken
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -117,20 +115,38 @@ async def resolve_user_from_api_key(
     return user_id
 
 
+class ApiKeyTokenVerifier:
+    """TokenVerifier implementation for FastMCP bearer auth.
+
+    Resolves API keys to user IDs via HMAC-SHA256 + Firestore lookup.
+    Wired into FastMCP via the `token_verifier=` argument; the SDK then
+    installs BearerAuthBackend + AuthContextMiddleware so tool handlers can
+    read the authenticated user via `get_user_id(ctx)`.
+    """
+
+    def __init__(self, db: AsyncClient, hmac_secret: str) -> None:
+        self._db = db
+        self._hmac_secret = hmac_secret
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        try:
+            user_id = await resolve_user_from_api_key(
+                self._db, token, self._hmac_secret
+            )
+        except PermissionError:
+            return None
+        return AccessToken(token=token, client_id=user_id, scopes=[])
+
 
 def get_user_id(ctx: Context) -> str:
     """Extract the authenticated user_id for the current request.
 
-    In streamable-http mode: reads from the bearer auth ContextVar set by
-    AuthContextMiddleware. In stdio mode: falls back to AppContext.stdio_user_id.
+    Reads from the bearer auth ContextVar set by AuthContextMiddleware, which
+    ApiKeyTokenVerifier populates via its verify_token() return value.
     """
+    del ctx  # unused — kept for call-site compatibility across tool handlers
     access_token = get_access_token()
     if access_token and access_token.client_id:
         return access_token.client_id
-
-    # stdio / local dev fallback
-    app = ctx.request_context.lifespan_context
-    if hasattr(app, "stdio_user_id") and app.stdio_user_id:
-        return app.stdio_user_id
 
     raise PermissionError("No authenticated user in request context")

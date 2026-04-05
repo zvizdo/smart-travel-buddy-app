@@ -8,7 +8,7 @@ Four sub-projects in a monorepo. Single `travel-app` conda env for all Python.
 frontend/     Next.js 16.2 + React 19.2 + Tailwind 4 (pnpm)
 backend/      FastAPI + google-cloud-firestore[async] + google-genai
 shared/       Pydantic models + repositories + agent config + DAG logic + services (pip install -e)
-mcpserver/    FastMCP server — streamable-http | sse | stdio, per-request Bearer auth
+mcpserver/    FastMCP server — streamable-http only, per-request Bearer auth
 ```
 
 Storage: Firestore (Native mode) + GCS for chat history.
@@ -185,13 +185,13 @@ Pure `computeTimelineLayout()` — no React. Takes nodes, edges, path result, zo
 
 ## MCP Server (`mcpserver/`)
 
-FastMCP server for external AI agents via Model Context Protocol. Transport: `streamable-http` (Cloud Run), `sse`, or `stdio` (local).
+FastMCP server for external AI agents via Model Context Protocol. Transport: `streamable-http` only (Cloud Run).
 
-**Entry point**: `python -m mcpserver.src` (via `__main__.py`). **Never** `python -m mcpserver.src.main` — causes Python's `__main__` double-import, creating two `mcp` instances; tools register on the wrong one → empty `tools/list`.
+**Entry point** (`mcpserver/src/main.py`): mirrors `backend/src/main.py` shape — `load_dotenv(mcpserver/.env)` at the top, then module-level eager init (`firebase_admin.initialize_app()`, `AsyncClient()`, `AuthSettings`, `ApiKeyTokenVerifier`, `FastMCP(...)`), tool modules imported for registration side-effects, and finally `app = mcp.streamable_http_app()` exposed at module scope. Run as `uvicorn mcpserver.src.main:app --host 0.0.0.0 --port ${PORT}` (Dockerfile CMD) or `cd mcpserver && uvicorn src.main:app --reload --port 8080` locally. Dotted-path loading means `main.py` is always imported under its real module name, so the `mcp` instance tool modules import is the same one uvicorn serves — no `__main__.py` shim, no double-import risk. Per-request services (`TripService`, `DAGService`, `PlanService`, `PlacesService`, `httpx.AsyncClient`) are built in the FastMCP `app_lifespan` and reach tools via `AppContext`.
 
-**Auth architecture** (critical — don't change without understanding the full flow): MCP SDK clients probe `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` for `type: "http"` servers. Use `auth_server_provider` (not `token_verifier` — alone it omits the authorization server metadata endpoint → 404 → SDK breaks). `InMemoryOAuthProvider` (`auth/oauth_provider.py`) auto-approves; `load_access_token()` validates OAuth tokens first, then falls back to HMAC-SHA256 + Firestore API key lookup. `AuthSettings` needs `ClientRegistrationOptions(enabled=True)` for dynamic client registration. No custom wrapping — `mcp.streamable_http_app()` / `mcp.sse_app()` directly with uvicorn (mounting inside parent Starlette breaks session manager lifespan). `TransportSecuritySettings(enable_dns_rebinding_protection=False)` for Cloud Run. stdio mode resolves user once at startup via `MCP_API_KEY`.
+**Auth architecture** (critical — don't change without understanding the full flow): auth is wired unconditionally with `token_verifier=ApiKeyTokenVerifier(...)` plus a bare `AuthSettings` — `resource_server_url=None`, no `auth_server_provider`, no `ClientRegistrationOptions`. This intentionally exposes *zero* OAuth discovery endpoints (`/.well-known/oauth-*` all 404) and omits the `resource_metadata=` hint from `WWW-Authenticate` on 401s, so MCP clients never enter the OAuth dance and use the static `Authorization: Bearer <api_key>` header from `.mcp.json` directly (same surface Google's Stitch MCP exposes — no "Authenticate" click). `ApiKeyTokenVerifier.verify_token` funnels straight into `resolve_user_from_api_key` (HMAC-SHA256 → Firestore collection group query, 5-min cache, rate limited). `BearerAuthBackend` + `AuthContextMiddleware` are still installed by FastMCP when `token_verifier` is set, so `get_user_id(ctx)` reads the resolved user from the `get_access_token()` ContextVar. **Historical note — don't repeat**: commit ff74061 tried `token_verifier` but also set `resource_server_url=<server_url>`, which mounted protected-resource metadata pointing at a non-existent authorization-server endpoint and broke clients; commit 914690e "fixed" that by adding a full `InMemoryOAuthProvider`, which is what introduced the authenticate click. Setting `resource_server_url=None` (and only that, with a bare `token_verifier`) is the fix both attempts missed. No custom Starlette wrapping — `mcp.streamable_http_app()` must be served directly by uvicorn (mounting inside a parent Starlette app breaks the session manager lifespan). `TransportSecuritySettings(enable_dns_rebinding_protection=False)` for Cloud Run.
 
-**Key files**: `auth/oauth_provider.py` (OAuth + API key fallback), `auth/api_key_auth.py` (`resolve_user_from_api_key()` HMAC→Firestore, `get_user_id(ctx)` for tool handlers), `config.py` (env vars).
+**Key files**: `auth/api_key_auth.py` (`ApiKeyTokenVerifier`, `resolve_user_from_api_key()` HMAC→Firestore, `get_user_id(ctx)` for tool handlers), `config.py` (env vars).
 
 **Client config** (`.mcp.json`): `type: "http"`, `url: ".../mcp"`, `headers: { "Authorization": "Bearer <api_key>" }`.
 

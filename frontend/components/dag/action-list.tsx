@@ -316,7 +316,7 @@ function DeleteButton({ onClick }: { onClick: () => void }) {
     <button
       onClick={onClick}
       aria-label="Delete"
-      className="shrink-0 h-7 w-7 rounded-full flex items-center justify-center text-on-surface-variant/40 opacity-0 group-hover:opacity-100 hover:text-error hover:bg-error/10 focus:opacity-100 transition-all"
+      className="shrink-0 h-7 w-7 rounded-full flex items-center justify-center text-on-surface-variant/40 hover:text-error hover:bg-error/10 transition-all"
     >
       <svg
         className="h-3.5 w-3.5"
