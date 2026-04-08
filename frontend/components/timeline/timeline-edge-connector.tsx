@@ -18,6 +18,7 @@ interface TimelineEdgeConnectorProps {
   distanceUnit: "km" | "mi";
   connectorHeightPx: number;
   hasTimingWarning: boolean;
+  hasNote: boolean;
   selected: boolean;
   dimmed: boolean;
   canEdit: boolean;
@@ -28,6 +29,7 @@ interface TimelineEdgeConnectorProps {
 
 const LINE_STYLES: Record<string, { style: string; dashArray?: string }> = {
   drive: { style: "solid" },
+  ferry: { style: "dashed", dashArray: "8 4" },
   flight: { style: "dashed", dashArray: "6 4" },
   transit: { style: "dashed", dashArray: "3 3" },
   walk: { style: "dotted" },
@@ -41,6 +43,7 @@ export const TimelineEdgeConnector = memo(function TimelineEdgeConnector({
   distanceUnit,
   connectorHeightPx,
   hasTimingWarning,
+  hasNote,
   selected,
   dimmed,
   canEdit,
@@ -122,6 +125,12 @@ export const TimelineEdgeConnector = memo(function TimelineEdgeConnector({
               </svg>
             </>
           )}
+          {hasNote && !hasTimingWarning && (
+            <>
+              <span className="text-[10px] text-on-surface-variant/60">·</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-[#6d5a00] shrink-0" />
+            </>
+          )}
         </div>
       </div>
 
@@ -145,5 +154,6 @@ export const TimelineEdgeConnector = memo(function TimelineEdgeConnector({
   prev.selected === next.selected &&
   prev.dimmed === next.dimmed &&
   prev.connectorHeightPx === next.connectorHeightPx &&
-  prev.hasTimingWarning === next.hasTimingWarning
+  prev.hasTimingWarning === next.hasTimingWarning &&
+  prev.hasNote === next.hasNote
 );

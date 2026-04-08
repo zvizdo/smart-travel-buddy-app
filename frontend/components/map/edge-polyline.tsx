@@ -31,6 +31,7 @@ interface EdgePolylineProps {
 
 const MODE_COLORS: Record<string, string> = {
   drive: "#006479",
+  ferry: "#0277bd",
   flight: "#5e35b1",
   transit: "#9a7c00",
   walk: "#006b1b",
@@ -39,12 +40,14 @@ const MODE_COLORS: Record<string, string> = {
 /** Darker casing colors per mode (fill color darkened ~45%) */
 const CASING_COLORS: Record<string, string> = {
   drive: "#003d49",
+  ferry: "#01579b",
   flight: "#3a1f70",
   transit: "#5c4a00",
   walk: "#004010",
 };
 
 const MODE_DASH: Record<string, number[]> = {
+  ferry: [12, 4],
   flight: [10, 5],
   walk: [4, 5],
 };
@@ -79,6 +82,7 @@ function abbreviate(name?: string): string {
 
 const MODE_ICON_SVG: Record<string, string> = {
   drive: `<path d="M19 17H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h11l4 4v4a2 2 0 0 1-2 2z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="7" cy="17" r="2" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="17" cy="17" r="2" stroke="currentColor" stroke-width="2" fill="none"/>`,
+  ferry: `<path d="M4 18l1-5h14l1 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 13V7a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 20c2-2 4-2 6 0s4 2 6 0 4-2 6 0" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
   flight: `<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21 4 19 4s-2 1-3.5 2.5L11 8.2 4.8 6.4c-.7-.3-1.2 0-1.4.7L3 8l5.5 2.5L6.5 14l-2-.5-.8 2 3 1.5 1.5 3 2-.8-.5-2 3.5-2L19 22z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
   transit: `<rect width="16" height="16" x="4" y="3" rx="2" stroke="currentColor" stroke-width="2" fill="none"/><path d="M4 11h16M12 3v8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="8.5" cy="17" r="1.5" fill="currentColor"/><circle cx="15.5" cy="17" r="1.5" fill="currentColor"/>`,
   walk: `<circle cx="13" cy="4" r="1" fill="currentColor"/><path d="m7 21 1-4m6 4-1-4M9 8.5 7 21M5 9l4-1 1 4 4 2" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
@@ -161,6 +165,7 @@ export function EdgePolyline({
     if (
       routePolyline &&
       travelMode !== "flight" &&
+      travelMode !== "ferry" &&
       geometryLib
     ) {
       try {

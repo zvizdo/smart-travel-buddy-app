@@ -436,7 +436,7 @@ export function BuildProgress({
         : phase === "edges"
           ? "Planning routes..."
           : phase === "verifying"
-            ? "Verifying plan..."
+            ? "Checking your itinerary..."
             : "Your trip is ready!";
 
   return (

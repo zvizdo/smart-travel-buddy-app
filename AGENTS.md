@@ -8,7 +8,7 @@ Four sub-projects in a monorepo. Single `travel-app` conda env for all Python.
 frontend/     Next.js 16.2 + React 19.2 + Tailwind 4 (pnpm)
 backend/      FastAPI + google-cloud-firestore[async] + google-genai
 shared/       Pydantic models + repositories + agent config + DAG logic + services (pip install -e)
-mcpserver/    FastMCP server — streamable-http only, per-request Bearer auth
+mcpserver/    fastmcp 3.2 server — streamable-http only, per-request Bearer auth
 ```
 
 Storage: Firestore (Native mode) + GCS for chat history.
@@ -31,7 +31,7 @@ Deploy: `./deploy/deploy.sh [setup|all|frontend|backend|mcpserver]`. Images in A
 - **Path alias**: `@/*` maps to `./`. **Providers** (`app/providers.tsx`): `AuthProvider` > `APIProvider` (Google Maps).
 - **Firestore hooks** (`lib/firestore-hooks.ts`): `useTrip`, `useTripNodes`, `useTripEdges`, `usePulseLocations`, `useTripNotifications`. Return `{ data, loading, error }`. Use `onSnapshot` for real-time.
 - **API client** (`lib/api.ts`): `api.get/post/patch/delete<T>`. Auto-injects Firebase Bearer token. Base: `NEXT_PUBLIC_BACKEND_URL/api/v1`. Throws if `auth.currentUser` is null.
-- **Directions hook** (`lib/use-directions.ts`): `useDirections(origin, destination)` -> `{ travelData, loading }`. Mode inference: >800km=flight, <3km=walk, else drive. Haversine fallback.
+- **Directions hook** (`lib/use-directions.ts`): `useDirections(origin, destination)` -> `{ travelData, loading }`. Mode inference: >800km=flight, <3km=walk, else drive. Ferry is agent-set only (not auto-inferred). Haversine fallback.
 - **Auth provider** (`components/auth/auth-provider.tsx`): `useAuth()` -> `{ user, loading, signInWithGoogle, signInWithApple, signInWithYahoo, signOut }`.
 - **Proxy** (`proxy.ts`): Public paths: `/sign-in`, `/invite`. Invite URLs: `/invite/{tripId}/{token}`.
 
@@ -60,7 +60,7 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 | `DAGService` | **In `shared/shared/services/`**. Node/edge CRUD, cascade engine, cycle detection, polyline management. `create_standalone_edge()` rejects cycles via `would_create_cycle()` before auto-fetching route data. |
 | `AgentService` | `import_chat`, `build_dag` (AFC with tools), `ongoing_chat` (AFC with DAG tools+grounding). |
 | `AgentUserContext` | `build_user_context()` — computes role, can_mutate, resolved path for the chatting user. |
-| `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge`, `get_plan` to DAGService. Converts `lat/lng` to `lat_lng` sub-object. Tracks `actions_taken`. |
+| `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge`, `get_plan` to DAGService. `update_node` uses `update_node_only` (no cascade). Converts `lat/lng` to `lat_lng` sub-object. Tracks `actions_taken`. |
 | `PlanService` | **In `shared/shared/services/`**. `clone_plan`, `promote_plan`, `delete_plan` (cascading batch delete). `notification_service` is optional — backend injects it, MCP passes `None` and `promote_plan` skips the notification step. |
 | `RouteService` | **In `shared/shared/services/`**. Google Routes API v2. `get_route_data()` -> `RouteData(polyline, travel_time_hours, distance_km)`. |
 | `NotificationService` | `create_notification`, `notify_member_joined`, `notify_member_removed`, `notify_role_changed` |
@@ -95,7 +95,7 @@ All Pydantic `BaseModel` with `StrEnum`. **All datetimes UTC-aware** via `dateti
 | `Trip` | `id, name, created_by, active_plan_id, participants: dict[str, Participant], settings: TripSettings` |
 | `Plan` | `id, name, status: PlanStatus (active/draft/archived), created_by, parent_plan_id` |
 | `Node` | `id, name, type: NodeType (city/hotel/restaurant/place/activity), lat_lng, arrival_time, departure_time, timezone, participant_ids, order_index, place_id, created_by` |
-| `Edge` | `id, from_node_id, to_node_id, travel_mode (drive/flight/transit/walk), travel_time_hours, distance_km, route_polyline` |
+| `Edge` | `id, from_node_id, to_node_id, travel_mode (drive/ferry/flight/transit/walk), travel_time_hours, distance_km, route_polyline, notes` |
 | `Notification` | `id, type, message, target_user_ids, read_by, expire_at` (7-day TTL) |
 | `Preference` | `id, content, category, extracted_from, created_by` |
 
@@ -185,11 +185,11 @@ Pure `computeTimelineLayout()` — no React. Takes nodes, edges, path result, zo
 
 ## MCP Server (`mcpserver/`)
 
-FastMCP server for external AI agents via Model Context Protocol. Transport: `streamable-http` only (Cloud Run).
+fastmcp 3.2 server for external AI agents via Model Context Protocol. Transport: `streamable-http` only (Cloud Run).
 
-**Entry point** (`mcpserver/src/main.py`): mirrors `backend/src/main.py` shape — `load_dotenv(mcpserver/.env)` at the top, then module-level eager init (`firebase_admin.initialize_app()`, `AsyncClient()`, `AuthSettings`, `ApiKeyTokenVerifier`, `FastMCP(...)`), tool modules imported for registration side-effects, and finally `app = mcp.streamable_http_app()` exposed at module scope. Run as `uvicorn mcpserver.src.main:app --host 0.0.0.0 --port ${PORT}` (Dockerfile CMD) or `cd mcpserver && uvicorn src.main:app --reload --port 8080` locally. Dotted-path loading means `main.py` is always imported under its real module name, so the `mcp` instance tool modules import is the same one uvicorn serves — no `__main__.py` shim, no double-import risk. Per-request services (`TripService`, `DAGService`, `PlanService`, `PlacesService`, `httpx.AsyncClient`) are built in the FastMCP `app_lifespan` and reach tools via `AppContext`.
+**Entry point** (`mcpserver/src/main.py`): mirrors `backend/src/main.py` shape — `load_dotenv(mcpserver/.env)` at the top, then module-level eager init (`firebase_admin.initialize_app()`, `AsyncClient()`, `ApiKeyTokenVerifier`, `FastMCP(..., auth=_token_verifier)`), tool modules imported for registration side-effects, and finally `app = mcp.http_app(path="/mcp")` exposed at module scope. Run as `uvicorn mcpserver.src.main:app --host 0.0.0.0 --port ${PORT}` (Dockerfile CMD) or `cd mcpserver && uvicorn src.main:app --reload --port 8080` locally. Dotted-path loading means `main.py` is always imported under its real module name, so the `mcp` instance tool modules import is the same one uvicorn serves — no `__main__.py` shim, no double-import risk. Per-request services (`TripService`, `DAGService`, `PlanService`, `PlacesService`, `httpx.AsyncClient`) are built in the FastMCP `app_lifespan` and reach tools via `AppContext` (`ctx.lifespan_context`).
 
-**Auth architecture** (critical — don't change without understanding the full flow): auth is wired unconditionally with `token_verifier=ApiKeyTokenVerifier(...)` plus a bare `AuthSettings` — `resource_server_url=None`, no `auth_server_provider`, no `ClientRegistrationOptions`. This intentionally exposes *zero* OAuth discovery endpoints (`/.well-known/oauth-*` all 404) and omits the `resource_metadata=` hint from `WWW-Authenticate` on 401s, so MCP clients never enter the OAuth dance and use the static `Authorization: Bearer <api_key>` header from `.mcp.json` directly (same surface Google's Stitch MCP exposes — no "Authenticate" click). `ApiKeyTokenVerifier.verify_token` funnels straight into `resolve_user_from_api_key` (HMAC-SHA256 → Firestore collection group query, 5-min cache, rate limited). `BearerAuthBackend` + `AuthContextMiddleware` are still installed by FastMCP when `token_verifier` is set, so `get_user_id(ctx)` reads the resolved user from the `get_access_token()` ContextVar. **Historical note — don't repeat**: commit ff74061 tried `token_verifier` but also set `resource_server_url=<server_url>`, which mounted protected-resource metadata pointing at a non-existent authorization-server endpoint and broke clients; commit 914690e "fixed" that by adding a full `InMemoryOAuthProvider`, which is what introduced the authenticate click. Setting `resource_server_url=None` (and only that, with a bare `token_verifier`) is the fix both attempts missed. No custom Starlette wrapping — `mcp.streamable_http_app()` must be served directly by uvicorn (mounting inside a parent Starlette app breaks the session manager lifespan). `TransportSecuritySettings(enable_dns_rebinding_protection=False)` for Cloud Run.
+**Auth architecture**: `ApiKeyTokenVerifier` extends fastmcp's `TokenVerifier` base class (`from fastmcp.server.auth import TokenVerifier`). `TokenVerifier` installs `BearerAuthBackend` + `AuthContextMiddleware` via `get_middleware()` but its `get_routes()` returns an empty list — zero OAuth discovery endpoints, no `/.well-known/oauth-*` routes. MCP clients with a static `Authorization: Bearer <api_key>` header in `.mcp.json` use it directly — no OAuth dance, no "Authenticate" click. `ApiKeyTokenVerifier.verify_token` funnels into `resolve_user_from_api_key` (HMAC-SHA256 → Firestore collection group query, 5-min cache, rate limited). Tool handlers read the authenticated user via `get_user_id(ctx)` which calls `get_access_token()` from `fastmcp.server.dependencies`.
 
 **Key files**: `auth/api_key_auth.py` (`ApiKeyTokenVerifier`, `resolve_user_from_api_key()` HMAC→Firestore, `get_user_id(ctx)` for tool handlers), `config.py` (env vars).
 
@@ -199,7 +199,8 @@ FastMCP server for external AI agents via Model Context Protocol. Transport: `st
 
 **MCP-specific behaviors** (diverge from backend on purpose):
 - `create_trip` bundles an initial active plan named "Main Route" so `add_node` works immediately. Backend's `POST /trips` stays planless — web flow creates the first plan inside `import_build`.
-- `update_node` updates only the target node via `DAGService.update_node_only`; it does NOT cascade schedule changes to downstream stops (backend still cascades via `update_node_with_cascade_preview`).
+
+**Shared agent + MCP behavior**: Both the in-app agent (`ToolExecutor`) and MCP server use `DAGService.update_node_only` for `update_node` — updates only the target node, no cascade. Polylines on connected edges are recalculated if `lat_lng` changes. The REST API (`backend/src/api/nodes.py`) still uses `update_node_with_cascade_preview` for the manual map UI, which has its own cascade preview/confirm flow.
 
 **Auth gates** (`mcpserver/src/tools/_helpers.py`): every `@mcp.tool()` calls exactly one on its first line — Gate A `resolve_trip_plan` (editor: admin/planner), Gate B participant check (in `add_action`), Gate C `resolve_trip_admin` (admin only), Gate D `get_user_id` (auth only, for `create_trip` / `find_places`).
 
@@ -226,7 +227,7 @@ FastMCP server for external AI agents via Model Context Protocol. Transport: `st
 - **CSS height chain**: Google Maps needs `html.h-full > body.h-full > container.h-full > map.h-full`. Use `min-h-0` on flex children.
 - **Overlay stacking**: Glass header `z-20`, DivergenceResolver `bottom-[nav] z-20`, Bottom nav `z-30`.
 - **Duplicate edge prevention**: `DAGService._create_edge_if_new()` on all creation paths.
-- **Route data flow**: `create_standalone_edge()` fetches route data synchronously. `_recalculate_connected_polylines()` only fires when `lat_lng` actually changes (old vs new comparison). Frontend sets `recalculatingEdges` shimmer only on real coordinate changes, cleared on `onSnapshot`.
+- **Route data flow**: `create_standalone_edge()` fetches route data synchronously for drive/transit/walk; uses haversine estimation for flight (~800 km/h) and ferry (~40 km/h). Route advisory warnings (seasonal closures, tolls) are auto-extracted from Routes API navigation instructions and stored in `edge.notes`. `_recalculate_connected_polylines()` only fires when `lat_lng` actually changes (old vs new comparison) and skips flight/ferry edges. Frontend sets `recalculatingEdges` shimmer only on real coordinate changes, cleared on `onSnapshot`.
 - **Implicit branching**: No `branch_id` on edges. Paths derived at runtime from DAG topology + `participant_ids`. Divergence = out-degree>1 or multiple root nodes.
 - **Timeline zoom**: 5 levels (0-4), `PX_PER_HOUR` = [8, 16, 32, 60, 120]. Scroll position anchored on zoom change so content stays centered.
 - **Timeline lane alignment**: Multi-lane Y positions are computed globally, not per-lane. Adding per-lane gap compression or independent Y computation breaks cross-lane alignment of shared nodes. `START_OFFSET_PX` reserves visual padding without breaking CSS `sticky top-0` lane labels.

@@ -1,5 +1,6 @@
 const MODE_COLORS: Record<string, string> = {
   drive: "#006479",
+  ferry: "#0277bd",
   flight: "#5e35b1",
   transit: "#9a7c00",
   walk: "#006b1b",
@@ -25,6 +26,14 @@ export function TravelModeIcon({ mode, size = 18, className }: TravelModeIconPro
     className,
   };
   switch (mode) {
+    case "ferry":
+      return (
+        <svg {...s}>
+          <path d="M4 18l1-5h14l1 5" />
+          <path d="M8 13V7a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v6" />
+          <path d="M2 20c2-2 4-2 6 0s4 2 6 0 4-2 6 0" />
+        </svg>
+      );
     case "flight":
       return (
         <svg {...s}>

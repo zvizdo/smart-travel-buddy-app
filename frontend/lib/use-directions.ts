@@ -128,7 +128,7 @@ export function useDirections(
         travel_time_hours: Math.round(finalTravelTime * 100) / 100,
         distance_km: Math.round(distanceKm * 10) / 10,
         route_polyline:
-          mode !== "flight"
+          mode !== "flight" && mode !== "ferry"
             ? (route.polyline?.encodedPolyline ?? null)
             : null,
       });

@@ -5,6 +5,7 @@ Includes cascade engine for propagating schedule changes downstream through the 
 
 import asyncio
 import logging
+import math
 import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
@@ -36,6 +37,24 @@ from shared.models import (
 from shared.tools.timezone import resolve_timezone
 
 logger = logging.getLogger(__name__)
+
+# Modes not supported by the Routes API — use haversine estimation instead.
+_ESTIMATION_SPEEDS_KMH: dict[str, float] = {
+    "flight": 800.0,
+    "ferry": 40.0,
+}
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance between two points in kilometres."""
+    R = 6371.0
+    dLat = math.radians(lat2 - lat1)
+    dLng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(dLat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dLng / 2) ** 2
+    )
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 class DAGService:
@@ -94,7 +113,7 @@ class DAGService:
         await self._edge_repo.create_edge(trip_id, plan_id, edge)
         if (
             edge.route_polyline is None
-            and edge.travel_mode != TravelMode.FLIGHT
+            and edge.travel_mode not in (TravelMode.FLIGHT, TravelMode.FERRY)
             and self._route_service is not None
         ):
             asyncio.create_task(
@@ -480,6 +499,19 @@ class DAGService:
                 node_dict["timezone"] = resolve_timezone(lat, lng)
 
         await self._node_repo.update_node(trip_id, plan_id, node_id, node_dict)
+
+        # Recalculate polylines for connected edges when location actually changed
+        if "lat_lng" in updates:
+            old_lat = node.lat_lng.lat if node.lat_lng else None
+            old_lng = node.lat_lng.lng if node.lat_lng else None
+            new_lat_lng = updates["lat_lng"]
+            new_lat = new_lat_lng.get("lat") if isinstance(new_lat_lng, dict) else getattr(new_lat_lng, "lat", None)
+            new_lng = new_lat_lng.get("lng") if isinstance(new_lat_lng, dict) else getattr(new_lat_lng, "lng", None)
+            if new_lat != old_lat or new_lng != old_lng:
+                await self._recalculate_connected_polylines(
+                    trip_id, plan_id, node_id, {"lat": new_lat, "lng": new_lng}
+                )
+
         return node_dict
 
     async def update_node_with_cascade_preview(
@@ -591,7 +623,7 @@ class DAGService:
 
         for edge_dict in connected:
             travel_mode = edge_dict.get("travel_mode", "drive")
-            if travel_mode == "flight":
+            if travel_mode in ("flight", "ferry"):
                 continue
 
             # Determine the other endpoint's latlng
@@ -721,6 +753,7 @@ class DAGService:
         travel_time_hours: float = 0,
         distance_km: float | None = None,
         route_polyline: str | None = None,
+        notes: str | None = None,
     ) -> dict:
         """Create a standalone edge between two existing nodes.
 
@@ -749,11 +782,24 @@ class DAGService:
             ll = to_node.lat_lng
             to_latlng = {"lat": ll.lat, "lng": ll.lng}
 
-        # Auto-fetch route data when not provided
+        # Auto-fetch or estimate route data when not provided
+        estimated_speed = _ESTIMATION_SPEEDS_KMH.get(travel_mode)
         if (
             not route_polyline
             and not travel_time_hours
-            and travel_mode != "flight"
+            and estimated_speed
+            and from_latlng
+            and to_latlng
+        ):
+            dist = _haversine_km(
+                from_latlng["lat"], from_latlng["lng"],
+                to_latlng["lat"], to_latlng["lng"],
+            )
+            distance_km = round(dist, 1)
+            travel_time_hours = round(dist / estimated_speed, 2)
+        elif (
+            not route_polyline
+            and not travel_time_hours
             and self._route_service is not None
         ):
             route_data = await self._route_service.get_route_data(
@@ -763,6 +809,8 @@ class DAGService:
                 route_polyline = route_data.polyline
                 travel_time_hours = route_data.travel_time_hours or 0
                 distance_km = route_data.distance_km
+                if not notes and route_data.notes:
+                    notes = route_data.notes
 
         edge = Edge(
             id=edge_id(),
@@ -772,6 +820,7 @@ class DAGService:
             travel_time_hours=travel_time_hours,
             distance_km=distance_km,
             route_polyline=route_polyline,
+            notes=notes,
         )
         return await self._create_edge_if_new(
             trip_id, plan_id, edge,
@@ -947,14 +996,14 @@ class DAGService:
         )
 
         if self._route_service:
-            if edge_a.route_polyline is None and mode_a != TravelMode.FLIGHT:
+            if edge_a.route_polyline is None and mode_a not in (TravelMode.FLIGHT, TravelMode.FERRY):
                 asyncio.create_task(
                     self._route_service.fetch_and_patch_polyline(
                         trip_id, plan_id, edge_a.id,
                         from_latlng, new_latlng, str(mode_a), self._edge_repo,
                     )
                 )
-            if edge_b.route_polyline is None and mode_b != TravelMode.FLIGHT:
+            if edge_b.route_polyline is None and mode_b not in (TravelMode.FLIGHT, TravelMode.FERRY):
                 asyncio.create_task(
                     self._route_service.fetch_and_patch_polyline(
                         trip_id, plan_id, edge_b.id,
@@ -1117,7 +1166,7 @@ class DAGService:
         # Fire background polyline fetch for edges missing polylines
         if self._route_service:
             for e, (from_ll, to_ll) in zip(edges_to_create, edge_latlng_pairs):
-                if e.route_polyline is None and e.travel_mode != TravelMode.FLIGHT:
+                if e.route_polyline is None and e.travel_mode not in (TravelMode.FLIGHT, TravelMode.FERRY):
                     asyncio.create_task(
                         self._route_service.fetch_and_patch_polyline(
                             trip_id, plan_id, e.id,

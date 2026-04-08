@@ -12,23 +12,27 @@ interface ActionBadgesProps {
 
 const ACTION_STYLES: Record<string, { label: string; className: string }> = {
   node_added: {
-    label: "Added",
+    label: "Stop added",
     className: "bg-secondary/10 text-secondary",
   },
   node_updated: {
-    label: "Updated",
+    label: "Stop updated",
     className: "bg-primary/10 text-primary",
   },
   node_deleted: {
-    label: "Removed",
+    label: "Stop removed",
     className: "bg-error/10 text-error",
   },
-  cascade_applied: {
-    label: "Cascade",
-    className: "bg-tertiary-container/30 text-on-tertiary-container",
+  edge_added: {
+    label: "Route added",
+    className: "bg-amber-500/10 text-amber-700",
+  },
+  edge_deleted: {
+    label: "Route removed",
+    className: "bg-error/10 text-error",
   },
   places_searched: {
-    label: "Places",
+    label: "Places found",
     className: "bg-[#7c4dff]/10 text-[#5e35b1]",
   },
 };
@@ -47,9 +51,9 @@ export function ActionBadges({ actions }: ActionBadgesProps) {
           <span
             key={i}
             className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${style.className}`}
-            title={action.description}
+            title={style.label}
           >
-            {style.label}: {action.description}
+            {action.description}
           </span>
         );
       })}

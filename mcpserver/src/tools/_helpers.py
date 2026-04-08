@@ -10,7 +10,7 @@ Auth gates (see /Users/anzekravanja/.claude/plans/lively-squishing-quill.md):
 Every @mcp.tool() must call exactly one gate on its first executable line.
 """
 
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext
 
@@ -27,7 +27,7 @@ async def resolve_trip_plan(
     Raises ValueError if trip has no active plan and no plan_id provided.
     """
     user_id = get_user_id(ctx)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     trip_data = await app.trip_service._trip_repo.get_or_raise(trip_id)
     role = app.trip_service._verify_participant(trip_data, user_id)
@@ -52,7 +52,7 @@ async def resolve_trip_participant(
     Raises ValueError if trip has no active plan and no plan_id provided.
     """
     user_id = get_user_id(ctx)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     trip_data = await app.trip_service._trip_repo.get_or_raise(trip_id)
     app.trip_service._verify_participant(trip_data, user_id)
@@ -74,7 +74,7 @@ async def resolve_trip_admin(
     Raises PermissionError if the user is not a participant or not an admin.
     """
     user_id = get_user_id(ctx)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     trip_data = await app.trip_service._trip_repo.get_or_raise(trip_id)
     role = app.trip_service._verify_participant(trip_data, user_id)

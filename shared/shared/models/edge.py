@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 class TravelMode(StrEnum):
     DRIVE = "drive"
+    FERRY = "ferry"
     FLIGHT = "flight"
     TRANSIT = "transit"
     WALK = "walk"
@@ -18,3 +19,4 @@ class Edge(BaseModel):
     travel_time_hours: float = 0
     distance_km: float | None = None
     route_polyline: str | None = None
+    notes: str | None = None

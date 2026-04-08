@@ -242,6 +242,7 @@ export const TimelineLane = memo(function TimelineLane({
                   distanceUnit={distanceUnit}
                   connectorHeightPx={Math.max(40, edgeToNext.connectorHeightPx - gapHeight)}
                   hasTimingWarning={edgeToNext.hasTimingWarning}
+                  hasNote={!!rawEdge.notes}
                   selected={selectedEdgeId === edgeToNext.edgeId}
                   dimmed={isDimmed}
                   canEdit={canEdit}

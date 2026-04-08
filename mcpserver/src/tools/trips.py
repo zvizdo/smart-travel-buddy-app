@@ -4,7 +4,7 @@ Read: get_trips, get_trip_plans, get_trip_context.
 Write: create_trip, delete_trip, update_trip_settings.
 """
 
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
 from mcpserver.src.tools._helpers import resolve_trip_admin
@@ -20,7 +20,7 @@ async def get_trips(ctx: Context) -> str:
     No parameters needed.
     """
     user_id = get_user_id(ctx)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
     trips = await app.trip_service.get_trips(user_id)
 
     if not trips:
@@ -48,7 +48,7 @@ async def get_trip_plans(trip_id: str, ctx: Context) -> str:
         trip_id: The trip identifier.
     """
     user_id = get_user_id(ctx)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
     result = await app.trip_service.get_trip_plans(trip_id, user_id)
 
     active_id = result["active_plan_id"]
@@ -81,7 +81,7 @@ async def get_trip_context(
         plan_id: Optional specific plan version ID. Defaults to the active plan.
     """
     user_id = get_user_id(ctx)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
     result = await app.trip_service.get_trip_context(trip_id, user_id, plan_id)
 
     trip = result["trip"]
@@ -117,7 +117,7 @@ async def create_trip(name: str, ctx: Context) -> str:
     Returns: Confirmation with the new trip ID, the initial plan ID, and next steps.
     """
     user_id = get_user_id(ctx)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     trip = await app.trip_service.create_trip(
         user_id=user_id,
@@ -147,7 +147,7 @@ async def delete_trip(trip_id: str, ctx: Context) -> str:
     Returns: Confirmation with counts of what was removed.
     """
     user_id, trip_name = await resolve_trip_admin(ctx, trip_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     result = await app.trip_service.delete_trip(trip_id, user_id)
     return (
@@ -181,7 +181,7 @@ async def update_trip_settings(
     Returns: The updated settings dict.
     """
     user_id, _ = await resolve_trip_admin(ctx, trip_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     if datetime_format is None and date_format is None and distance_unit is None:
         return "No settings to update. Provide at least one of: datetime_format, date_format, distance_unit."

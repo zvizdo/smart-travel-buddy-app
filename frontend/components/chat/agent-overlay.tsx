@@ -241,7 +241,11 @@ export function AgentOverlay({
                 </div>
                 {msg.actions_taken && msg.actions_taken.length > 0 && (
                   <div className="max-w-[85%]">
-                    <ActionBadges actions={msg.actions_taken} />
+                    <ActionBadges
+                      actions={msg.actions_taken.filter(
+                        (a) => a.type !== "cascade_applied",
+                      )}
+                    />
                   </div>
                 )}
                 {msg.preferences_extracted &&

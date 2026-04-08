@@ -48,7 +48,8 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
         "name": "update_node",
         "description": (
             "Update an existing stop. Only provide the fields you want to change. "
-            "Schedule changes automatically cascade to downstream nodes."
+            "Updates only this stop — does NOT cascade schedule changes to "
+            "downstream nodes. Update each downstream stop explicitly if needed."
         ),
         "parameters": {
             "type": "object",
@@ -115,8 +116,12 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
                 },
                 "travel_mode": {
                     "type": "string",
-                    "enum": ["drive", "flight", "transit", "walk"],
-                    "description": "Travel mode. Default: drive",
+                    "enum": ["drive", "ferry", "flight", "transit", "walk"],
+                    "description": "Travel mode. Use 'ferry' for ship/cruise sea routes. Default: drive",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Optional advisory note about the route (e.g., seasonal closures, scenic highlights).",
                 },
             },
             "required": ["from_node_id", "to_node_id"],

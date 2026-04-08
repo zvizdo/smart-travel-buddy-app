@@ -18,11 +18,11 @@ from typing import TYPE_CHECKING
 
 from google.cloud.firestore import AsyncClient
 from google.cloud.firestore_v1.base_query import FieldFilter
-from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.provider import AccessToken
+from fastmcp.server.auth import AccessToken, TokenVerifier
+from fastmcp.server.dependencies import get_access_token
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from fastmcp import Context
 
 logger = logging.getLogger(__name__)
 
@@ -115,16 +115,17 @@ async def resolve_user_from_api_key(
     return user_id
 
 
-class ApiKeyTokenVerifier:
+class ApiKeyTokenVerifier(TokenVerifier):
     """TokenVerifier implementation for FastMCP bearer auth.
 
     Resolves API keys to user IDs via HMAC-SHA256 + Firestore lookup.
-    Wired into FastMCP via the `token_verifier=` argument; the SDK then
-    installs BearerAuthBackend + AuthContextMiddleware so tool handlers can
-    read the authenticated user via `get_user_id(ctx)`.
+    Extends fastmcp's TokenVerifier which installs BearerAuthBackend +
+    AuthContextMiddleware but mounts zero OAuth discovery endpoints, so
+    clients with a static Bearer header in .mcp.json use it directly.
     """
 
     def __init__(self, db: AsyncClient, hmac_secret: str) -> None:
+        super().__init__(base_url=None, required_scopes=[])
         self._db = db
         self._hmac_secret = hmac_secret
 

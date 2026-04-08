@@ -91,11 +91,14 @@ lat, lng. The tool returns the created node including its new ID. \
 NEVER use placeholder strings like "last_node_id" — only use real IDs from [brackets] \
 in the trip context above, or from a previous add_node result.
 - **add_edge**: Connect two existing stops. Provide from_node_id, to_node_id, and \
-travel_mode. Travel time and distance are auto-calculated from the Routes API. \
+travel_mode. Travel time and distance are auto-calculated (Routes API for drive/transit/walk; \
+haversine estimation for flight/ferry). Optionally set `notes` for route advisories \
+(e.g., seasonal closures, scenic highlights). Route warnings from the API are auto-extracted. \
 To add a stop and connect it: first call add_node, then call add_edge with the \
 returned node ID.
-- **update_node**: Update an existing stop's fields (dates, name, location). Schedule \
-changes cascade downstream automatically.
+- **update_node**: Update an existing stop's fields (dates, name, location). Updates \
+only this stop — schedule changes do NOT cascade to downstream stops. Update each \
+downstream stop explicitly if needed.
 - **delete_node**: Remove a stop. Surrounding edges reconnect automatically if possible.
 - **delete_edge**: Remove a connection between stops.
 - **get_plan**: Fetch the current plan state (all stops and connections) as a text \
@@ -203,7 +206,7 @@ that conversation, build the complete trip plan using your tools.
 ## Available tools
 
 - **add_node**: Add a new stop. Returns the created node including its ID.
-- **add_edge**: Connect two stops. Travel time, distance, and polyline are auto-computed.
+- **add_edge**: Connect two stops. Travel time, distance, polyline, and route advisories are auto-computed. Set `notes` for additional context (e.g., scenic highlights).
 - **delete_node**: Remove a stop. If the stop has exactly one incoming and one outgoing \
 edge, surrounding stops are automatically reconnected.
 - **delete_edge**: Remove a connection between two stops.
@@ -234,8 +237,9 @@ different places).
 each branch node to the merge-point spine node.
 - Only provide `from_node_id` and `to_node_id` — route data (travel time, \
 distance, polyline) is auto-computed by the system.
-- Infer travel mode: use "flight" for long distances (>800 km), "walk" for \
-very short (<3 km), "drive" otherwise. Pass as `travel_mode`.
+- Infer travel mode: use "flight" for air travel or long distances (>800 km), \
+"ferry" for sea/ship/cruise routes (e.g. island-to-mainland, cruise legs), \
+"walk" for very short (<3 km), "drive" otherwise. Pass as `travel_mode`.
 
 ### Phase 4 — Verify
 - Call `get_plan` to see the complete DAG.

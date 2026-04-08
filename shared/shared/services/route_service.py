@@ -11,7 +11,10 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
-_FIELD_MASK = "routes.polyline.encodedPolyline,routes.duration,routes.distanceMeters"
+_FIELD_MASK = (
+    "routes.polyline.encodedPolyline,routes.duration,routes.distanceMeters,"
+    "routes.warnings,routes.legs.steps.navigationInstruction.instructions"
+)
 
 _TRAVEL_MODE_MAP = {
     "drive": "DRIVE",
@@ -27,6 +30,7 @@ class RouteData:
     polyline: str | None = None
     duration_seconds: int | None = None
     distance_meters: int | None = None
+    warnings: list[str] | None = None
 
     @property
     def travel_time_hours(self) -> float | None:
@@ -39,6 +43,12 @@ class RouteData:
         if self.distance_meters is None:
             return None
         return round(self.distance_meters / 1000, 1)
+
+    @property
+    def notes(self) -> str | None:
+        if not self.warnings:
+            return None
+        return " | ".join(self.warnings)
 
 
 class RouteService:
@@ -56,7 +66,7 @@ class RouteService:
         Returns RouteData on success, None on failure or for flights.
         Logs warnings on API failure; never raises.
         """
-        if travel_mode == "flight":
+        if travel_mode in ("flight", "ferry"):
             return None
 
         if not from_latlng or not to_latlng:
@@ -137,10 +147,28 @@ class RouteService:
 
             distance_meters = route.get("distanceMeters")
 
+            # Extract route advisory warnings
+            _NOISE = {"This route includes a highway."}
+            _ADVISORY_PATTERNS = ("may be closed", "parts of this road")
+            warnings: list[str] = []
+            for w in route.get("warnings", []):
+                if w not in _NOISE:
+                    warnings.append(w)
+            for leg in route.get("legs", []):
+                for step in leg.get("steps", []):
+                    instr = (
+                        step.get("navigationInstruction", {})
+                        .get("instructions", "")
+                    )
+                    if any(p in instr.lower() for p in _ADVISORY_PATTERNS):
+                        if instr not in warnings:
+                            warnings.append(instr)
+
             return RouteData(
                 polyline=polyline,
                 duration_seconds=duration_seconds,
                 distance_meters=distance_meters,
+                warnings=warnings or None,
             )
 
         except Exception:
@@ -177,6 +205,8 @@ class RouteService:
                     updates["travel_time_hours"] = route_data.travel_time_hours
                 if route_data.distance_km is not None:
                     updates["distance_km"] = route_data.distance_km
+                if route_data.notes:
+                    updates["notes"] = route_data.notes
                 if updates:
                     await edge_repo.update_edge(
                         trip_id, plan_id, edge_id, updates

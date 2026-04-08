@@ -1,6 +1,6 @@
 """MCP tools: atomic node operations (add, update, delete)."""
 
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from mcpserver.src.main import AppContext, mcp
 from mcpserver.src.tools._helpers import resolve_trip_plan
 
@@ -34,7 +34,7 @@ async def add_node(
         departure_time: ISO 8601 departure datetime.
     """
     user_id, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     result = await app.dag_service.create_node(
         trip_id=trip_id,
@@ -88,7 +88,7 @@ async def update_node(
         departure_time: New ISO 8601 departure datetime.
     """
     _, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     updates: dict = {}
     if name is not None:
@@ -131,7 +131,7 @@ async def delete_node(
         plan_id: Optional plan version. Defaults to active plan.
     """
     _, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     result = await app.dag_service.delete_node(
         trip_id=trip_id,

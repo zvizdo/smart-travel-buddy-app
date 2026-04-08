@@ -1,6 +1,6 @@
 """MCP tools for plan versioning: create_plan (clone), promote_plan, delete_plan."""
 
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from mcpserver.src.main import AppContext, mcp
 from mcpserver.src.tools._helpers import resolve_trip_admin, resolve_trip_plan
 
@@ -35,7 +35,7 @@ async def create_plan(
     user_id, resolved_source_plan_id, _ = await resolve_trip_plan(
         ctx, trip_id, source_plan_id
     )
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     result = await app.plan_service.clone_plan(
         trip_id=trip_id,
@@ -71,7 +71,7 @@ async def promote_plan(trip_id: str, plan_id: str, ctx: Context) -> str:
     Returns: Confirmation with the previous active plan ID (if any).
     """
     user_id, _ = await resolve_trip_admin(ctx, trip_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     result = await app.plan_service.promote_plan(
         trip_id=trip_id,
@@ -105,7 +105,7 @@ async def delete_plan(trip_id: str, plan_id: str, ctx: Context) -> str:
     # Gate A — editor. Pass the target plan_id through so the helper doesn't
     # need an active plan fallback; the service layer re-verifies the plan exists.
     await resolve_trip_plan(ctx, trip_id, plan_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     await app.plan_service.delete_plan(trip_id=trip_id, plan_id=plan_id)
     return f"Plan deleted: {plan_id}"

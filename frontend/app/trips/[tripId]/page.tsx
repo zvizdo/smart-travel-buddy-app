@@ -881,6 +881,7 @@ export default function TripMapPage() {
           distanceUnit={distanceUnit}
           timingWarning={selectedEdgeWarning.hasWarning}
           warningMessage={selectedEdgeWarning.message}
+          notes={(selectedEdge.notes as string) ?? null}
           canEdit={canEdit}
           onInsertStop={handleInsertStop}
           onClose={() => setSelectedEdgeId(null)}

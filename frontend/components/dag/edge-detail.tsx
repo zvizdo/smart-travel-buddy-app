@@ -12,6 +12,7 @@ interface EdgeDetailProps {
   distanceUnit?: "km" | "mi";
   timingWarning?: boolean;
   warningMessage?: string;
+  notes?: string | null;
   canEdit?: boolean;
   onInsertStop?: () => void;
   onClose: () => void;
@@ -19,6 +20,7 @@ interface EdgeDetailProps {
 
 const MODE_LABELS: Record<string, string> = {
   drive: "Drive",
+  ferry: "Ferry",
   flight: "Flight",
   transit: "Transit",
   walk: "Walk",
@@ -31,6 +33,7 @@ export function EdgeDetail({
   distanceUnit = "km",
   timingWarning,
   warningMessage,
+  notes,
   canEdit,
   onInsertStop,
   onClose,
@@ -243,6 +246,27 @@ export function EdgeDetail({
             <span>
               {warningMessage || "Travel time may be too tight for the scheduled arrival"}
             </span>
+          </div>
+        )}
+
+        {notes && (
+          <div className="flex items-start gap-2 rounded-xl bg-[#fffbeb] p-3 text-xs text-[#6d5a00]">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="mt-px shrink-0"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="16" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12.01" y2="8" />
+            </svg>
+            <span>{notes}</span>
           </div>
         )}
       </div>

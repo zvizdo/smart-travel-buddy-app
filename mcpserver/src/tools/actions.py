@@ -1,6 +1,6 @@
 """MCP tools for node actions — notes, todos, and place pins attached to trip stops."""
 
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from mcpserver.src.main import AppContext, mcp
 from mcpserver.src.tools._helpers import resolve_trip_participant
 from shared.models import ActionType, PlaceData
@@ -43,7 +43,7 @@ async def add_action(
     For type='note' or 'todo', the place_* fields must be left unset.
     """
     user_id, resolved_plan_id, _ = await resolve_trip_participant(ctx, trip_id, plan_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     if type not in _VALID_TYPES:
         raise ValueError(
@@ -114,7 +114,7 @@ async def list_actions(
         plan_id: Optional plan to target. Defaults to the trip's active plan.
     """
     _, resolved_plan_id, _ = await resolve_trip_participant(ctx, trip_id, plan_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     actions = await app.trip_service.list_actions(
         trip_id=trip_id,
@@ -182,7 +182,7 @@ async def delete_action(
         plan_id: Optional plan to target. Defaults to the trip's active plan.
     """
     _, resolved_plan_id, _ = await resolve_trip_participant(ctx, trip_id, plan_id)
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     result = await app.trip_service.delete_action(
         trip_id=trip_id,

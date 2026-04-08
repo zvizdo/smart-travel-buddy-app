@@ -1,4 +1,4 @@
-mcp>=1.0.0
+fastmcp>=3.2.0
 pydantic>=2.0.0
 google-cloud-firestore[async]>=2.16.0
 firebase-admin>=6.0.0

@@ -1,6 +1,6 @@
 """MCP tool for place discovery: find_places."""
 
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
 
@@ -29,7 +29,7 @@ async def find_places(
         radius_km: Search radius in km (default 10).
     """
     get_user_id(ctx)  # auth check
-    app: AppContext = ctx.request_context.lifespan_context
+    app: AppContext = ctx.lifespan_context
 
     results = await app.places_service.search_text(
         query=query, lat=lat, lng=lng, radius_km=radius_km

@@ -20,11 +20,9 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 import firebase_admin
 from google.cloud.firestore import AsyncClient
-from mcp.server.fastmcp import FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
+from fastmcp import FastMCP
 
 import httpx
-from mcp.server.auth.settings import AuthSettings
 from mcpserver.src.auth.api_key_auth import ApiKeyTokenVerifier
 from mcpserver.src.config import get_config
 from mcpserver.src.services.places_service import PlacesService
@@ -67,26 +65,11 @@ if not firebase_admin._apps:
 _db = AsyncClient()
 _config = get_config()
 
-# Minimal TokenVerifier with NO OAuth advertisement.
-# By leaving resource_server_url=None and not passing auth_server_provider,
-# FastMCP mounts BearerAuthBackend + AuthContextMiddleware but serves none of
-# the OAuth discovery endpoints. Clients with a static Bearer header in
+# ApiKeyTokenVerifier extends fastmcp's TokenVerifier which installs
+# BearerAuthBackend + AuthContextMiddleware but mounts zero OAuth discovery
+# routes (get_routes() returns []). Clients with a static Bearer header in
 # .mcp.json use it directly — no OAuth dance, no "Authenticate" click.
-#
-# Do NOT set resource_server_url here. A prior attempt (commit ff74061) set
-# it to the server URL, which mounted /.well-known/oauth-protected-resource
-# whose paired /.well-known/oauth-authorization-server did not exist (since
-# auth_server_provider was also not set) — clients broke on discovery. The
-# follow-up (914690e) "fixed" it by adding a full InMemoryOAuthProvider,
-# which is what caused the authenticate-click behavior. Leaving
-# resource_server_url=None removes both the route AND the resource_metadata
-# hint on WWW-Authenticate 401s, so clients never enter the OAuth flow.
 _token_verifier = ApiKeyTokenVerifier(_db, _config["api_key_hmac_secret"])
-_auth_settings = AuthSettings(
-    issuer_url=_config["mcp_server_url"],  # required by pydantic; unused without auth_server_provider
-    resource_server_url=None,
-    required_scopes=[],
-)
 
 
 # --- Lifespan --------------------------------------------------------------
@@ -148,21 +131,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 # --- FastMCP instance ------------------------------------------------------
 
-# Disable DNS rebinding protection for non-localhost hosts (e.g. Cloud Run).
-_transport_security = (
-    None  # FastMCP auto-enables for localhost
-    if _config["mcp_host"] in ("127.0.0.1", "localhost", "::1")
-    else TransportSecuritySettings(enable_dns_rebinding_protection=False)
-)
-
 mcp = FastMCP(
     "smart-travel-buddy",
     lifespan=app_lifespan,
-    host=_config["mcp_host"],
-    port=_config["mcp_port"],
-    transport_security=_transport_security,
-    auth=_auth_settings,
-    token_verifier=_token_verifier,
+    auth=_token_verifier,
 )
 
 # Import tools to register them with the server
@@ -174,11 +146,10 @@ import mcpserver.src.tools.plans  # noqa: E402, F401
 import mcpserver.src.tools.trips  # noqa: E402, F401
 
 
-# streamable-http only. FastMCP's streamable_http_app() includes:
+# Streamable-HTTP ASGI app. fastmcp's http_app() includes:
 #   - Session manager lifespan (task group init)
-#   - BearerAuthBackend + AuthContextMiddleware
-#   - RequireAuthMiddleware on /mcp endpoint
-# No /.well-known/oauth-* routes are mounted (see auth wiring above).
+#   - BearerAuthBackend + AuthContextMiddleware (from TokenVerifier.get_middleware)
+# No /.well-known/oauth-* routes are mounted (TokenVerifier.get_routes() returns []).
 # Exposed as a module-level ASGI app so uvicorn can load it as
 # `mcpserver.src.main:app` -- mirrors the backend's entry point shape.
-app = mcp.streamable_http_app()
+app = mcp.http_app(path="/mcp")

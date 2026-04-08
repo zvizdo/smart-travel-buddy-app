@@ -93,34 +93,19 @@ class ToolExecutor:
                 "lng": updates.pop("lng", None),
             }
 
-        result = await self._dag.update_node_with_cascade_preview(
+        node = await self._dag.update_node_only(
             trip_id=self._trip_id,
             plan_id=self._plan_id,
             node_id=node_id,
             updates=updates,
         )
 
-        # Auto-confirm cascade since the user already confirmed in chat
-        cascade = result.get("cascade_preview", {})
-        affected = cascade.get("affected_nodes", [])
-        if affected:
-            await self._dag.confirm_cascade(
-                trip_id=self._trip_id,
-                plan_id=self._plan_id,
-                node_id=node_id,
-            )
-
-        node = result["node"]
-        description = f"Updated stop: {node.get('name', node_id)}"
-        if affected:
-            description += f" (cascaded to {len(affected)} downstream nodes)"
-
         self.actions_taken.append(ActionTaken(
             type="node_updated",
             node_id=node_id,
-            description=description,
+            description=f"Updated stop: {node.get('name', node_id)}",
         ))
-        return result
+        return {"node": node}
 
     async def _handle_delete_node(self, args: dict) -> dict:
         node_id = args["node_id"]
@@ -146,6 +131,7 @@ class ToolExecutor:
             from_node_id=args["from_node_id"],
             to_node_id=args["to_node_id"],
             travel_mode=args.get("travel_mode", "drive"),
+            notes=args.get("notes"),
         )
         self.actions_taken.append(ActionTaken(
             type="edge_added",
