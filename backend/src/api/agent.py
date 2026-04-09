@@ -10,6 +10,7 @@ from backend.src.deps import (
     get_chat_history_repo,
     get_dag_service,
     get_edge_repo,
+    get_flight_service,
     get_node_repo,
     get_plan_repo,
     get_preference_repo,
@@ -26,6 +27,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from shared.models import Plan, PlanStatus, TripRole
+from shared.services.flight_service import FlightService
 from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
@@ -171,6 +173,7 @@ async def ongoing_chat(
     edge_repo: EdgeRepository = Depends(get_edge_repo),
     preference_repo: PreferenceRepository = Depends(get_preference_repo),
     user_service: UserService = Depends(get_user_service),
+    flight_service: FlightService = Depends(get_flight_service),
 ):
     """Send a message to the ongoing trip management agent.
 
@@ -207,6 +210,7 @@ async def ongoing_chat(
         user_id=user["uid"],
         trip=trip,
         display_name=display_name,
+        flight_service=flight_service,
     )
 
     # Save preferences if any were extracted

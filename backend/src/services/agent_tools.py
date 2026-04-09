@@ -8,7 +8,10 @@ Tools are defined once in _define_all_tools() and composed into subsets
 by create_agent_tools() and create_build_tools().
 """
 
+from __future__ import annotations
+
 from backend.src.services.tool_executor import ToolExecutor
+from shared.services.flight_service import FlightService, FlightSearchError, format_flight_results
 
 
 def _define_all_tools(executor: ToolExecutor) -> dict:
@@ -89,18 +92,21 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
         from_node_id: str,
         to_node_id: str,
         travel_mode: str = "drive",
+        notes: str = None,
     ) -> dict:
         """Create a connection between two existing stops. Travel time and distance are auto-calculated.
 
         Args:
             from_node_id: ID of the source node.
             to_node_id: ID of the destination node.
-            travel_mode: Travel mode - one of: drive, flight, transit, walk. Default: drive.
+            travel_mode: Travel mode - one of: drive, ferry, flight, transit, walk. Use 'ferry' for ship/cruise routes. Default: drive.
+            notes: Optional advisory note about the route (e.g., seasonal closures, scenic highlights).
         """
         return await executor.execute("add_edge", {
             "from_node_id": from_node_id,
             "to_node_id": to_node_id,
             "travel_mode": travel_mode,
+            "notes": notes,
         })
 
     async def delete_edge(edge_id: str) -> dict:
@@ -156,3 +162,55 @@ def create_build_tools(executor: ToolExecutor) -> list:
         tools["delete_edge"],
         tools["get_plan"],
     ]
+
+
+def create_search_tools(flight_service: FlightService) -> list:
+    """Create search tool callables for the agent.
+
+    These are standalone — they don't go through ToolExecutor because
+    they are read-only and don't mutate the DAG.
+    """
+
+    async def find_flights(
+        origin: str,
+        destination: str,
+        date: str,
+        return_date: str = None,
+        cabin: str = "economy",
+        max_stops: str = "any",
+        max_results: int = 5,
+        adults: int = 1,
+    ) -> dict:
+        """Search for flights between airports. Returns prices, durations, airlines, and stops.
+
+        Use IATA airport codes (3-letter codes like JFK, LHR, CDG, NRT).
+        Dates must be in YYYY-MM-DD format and in the future.
+        Omit return_date for one-way; provide it for round-trip.
+
+        Args:
+            origin: Departure airport IATA code (e.g. "LHR").
+            destination: Arrival airport IATA code (e.g. "JFK").
+            date: Departure date as YYYY-MM-DD.
+            return_date: Return date as YYYY-MM-DD for round-trip searches.
+            cabin: Cabin class — economy, premium_economy, business, first.
+            max_stops: Stop filter — any, nonstop, one_stop, two_stops.
+            max_results: Number of results to return (1-10, default 5).
+            adults: Number of adult passengers (1-9, default 1).
+        """
+        try:
+            result = await flight_service.search(
+                origin=origin,
+                destination=destination,
+                date=date,
+                return_date=return_date,
+                cabin=cabin,
+                max_stops=max_stops,
+                max_results=max_results,
+                adults=adults,
+            )
+        except FlightSearchError as exc:
+            return {"error": str(exc)}
+
+        return {"flights": format_flight_results(result)}
+
+    return [find_flights]

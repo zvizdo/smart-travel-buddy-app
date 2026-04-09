@@ -8,6 +8,7 @@ setup(
         "pydantic>=2.0.0",
         "google-cloud-firestore>=2.16.0",
         "timezonefinder>=6.0.0",
+        "flights>=0.8.0",
     ],
     python_requires=">=3.12",
 )

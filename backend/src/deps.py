@@ -4,6 +4,7 @@ from backend.src.repositories.notification_repository import NotificationReposit
 from backend.src.repositories.preference_repository import PreferenceRepository
 from backend.src.services.agent_service import AgentService
 from shared.services.dag_service import DAGService
+from shared.services.flight_service import FlightService
 from backend.src.services.invite_service import InviteService
 from backend.src.services.notification_service import NotificationService
 from shared.services.plan_service import PlanService
@@ -165,6 +166,11 @@ def get_user_service(
     user_repo: UserRepository = Depends(get_user_repo),
 ) -> UserService:
     return UserService(user_repo)
+
+
+def get_flight_service(request: Request) -> FlightService:
+    """Return the shared FlightService from app state."""
+    return request.app.state.flight_service
 
 
 def get_agent_service() -> AgentService:

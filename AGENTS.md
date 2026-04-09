@@ -63,6 +63,7 @@ Lifespan: `firebase_admin.initialize_app()`, `AsyncClient()`, `GCSClient()`, `Ro
 | `ToolExecutor` | Dispatches `add/update/delete_node`, `add/delete_edge`, `get_plan` to DAGService. `update_node` uses `update_node_only` (no cascade). Converts `lat/lng` to `lat_lng` sub-object. Tracks `actions_taken`. |
 | `PlanService` | **In `shared/shared/services/`**. `clone_plan`, `promote_plan`, `delete_plan` (cascading batch delete). `notification_service` is optional — backend injects it, MCP passes `None` and `promote_plan` skips the notification step. |
 | `RouteService` | **In `shared/shared/services/`**. Google Routes API v2. `get_route_data()` -> `RouteData(polyline, travel_time_hours, distance_km)`. |
+| `FlightService` | **In `shared/shared/services/`**. Google Flights search via `fli` library (pip: `flights`). `search(origin, destination, date, ...)` -> `FlightSearchResult`. Sync `curl_cffi` bridged to async via `asyncio.to_thread()`. No API key needed. |
 | `NotificationService` | `create_notification`, `notify_member_joined`, `notify_member_removed`, `notify_role_changed` |
 | `InviteService` | `generate_invite` (token), `claim_invite` (adds participant) |
 | `UserService` | `ensure_user`, `update_user`, `get_users_batch` |
@@ -106,9 +107,10 @@ All Pydantic `BaseModel` with `StrEnum`. **All datetimes UTC-aware** via `dateti
 
 ### Agent Tools (`backend/src/services/agent_tools.py`)
 
-`_define_all_tools(executor)` defines all 6 tools once (`add_node`, `update_node`, `delete_node`, `add_edge`, `delete_edge`, `get_plan`).
+`_define_all_tools(executor)` defines all 6 DAG tools once (`add_node`, `update_node`, `delete_node`, `add_edge`, `delete_edge`, `get_plan`).
 - `create_agent_tools(executor, can_mutate)`: all 6 if can_mutate, else just `get_plan`.
 - `create_build_tools(executor)`: `add_node`, `add_edge`, `delete_node`, `delete_edge`, `get_plan` (excludes `update_node`).
+- `create_search_tools(flight_service)`: `find_flights` — standalone async callable that bypasses `ToolExecutor` (read-only, not a DAG mutation). Added to ongoing chat tools alongside DAG tools.
 
 ### DAG (`shared/shared/dag/`)
 - **`cycle.py`**: `detect_cycle()` — iterative DFS for multi-connection node insertion. `would_create_cycle(from_id, to_id, edges)` — BFS check for standalone edge creation. `CycleDetectedError`, `get_ancestors/get_descendants`.
@@ -195,12 +197,14 @@ fastmcp 3.2 server for external AI agents via Model Context Protocol. Transport:
 
 **Client config** (`.mcp.json`): `type: "http"`, `url: ".../mcp"`, `headers: { "Authorization": "Bearer <api_key>" }`.
 
-**Tools**: `get_trips`, `get_trip_plans`, `get_trip_context` | `create_trip`, `delete_trip`, `update_trip_settings` | `create_plan`, `promote_plan`, `delete_plan` | `add_node`, `update_node`, `delete_node` | `add_edge`, `delete_edge` | `add_action`, `list_actions`, `delete_action` | `find_places`. Shared `DAGService` + `PlanService` for mutations, shared `format_trip_context()` for context. `add_action` takes flattened place params (`place_name`, `place_id`, `place_lat`, `place_lng`, `place_category`) and requires `place_id` when `type='place'`.
+**Tools**: `get_trips`, `get_trip_plans`, `get_trip_context` | `create_trip`, `delete_trip`, `update_trip_settings` | `create_plan`, `promote_plan`, `delete_plan` | `add_node`, `update_node`, `delete_node` | `add_edge`, `delete_edge` | `add_action`, `list_actions`, `delete_action` | `find_places` | `find_flights`. Shared `DAGService` + `PlanService` for mutations, shared `format_trip_context()` for context. `add_action` takes flattened place params (`place_name`, `place_id`, `place_lat`, `place_lng`, `place_category`) and requires `place_id` when `type='place'`. `find_flights` takes IATA codes + date; supports one-way and round-trip.
+
+**Return format convention**: Tools returning data the LLM chains (IDs, lists, settings) return **dicts** — this includes all mutation tools, `get_trips`, `get_trip_plans`, `find_flights`. Tools returning rich context for comprehension return **text/markdown** — `get_trip_context`, `list_actions`, `find_places`.
 
 **MCP-specific behaviors** (diverge from backend on purpose):
 - `create_trip` bundles an initial active plan named "Main Route" so `add_node` works immediately. Backend's `POST /trips` stays planless — web flow creates the first plan inside `import_build`.
 
-**Shared agent + MCP behavior**: Both the in-app agent (`ToolExecutor`) and MCP server use `DAGService.update_node_only` for `update_node` — updates only the target node, no cascade. Polylines on connected edges are recalculated if `lat_lng` changes. The REST API (`backend/src/api/nodes.py`) still uses `update_node_with_cascade_preview` for the manual map UI, which has its own cascade preview/confirm flow.
+**Shared agent + MCP behavior**: Both the in-app agent (`ToolExecutor`) and MCP server use `DAGService.update_node_only` for `update_node` — updates only the target node, no cascade. Polylines on connected edges are recalculated if `lat_lng` changes. The REST API (`backend/src/api/nodes.py`) still uses `update_node_with_cascade_preview` for the manual map UI, which has its own cascade preview/confirm flow. Overlapping tools (`add_node`, `update_node`, `delete_node`, `add_edge`, `delete_edge`, `find_flights`) call the same underlying service methods and return the same dict shapes.
 
 **Auth gates** (`mcpserver/src/tools/_helpers.py`): every `@mcp.tool()` calls exactly one on its first line — Gate A `resolve_trip_plan` (editor: admin/planner), Gate B participant check (in `add_action`), Gate C `resolve_trip_admin` (admin only), Gate D `get_user_id` (auth only, for `create_trip` / `find_places`).
 
@@ -213,7 +217,7 @@ fastmcp 3.2 server for external AI agents via Model Context Protocol. Transport:
 - **DAG tools (AFC)**: Async callables via `AutomaticFunctionCallingConfig`. `ToolExecutor` dispatches to `DAGService`. Actions tracked by executor, not LLM.
 - **Import flow**: Ephemeral (full `messages` array per request). Structured output via `response_schema`.
 - **Build flow**: AFC with `add_node`, `add_edge`, `delete_node`, `delete_edge`, `get_plan` tools (`maximum_remote_calls=128`). Creates empty plan first, agent builds into it step-by-step. Frontend shows `BuildProgress` animation replaying `actions_taken`.
-- **Ongoing chat**: AFC with all 6 tools (`maximum_remote_calls=50`). Confirm-before-acting pattern.
+- **Ongoing chat**: AFC with all 6 DAG tools + `find_flights` search tool (`maximum_remote_calls=50`). Confirm-before-acting pattern.
 
 ---
 

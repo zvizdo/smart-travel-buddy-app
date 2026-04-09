@@ -20,6 +20,7 @@ from backend.src.api import (
     trips,
     users,
 )
+from shared.services.flight_service import FlightService
 from shared.services.route_service import RouteService
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_connections=20))
     app.state.http_client = http_client
     app.state.route_service = RouteService(http_client)
+    app.state.flight_service = FlightService()
     yield
     app.state.firestore.close()
     await http_client.aclose()

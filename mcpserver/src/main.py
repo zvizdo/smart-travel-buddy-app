@@ -21,6 +21,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 import firebase_admin
 from google.cloud.firestore import AsyncClient
 from fastmcp import FastMCP
+from fastmcp.server.providers.skills import SkillProvider
 
 import httpx
 from mcpserver.src.auth.api_key_auth import ApiKeyTokenVerifier
@@ -37,6 +38,7 @@ from shared.repositories import (
     UserRepository,
 )
 from shared.services.dag_service import DAGService
+from shared.services.flight_service import FlightService
 from shared.services.plan_service import PlanService
 from shared.services.route_service import RouteService
 
@@ -53,6 +55,7 @@ class AppContext:
     dag_service: DAGService
     plan_service: PlanService
     places_service: PlacesService
+    flight_service: FlightService
     config: dict
     http_client: httpx.AsyncClient | None = field(default=None)
 
@@ -113,6 +116,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         action_repo=action_repo,
     )
     places_service = PlacesService(config["google_maps_api_key"])
+    flight_service = FlightService()
 
     try:
         yield AppContext(
@@ -121,6 +125,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             dag_service=dag_service,
             plan_service=plan_service,
             places_service=places_service,
+            flight_service=flight_service,
             config=config,
             http_client=http_client,
         )
@@ -141,6 +146,7 @@ mcp = FastMCP(
 import mcpserver.src.tools.actions  # noqa: E402, F401
 import mcpserver.src.tools.nodes  # noqa: E402, F401
 import mcpserver.src.tools.edges  # noqa: E402, F401
+import mcpserver.src.tools.flights  # noqa: E402, F401
 import mcpserver.src.tools.places  # noqa: E402, F401
 import mcpserver.src.tools.plans  # noqa: E402, F401
 import mcpserver.src.tools.trips  # noqa: E402, F401
@@ -153,3 +159,5 @@ import mcpserver.src.tools.trips  # noqa: E402, F401
 # Exposed as a module-level ASGI app so uvicorn can load it as
 # `mcpserver.src.main:app` -- mirrors the backend's entry point shape.
 app = mcp.http_app(path="/mcp")
+mcp.add_provider(SkillProvider(Path(__file__).resolve().parent.parent.parent / "skill" / "smart-travel-buddy"))
+

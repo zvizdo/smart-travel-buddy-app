@@ -21,7 +21,7 @@ async def add_action(
     place_lat: float | None = None,
     place_lng: float | None = None,
     place_category: str | None = None,
-) -> str:
+) -> dict:
     """Attach a note, todo, or place pin to a trip stop.
 
     Role required: any participant (including Viewer).
@@ -77,7 +77,7 @@ async def add_action(
             f"place_* fields are only allowed when type='place' (got type='{type}')."
         )
 
-    result = await app.trip_service.add_action(
+    return await app.trip_service.add_action(
         user_id=user_id,
         trip_id=trip_id,
         plan_id=resolved_plan_id,
@@ -85,11 +85,6 @@ async def add_action(
         action_type=action_type,
         content=content,
         place_data=place_data,
-    )
-
-    return (
-        f"Added {result['type']} to node {node_id}: \"{result['content']}\" "
-        f"(action_id: {result['action_id']})"
     )
 
 
@@ -170,7 +165,7 @@ async def delete_action(
     action_id: str,
     ctx: Context,
     plan_id: str | None = None,
-) -> str:
+) -> dict:
     """Delete a specific action from a trip stop.
 
     Role required: any participant (including Viewer).
@@ -184,13 +179,9 @@ async def delete_action(
     _, resolved_plan_id, _ = await resolve_trip_participant(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context
 
-    result = await app.trip_service.delete_action(
+    return await app.trip_service.delete_action(
         trip_id=trip_id,
         plan_id=resolved_plan_id,
         node_id=node_id,
         action_id=action_id,
-    )
-
-    return (
-        f"Deleted {result.get('type') or 'action'} {action_id} from node {node_id}."
     )

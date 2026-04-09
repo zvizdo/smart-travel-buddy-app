@@ -5,9 +5,10 @@ import os
 import time
 from datetime import UTC, datetime
 
-from backend.src.services.agent_tools import create_agent_tools, create_build_tools
+from backend.src.services.agent_tools import create_agent_tools, create_build_tools, create_search_tools
 from backend.src.services.agent_user_context import build_user_context, build_user_context_text
 from shared.services.dag_service import DAGService
+from shared.services.flight_service import FlightService
 from backend.src.services.tool_executor import ToolExecutor
 from google import genai
 from google.genai import types
@@ -194,6 +195,7 @@ class AgentService:
         user_id: str,
         trip: Trip,
         display_name: str,
+        flight_service: FlightService | None = None,
     ) -> OngoingChatResponse:
         """Send a message to the ongoing trip management agent.
 
@@ -227,6 +229,8 @@ class AgentService:
         # Create tool executor and callable tools for this request
         executor = ToolExecutor(dag_service, trip_id, plan_id, user_id, preferences)
         tools = create_agent_tools(executor, can_mutate=user_ctx.can_mutate)
+        if flight_service:
+            tools.extend(create_search_tools(flight_service))
 
         response = await self._client.aio.models.generate_content(
             model=self._model,

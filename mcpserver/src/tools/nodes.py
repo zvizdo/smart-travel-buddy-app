@@ -17,10 +17,10 @@ async def add_node(
     place_id: str | None = None,
     arrival_time: str | None = None,
     departure_time: str | None = None,
-) -> str:
+) -> dict:
     """Add a new stop to the trip itinerary. Use add_edge separately to connect it.
 
-    Returns the created node ID. Requires Admin or Planner role.
+    Returns the created node (including its ID). Requires Admin or Planner role.
 
     Args:
         trip_id: The trip identifier.
@@ -52,8 +52,7 @@ async def add_node(
         arrival_time=arrival_time,
         departure_time=departure_time,
     )
-    node = result["node"]
-    return f"Node created: {node['name']} (id: {node['id']}, type: {node.get('type', 'place')})"
+    return result
 
 
 @mcp.tool()
@@ -68,7 +67,7 @@ async def update_node(
     lng: float | None = None,
     arrival_time: str | None = None,
     departure_time: str | None = None,
-) -> str:
+) -> dict:
     """Update an existing stop. Only provide the fields you want to change.
 
     Updates only this node. Does NOT propagate schedule changes to downstream
@@ -103,7 +102,7 @@ async def update_node(
         updates["departure_time"] = departure_time
 
     if not updates:
-        return "No fields to update."
+        return {"error": "No fields to update."}
 
     node = await app.dag_service.update_node_only(
         trip_id=trip_id,
@@ -111,7 +110,7 @@ async def update_node(
         node_id=node_id,
         updates=updates,
     )
-    return f"Updated: {node.get('name', node_id)}"
+    return {"node": node}
 
 
 @mcp.tool()
@@ -120,7 +119,7 @@ async def delete_node(
     node_id: str,
     ctx: Context,
     plan_id: str | None = None,
-) -> str:
+) -> dict:
     """Remove a stop from the itinerary. Surrounding edges reconnect if possible.
 
     Requires Admin or Planner role.
@@ -138,9 +137,4 @@ async def delete_node(
         plan_id=resolved_plan_id,
         node_id=node_id,
     )
-
-    lines = [f"Deleted node: {node_id}"]
-    if result.get("reconnected_edge"):
-        lines.append("Surrounding edges were reconnected")
-    lines.append(f"Deleted {result.get('deleted_edge_count', 0)} connected edges")
-    return "\n".join(lines)
+    return result

@@ -14,7 +14,7 @@ async def add_edge(
     plan_id: str | None = None,
     travel_mode: str = "drive",
     notes: str | None = None,
-) -> str:
+) -> dict:
     """Create a connection between two existing stops. Travel time and distance are auto-calculated.
 
     Requires Admin or Planner role.
@@ -38,13 +38,7 @@ async def add_edge(
         travel_mode=travel_mode,
         notes=notes,
     )
-
-    mode = result.get("travel_mode", travel_mode)
-    time_h = result.get("travel_time_hours")
-    dist = result.get("distance_km")
-    time_str = f"{time_h:.1f}h" if time_h else "calculating..."
-    dist_str = f", {dist:.0f}km" if dist else ""
-    return f"Edge created: {result.get('id', '?')} ({mode}, {time_str}{dist_str})"
+    return result
 
 
 @mcp.tool()
@@ -53,7 +47,7 @@ async def delete_edge(
     edge_id: str,
     ctx: Context,
     plan_id: str | None = None,
-) -> str:
+) -> dict:
     """Remove a connection between two stops.
 
     Requires Admin or Planner role.
@@ -71,4 +65,4 @@ async def delete_edge(
         plan_id=resolved_plan_id,
         edge_id=edge_id,
     )
-    return f"Deleted edge: {result.get('deleted_edge_id', edge_id)}"
+    return result
