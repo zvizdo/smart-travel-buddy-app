@@ -14,7 +14,12 @@ import {
   type DateFormatPreference,
 } from "@/lib/dates";
 import { DateTimePicker } from "@/components/ui/datetime-picker";
+import { DurationInput } from "@/components/ui/duration-input";
 import { ConnectionSelector } from "@/components/dag/connection-selector";
+
+type TimingMode = "fixed" | "flexible";
+
+const DEFAULT_FLEXIBLE_DURATION_MINUTES = 120;
 
 export interface InsertBetweenData {
   edgeId: string;
@@ -37,6 +42,7 @@ interface AddNodeSheetProps {
     place_id: string | null;
     arrival_time: string | null;
     departure_time: string | null;
+    duration_minutes: number | null;
     connect_after_node_id: string | null;
     connect_before_node_id: string | null;
     travel_mode: string;
@@ -52,6 +58,7 @@ interface AddNodeSheetProps {
     place_id: string | null;
     arrival_time: string | null;
     departure_time: string | null;
+    duration_minutes: number | null;
     leg_a: { travel_mode: string; travel_time_hours: number | null; distance_km: number | null; route_polyline: string | null } | null;
     leg_b: { travel_mode: string; travel_time_hours: number | null; distance_km: number | null; route_polyline: string | null } | null;
   }) => void;
@@ -63,6 +70,7 @@ interface AddNodeSheetProps {
     place_id: string | null;
     arrival_time: string | null;
     departure_time: string | null;
+    duration_minutes: number | null;
     incoming: { node_id: string; travel_mode: string; travel_time_hours: number; distance_km: number | null; route_polyline: string | null }[];
     outgoing: { node_id: string; travel_mode: string; travel_time_hours: number; distance_km: number | null; route_polyline: string | null }[];
   }) => void;
@@ -121,6 +129,10 @@ export function AddNodeSheet({
 
   const [type, setType] = useState(
     initialPlace ? inferNodeType(initialPlace.types) : "place",
+  );
+  const [timingMode, setTimingMode] = useState<TimingMode>("flexible");
+  const [durationMinutes, setDurationMinutes] = useState<number | null>(
+    DEFAULT_FLEXIBLE_DURATION_MINUTES,
   );
   const [arrivalTime, setArrivalTime] = useState("");
   const [departureTime, setDepartureTime] = useState("");
@@ -261,7 +273,26 @@ export function AddNodeSheet({
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedPlace || departureBeforeArrival) return;
+    if (!selectedPlace) return;
+    if (timingMode === "fixed" && departureBeforeArrival) return;
+
+    // Derive timing payload depending on mode.
+    const timingPayload: {
+      arrival_time: string | null;
+      departure_time: string | null;
+      duration_minutes: number | null;
+    } =
+      timingMode === "fixed"
+        ? {
+            arrival_time: arrivalTime ? localInputToUtc(arrivalTime) : null,
+            departure_time: departureTime ? localInputToUtc(departureTime) : null,
+            duration_minutes: null,
+          }
+        : {
+            arrival_time: null,
+            departure_time: null,
+            duration_minutes: durationMinutes,
+          };
 
     // Insert-between mode: split the edge
     if (insertBetween && onSplitEdge) {
@@ -271,8 +302,7 @@ export function AddNodeSheet({
         lat: selectedPlace.lat,
         lng: selectedPlace.lng,
         place_id: selectedPlace.placeId,
-        arrival_time: arrivalTime ? localInputToUtc(arrivalTime) : null,
-        departure_time: departureTime ? localInputToUtc(departureTime) : null,
+        ...timingPayload,
         leg_a: legATravelData ? {
           travel_mode: legATravelData.travel_mode,
           travel_time_hours: legATravelData.travel_time_hours,
@@ -297,8 +327,7 @@ export function AddNodeSheet({
         lat: selectedPlace.lat,
         lng: selectedPlace.lng,
         place_id: selectedPlace.placeId,
-        arrival_time: arrivalTime ? localInputToUtc(arrivalTime) : null,
-        departure_time: departureTime ? localInputToUtc(departureTime) : null,
+        ...timingPayload,
         incoming: incomingNodes.map((nid) => ({
           node_id: nid,
           travel_mode: "drive",
@@ -324,8 +353,7 @@ export function AddNodeSheet({
       lat: selectedPlace.lat,
       lng: selectedPlace.lng,
       place_id: selectedPlace.placeId,
-      arrival_time: arrivalTime ? localInputToUtc(arrivalTime) : null,
-      departure_time: departureTime ? localInputToUtc(departureTime) : null,
+      ...timingPayload,
       connect_after_node_id:
         connectMode === "after" ? connectAfterNodeId || null : null,
       connect_before_node_id:
@@ -457,26 +485,53 @@ export function AddNodeSheet({
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <DateTimePicker
-            label="Arrival"
-            value={arrivalTime}
-            onChange={handleArrivalChange}
-            datetimeFormat={datetimeFormat}
-            dateFormat={dateFormat}
-            icon="arrival"
-          />
-          <DateTimePicker
-            label="Departure"
-            value={departureTime}
-            onChange={setDepartureTime}
-            datetimeFormat={datetimeFormat}
-            dateFormat={dateFormat}
-            icon="departure"
-            error={departureBeforeArrival}
-            errorMessage="Departure must be after arrival"
-          />
+        {/* Timing mode toggle */}
+        <div>
+          <div className="flex rounded-xl bg-surface-high p-0.5 gap-0.5">
+            {(["fixed", "flexible"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setTimingMode(m)}
+                className={`flex-1 rounded-[10px] px-3 py-1.5 text-xs font-semibold transition-all ${
+                  timingMode === m
+                    ? "bg-surface-lowest text-on-surface shadow-soft"
+                    : "text-on-surface-variant"
+                }`}
+              >
+                {m === "fixed" ? "Fixed time" : "Flexible duration"}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {timingMode === "fixed" ? (
+          <div className="grid grid-cols-2 gap-2">
+            <DateTimePicker
+              label="Arrival"
+              value={arrivalTime}
+              onChange={handleArrivalChange}
+              datetimeFormat={datetimeFormat}
+              dateFormat={dateFormat}
+              icon="arrival"
+            />
+            <DateTimePicker
+              label="Departure"
+              value={departureTime}
+              onChange={setDepartureTime}
+              datetimeFormat={datetimeFormat}
+              dateFormat={dateFormat}
+              icon="departure"
+              error={departureBeforeArrival}
+              errorMessage="Departure must be after arrival"
+            />
+          </div>
+        ) : (
+          <DurationInput
+            value={durationMinutes}
+            onChange={setDurationMinutes}
+          />
+        )}
 
         {/* Insert-between mode: locked connection card */}
         {insertBetween && (

@@ -10,10 +10,17 @@ import {
   formatDateTimeWithPreference,
   type DateFormatPreference,
 } from "@/lib/dates";
+import type {
+  RawEdge,
+  RawNode,
+  TripSettingsLike,
+} from "@/lib/time-inference";
 
 interface NodeDetailSheetProps {
   node: DocumentData;
   allNodes?: DocumentData[];
+  allEdges?: RawEdge[];
+  tripSettings?: TripSettingsLike | null;
   userRole?: string;
   online?: boolean;
   datetimeFormat?: "12h" | "24h";
@@ -49,6 +56,14 @@ interface NodeDetailSheetProps {
     },
   ) => void;
   onProposeChanges?: () => void;
+  onShiftFollowing?: (
+    shifts: Array<{
+      id: string;
+      arrival_time: string | null;
+      departure_time: string | null;
+    }>,
+  ) => void | Promise<void>;
+  onImpactDiscarded?: () => void;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -70,6 +85,8 @@ const TYPE_COLORS: Record<string, string> = {
 export function NodeDetailSheet({
   node,
   allNodes,
+  allEdges,
+  tripSettings,
   userRole = "viewer",
   online = true,
   datetimeFormat = "24h",
@@ -85,6 +102,8 @@ export function NodeDetailSheet({
   onToggleAction,
   onBranch,
   onProposeChanges,
+  onShiftFollowing,
+  onImpactDiscarded,
 }: NodeDetailSheetProps) {
   const [mode, setMode] = useState<"view" | "edit" | "branch">("view");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -290,8 +309,13 @@ export function NodeDetailSheet({
             userRole={userRole}
             datetimeFormat={datetimeFormat}
             dateFormat={dateFormat}
+            allNodes={allNodes as RawNode[] | undefined}
+            allEdges={allEdges}
+            tripSettings={tripSettings}
             onSave={handleSave}
             onCancel={() => setMode("view")}
+            onShiftFollowing={onShiftFollowing}
+            onImpactDiscarded={onImpactDiscarded}
           />
         ) : mode === "branch" ? (
           <BranchForm

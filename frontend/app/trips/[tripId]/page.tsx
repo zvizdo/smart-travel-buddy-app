@@ -517,6 +517,34 @@ export default function TripMapPage() {
     }
   }
 
+  async function handleShiftFollowing(
+    shifts: Array<{
+      id: string;
+      arrival_time: string | null;
+      departure_time: string | null;
+    }>,
+  ) {
+    if (!displayPlanId || shifts.length === 0) return;
+    for (const s of shifts) {
+      try {
+        await api.patch(
+          `/trips/${tripId}/plans/${displayPlanId}/nodes/${s.id}`,
+          {
+            arrival_time: s.arrival_time,
+            departure_time: s.departure_time,
+          },
+        );
+      } catch {
+        // Error surfaced by api client; keep iterating so partial success still applies.
+      }
+    }
+    setToastMessage(
+      shifts.length === 1
+        ? "Shifted 1 following stop"
+        : `Shifted ${shifts.length} following stops`,
+    );
+  }
+
   async function handleAddAction(
     nodeId: string,
     data: { type: string; content: string; place_data?: unknown },
@@ -605,6 +633,7 @@ export default function TripMapPage() {
     place_id: string | null;
     arrival_time: string | null;
     departure_time: string | null;
+    duration_minutes: number | null;
     connect_after_node_id: string | null;
     connect_before_node_id: string | null;
     travel_mode: string;
@@ -677,6 +706,7 @@ export default function TripMapPage() {
     place_id: string | null;
     arrival_time: string | null;
     departure_time: string | null;
+    duration_minutes: number | null;
     leg_a: { travel_mode: string; travel_time_hours: number | null; distance_km: number | null; route_polyline: string | null } | null;
     leg_b: { travel_mode: string; travel_time_hours: number | null; distance_km: number | null; route_polyline: string | null } | null;
   }) {
@@ -701,6 +731,7 @@ export default function TripMapPage() {
     place_id: string | null;
     arrival_time: string | null;
     departure_time: string | null;
+    duration_minutes: number | null;
     incoming: { node_id: string; travel_mode: string; travel_time_hours: number; distance_km: number | null; route_polyline: string | null }[];
     outgoing: { node_id: string; travel_mode: string; travel_time_hours: number; distance_km: number | null; route_polyline: string | null }[];
   }) {
@@ -864,6 +895,8 @@ export default function TripMapPage() {
         <NodeDetailSheet
           node={selectedNode}
           allNodes={nodes}
+          allEdges={edges}
+          tripSettings={enrichmentSettings}
           userRole={userRole}
           online={online}
           plannerReadOnly={plannerReadOnly}
@@ -879,6 +912,8 @@ export default function TripMapPage() {
           onToggleAction={handleToggleAction}
           onBranch={handleBranch}
           onProposeChanges={handleCloneToDraft}
+          onShiftFollowing={handleShiftFollowing}
+          onImpactDiscarded={() => setToastMessage("Edit discarded")}
         />
       )}
 

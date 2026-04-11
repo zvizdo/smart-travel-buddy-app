@@ -37,6 +37,7 @@ class SplitEdgeRequest(BaseModel):
     place_id: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
+    duration_minutes: int | None = None
     leg_a: LegData | None = None
     leg_b: LegData | None = None
 
@@ -109,6 +110,7 @@ async def split_edge(
         place_id=body.place_id,
         arrival_time=body.arrival_time,
         departure_time=body.departure_time,
+        duration_minutes=body.duration_minutes,
         leg_a_travel_mode=leg_a.travel_mode,
         leg_a_travel_time_hours=leg_a.travel_time_hours,
         leg_a_distance_km=leg_a.distance_km,

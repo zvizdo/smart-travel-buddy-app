@@ -142,8 +142,27 @@ export default function TripSettingsPage() {
   const [distanceUnit, setDistanceUnit] = useState<string>(
     settings.distance_unit ?? "km",
   );
+  const savedNoDriveWindow = settings.no_drive_window ?? null;
+  const savedMaxDriveHours = settings.max_drive_hours_per_day ?? null;
+  const [noDriveEnabled, setNoDriveEnabled] = useState<boolean>(
+    savedNoDriveWindow != null,
+  );
+  const [noDriveStart, setNoDriveStart] = useState<number>(
+    savedNoDriveWindow?.start_hour ?? 22,
+  );
+  const [noDriveEnd, setNoDriveEnd] = useState<number>(
+    savedNoDriveWindow?.end_hour ?? 6,
+  );
+  const [maxDriveEnabled, setMaxDriveEnabled] = useState<boolean>(
+    savedMaxDriveHours != null,
+  );
+  const [maxDriveHours, setMaxDriveHours] = useState<number>(
+    savedMaxDriveHours ?? 10,
+  );
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [savingTravelRules, setSavingTravelRules] = useState(false);
+  const [travelRulesSaved, setTravelRulesSaved] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -190,6 +209,34 @@ export default function TripSettingsPage() {
       // Error handled by api client
     } finally {
       setSavingSettings(false);
+    }
+  }
+
+  async function handleSaveTravelRules() {
+    setSavingTravelRules(true);
+    try {
+      const payload: Record<string, unknown> = {};
+      if (noDriveEnabled) {
+        payload.no_drive_window = {
+          start_hour: noDriveStart,
+          end_hour: noDriveEnd,
+        };
+      } else {
+        payload.clear_no_drive_window = true;
+      }
+      if (maxDriveEnabled) {
+        payload.max_drive_hours_per_day = maxDriveHours;
+      } else {
+        payload.clear_max_drive_hours = true;
+      }
+      await api.patch(`/trips/${tripId}/settings`, payload);
+      refetch();
+      setTravelRulesSaved(true);
+      setTimeout(() => setTravelRulesSaved(false), 2000);
+    } catch {
+      // Error handled by api client
+    } finally {
+      setSavingTravelRules(false);
     }
   }
 
@@ -256,6 +303,17 @@ export default function TripSettingsPage() {
     datetimeFormat !== (settings.datetime_format ?? "24h") ||
     dateFormat !== (settings.date_format ?? "eu") ||
     distanceUnit !== (settings.distance_unit ?? "km");
+
+  const travelRulesChanged =
+    noDriveEnabled !== (savedNoDriveWindow != null) ||
+    (noDriveEnabled &&
+      savedNoDriveWindow != null &&
+      (noDriveStart !== savedNoDriveWindow.start_hour ||
+        noDriveEnd !== savedNoDriveWindow.end_hour)) ||
+    maxDriveEnabled !== (savedMaxDriveHours != null) ||
+    (maxDriveEnabled &&
+      savedMaxDriveHours != null &&
+      maxDriveHours !== savedMaxDriveHours);
 
   return (
     <div className="flex flex-col flex-1 bg-surface">
@@ -368,6 +426,151 @@ export default function TripSettingsPage() {
                   : settingsSaved
                     ? "Saved!"
                     : "Save preferences"}
+              </button>
+            )}
+          </div>
+        </section>
+
+        {/* Travel rules */}
+        <section>
+          <h2 className="text-xs font-semibold text-primary tracking-wide uppercase mb-4">
+            Travel Rules
+          </h2>
+          <p className="text-xs text-on-surface-variant mb-3 -mt-2">
+            Smart timing pads overnight stops and caps long driving days so
+            auto-scheduled trips don&apos;t place you on the road at 3&nbsp;AM.
+          </p>
+          <div className="rounded-2xl bg-surface-lowest p-5 shadow-soft space-y-5">
+            {/* No-drive window */}
+            <div>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-on-surface">
+                    No-drive window
+                  </p>
+                  <p className="text-xs text-on-surface-variant mt-0.5">
+                    Overnight hours when driving should pause
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={noDriveEnabled}
+                    onChange={(e) => setNoDriveEnabled(e.target.checked)}
+                    disabled={!isAdmin}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-surface-high rounded-full peer peer-checked:bg-primary peer-focus:ring-2 peer-focus:ring-primary/30 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-surface-lowest after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5 peer-disabled:opacity-50" />
+                </label>
+              </div>
+              {noDriveEnabled && (
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[11px] text-on-surface-variant mb-1">
+                      Start
+                    </label>
+                    <select
+                      value={noDriveStart}
+                      onChange={(e) =>
+                        setNoDriveStart(parseInt(e.target.value, 10))
+                      }
+                      disabled={!isAdmin}
+                      className="w-full rounded-xl bg-surface-high px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                    >
+                      {Array.from({ length: 24 }, (_, i) => (
+                        <option key={i} value={i}>
+                          {String(i).padStart(2, "0")}:00
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <span className="text-xs text-on-surface-variant mt-5">→</span>
+                  <div className="flex-1">
+                    <label className="block text-[11px] text-on-surface-variant mb-1">
+                      End
+                    </label>
+                    <select
+                      value={noDriveEnd}
+                      onChange={(e) =>
+                        setNoDriveEnd(parseInt(e.target.value, 10))
+                      }
+                      disabled={!isAdmin}
+                      className="w-full rounded-xl bg-surface-high px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                    >
+                      {Array.from({ length: 24 }, (_, i) => (
+                        <option key={i} value={i}>
+                          {String(i).padStart(2, "0")}:00
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="h-px bg-surface-low" />
+
+            {/* Max drive hours per day */}
+            <div>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-on-surface">
+                    Max drive hours per day
+                  </p>
+                  <p className="text-xs text-on-surface-variant mt-0.5">
+                    Cap before the planner schedules an overnight rest
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={maxDriveEnabled}
+                    onChange={(e) => setMaxDriveEnabled(e.target.checked)}
+                    disabled={!isAdmin}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-surface-high rounded-full peer peer-checked:bg-primary peer-focus:ring-2 peer-focus:ring-primary/30 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-surface-lowest after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5 peer-disabled:opacity-50" />
+                </label>
+              </div>
+              {maxDriveEnabled && (
+                <div className="mt-3">
+                  <div className="flex items-center justify-between gap-3 mb-1">
+                    <span className="text-xs text-on-surface-variant">
+                      {maxDriveHours}h / day
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={4}
+                    max={16}
+                    step={0.5}
+                    value={maxDriveHours}
+                    onChange={(e) =>
+                      setMaxDriveHours(parseFloat(e.target.value))
+                    }
+                    disabled={!isAdmin}
+                    className="w-full accent-primary disabled:opacity-50"
+                  />
+                  <div className="flex justify-between text-[10px] text-outline mt-1">
+                    <span>4h</span>
+                    <span>10h</span>
+                    <span>16h</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {isAdmin && travelRulesChanged && (
+              <button
+                onClick={handleSaveTravelRules}
+                disabled={savingTravelRules || !online}
+                className="w-full rounded-xl gradient-primary py-3 text-sm font-semibold text-on-primary shadow-soft transition-all active:scale-[0.98] disabled:opacity-40 mt-1"
+              >
+                {savingTravelRules
+                  ? "Saving..."
+                  : travelRulesSaved
+                    ? "Saved!"
+                    : "Save travel rules"}
               </button>
             )}
           </div>
