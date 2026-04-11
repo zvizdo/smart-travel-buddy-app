@@ -33,10 +33,24 @@ class DistanceUnit(StrEnum):
     MI = "mi"
 
 
+class NoDriveWindow(BaseModel):
+    """Hour-of-day window during which drive/walk edges should not be scheduled.
+
+    Evaluated in the departure node's local timezone. A window that crosses midnight
+    (e.g. 22→6) is supported. Setting `TripSettings.no_drive_window = None` disables
+    the rule entirely.
+    """
+
+    start_hour: int = Field(default=22, ge=0, le=23)
+    end_hour: int = Field(default=6, ge=0, le=23)
+
+
 class TripSettings(BaseModel):
     datetime_format: DateTimeFormat = DateTimeFormat.H24
     date_format: DateFormat = DateFormat.EU
     distance_unit: DistanceUnit = DistanceUnit.KM
+    no_drive_window: NoDriveWindow | None = Field(default_factory=NoDriveWindow)
+    max_drive_hours_per_day: float | None = Field(default=10.0, ge=1.0, le=24.0)
 
 
 class Trip(BaseModel):
