@@ -17,10 +17,21 @@ class CreateTripRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class NoDriveWindowRequest(BaseModel):
+    start_hour: int = Field(ge=0, le=23)
+    end_hour: int = Field(ge=0, le=23)
+
+
 class UpdateTripSettingsRequest(BaseModel):
     datetime_format: str | None = None
     date_format: str | None = None
     distance_unit: str | None = None
+    # The outer field is optional (None = leave unchanged); the inner value
+    # uses a sentinel to distinguish "disable the window" from "don't touch it".
+    no_drive_window: NoDriveWindowRequest | None = Field(default=None)
+    clear_no_drive_window: bool = False
+    max_drive_hours_per_day: float | None = Field(default=None, ge=1.0, le=24.0)
+    clear_max_drive_hours: bool = False
 
 
 @router.post("/trips", status_code=201)
@@ -83,6 +94,14 @@ async def update_trip_settings(
         current["date_format"] = body.date_format
     if body.distance_unit is not None:
         current["distance_unit"] = body.distance_unit
+    if body.clear_no_drive_window:
+        current["no_drive_window"] = None
+    elif body.no_drive_window is not None:
+        current["no_drive_window"] = body.no_drive_window.model_dump()
+    if body.clear_max_drive_hours:
+        current["max_drive_hours_per_day"] = None
+    elif body.max_drive_hours_per_day is not None:
+        current["max_drive_hours_per_day"] = body.max_drive_hours_per_day
 
     await trip_repo.update(trip_id, {"settings": current})
     return {"settings": current}

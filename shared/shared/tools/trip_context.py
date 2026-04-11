@@ -2,10 +2,17 @@
 
 Produces a markdown-formatted summary of the current trip DAG state.
 Used by both the in-app Gemini agent and the MCP server.
+
+``build_agent_trip_context`` is the high-level entry point that runs the
+read-time enrichment pass first (so the agent sees the same propagated /
+estimated times the user's map does) and then calls the low-level
+``format_trip_context`` renderer.
 """
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+from shared.dag.time_inference import enrich_dag_times
 
 
 def _node_coords(n: dict) -> tuple[float, float] | None:
@@ -32,6 +39,48 @@ def _format_dt(raw: str | None, tz_str: str | None) -> str | None:
         return raw
 
 
+def build_agent_trip_context(
+    nodes: list[dict],
+    edges: list[dict],
+    trip_settings: dict | None = None,
+    **format_kwargs,
+) -> str:
+    """Run enrichment over the DAG then format it for the agent.
+
+    The enrichment pass fills arrival/departure/duration + estimation flags,
+    overnight-hold reasons, and timing conflicts so the formatter can render
+    the same signals the UI does. ``trip_settings`` is passed through to the
+    enrichment rules (``no_drive_window``, ``max_drive_hours_per_day``).
+    """
+    enriched = enrich_dag_times(nodes, edges, trip_settings or {})
+    return format_trip_context(
+        enriched,
+        edges,
+        trip_settings=trip_settings,
+        **format_kwargs,
+    )
+
+
+def _format_timing_rules(trip_settings: dict | None) -> list[str]:
+    if not trip_settings:
+        return []
+    lines: list[str] = []
+    window = trip_settings.get("no_drive_window")
+    if window:
+        start = window.get("start_hour")
+        end = window.get("end_hour")
+        if start is not None and end is not None:
+            lines.append(f"- No-drive window: {start:02d}:00 → {end:02d}:00 (local)")
+    elif window is None and "no_drive_window" in trip_settings:
+        lines.append("- No-drive window: disabled")
+    max_hours = trip_settings.get("max_drive_hours_per_day")
+    if max_hours is not None:
+        lines.append(f"- Max drive hours per day: {max_hours}")
+    elif "max_drive_hours_per_day" in trip_settings:
+        lines.append("- Max drive hours per day: disabled")
+    return lines
+
+
 def format_trip_context(
     nodes: list[dict],
     edges: list[dict],
@@ -42,11 +91,17 @@ def format_trip_context(
     plan_name: str | None = None,
     plan_id: str | None = None,
     plan_status: str | None = None,
+    trip_settings: dict | None = None,
 ) -> str:
     """Format the trip DAG state as a markdown string for agent consumption.
 
+    When ``nodes`` have already been enriched by ``enrich_dag_times`` the
+    output includes estimation markers (``~`` prefix, ``(est.)`` suffix),
+    timing conflicts, overnight holds, and topology-derived START/END chips.
+
     Args:
-        nodes: List of node dicts (must include id, name, type, order_index, timezone, etc.)
+        nodes: List of node dicts. Pass enriched nodes to render the estimation
+            markers; raw Firestore dicts are tolerated and just omit the flags.
         edges: List of edge dicts (must include id, from_node_id, to_node_id, etc.)
         preferences: Optional travel preferences (category + content).
         participants: Optional dict of uid -> {display_name, role}.
@@ -55,11 +110,13 @@ def format_trip_context(
         plan_name: Optional plan name for the header.
         plan_id: Optional plan ID for the header.
         plan_status: Optional plan status for the header.
+        trip_settings: Optional trip settings dict — when provided the header
+            surfaces the active flex-planning rules so the agent knows what
+            constraints the read-time pass is enforcing.
     """
     lines: list[str] = []
     node_map = {n["id"]: n for n in nodes}
 
-    # Plan header
     if plan_name or plan_id:
         header_parts = []
         if plan_name:
@@ -70,36 +127,70 @@ def format_trip_context(
             header_parts.append(f"status: {plan_status}")
         lines.append(f"# {' — '.join(header_parts)}")
 
-    # Participants
+    rule_lines = _format_timing_rules(trip_settings)
+    if rule_lines:
+        lines.append("\n## Trip timing rules")
+        lines.extend(rule_lines)
+        lines.append(
+            "- Times prefixed with `~` are derived from enrichment; `(est.)` "
+            "marks the specific field that was inferred. Do not quote these "
+            "as firm commitments."
+        )
+
     if participants:
         lines.append(f"\n## Participants ({len(participants)})")
         for uid, p in participants.items():
             lines.append(f"- {p.get('display_name', uid)} (user_id: {uid}, role: {p.get('role', 'viewer')})")
 
-    # Nodes sorted by order_index
     sorted_nodes = sorted(nodes, key=lambda n: n.get("order_index", 0))
     lines.append(f"\n## Stops ({len(sorted_nodes)} nodes)")
     for n in sorted_nodes:
         tz = n.get("timezone")
+
+        time_segments: list[str] = []
+        arrival_raw = n.get("arrival_time")
+        if arrival_raw:
+            arrival = _format_dt(arrival_raw, tz)
+            prefix = "~" if n.get("arrival_time_estimated") else ""
+            suffix = " (est.)" if n.get("arrival_time_estimated") else ""
+            time_segments.append(f"arrives: {prefix}{arrival}{suffix}")
+        departure_raw = n.get("departure_time")
+        if departure_raw:
+            departure = _format_dt(departure_raw, tz)
+            prefix = "~" if n.get("departure_time_estimated") else ""
+            suffix = " (est.)" if n.get("departure_time_estimated") else ""
+            time_segments.append(f"departs: {prefix}{departure}{suffix}")
+        duration = n.get("duration_minutes")
+        if duration is not None:
+            suffix = " (duration est.)" if n.get("duration_estimated") else ""
+            time_segments.append(f"duration: {duration}m{suffix}")
+
         time_info = ""
-        arrival = _format_dt(n.get("arrival_time"), tz)
-        if arrival:
-            time_info = f", arrives: {arrival}"
-        departure = _format_dt(n.get("departure_time"), tz)
-        if departure:
-            time_info += f", departs: {departure}"
+        if time_segments:
+            time_info = ", " + ", ".join(time_segments)
 
         tz_str = f", tz: {tz}" if tz else ""
 
         coords = _node_coords(n)
         coords_str = f", {coords[0]:.4f},{coords[1]:.4f}" if coords else ""
 
+        topology_chip = ""
+        if n.get("is_start"):
+            topology_chip = "🚩 START "
+        elif n.get("is_end"):
+            topology_chip = "🏁 END "
+
         lines.append(
-            f"- [{n['id']}] {n['name']} ({n.get('type', 'place')}"
+            f"- {topology_chip}[{n['id']}] {n['name']} ({n.get('type', 'place')}"
             f"{coords_str}{tz_str}{time_info})"
         )
 
-        # Actions attached to nodes (MCP enriched format)
+        if n.get("timing_conflict"):
+            lines.append(f"  - ⚠ timing conflict: {n['timing_conflict']}")
+        if n.get("overnight_hold"):
+            reason = n.get("hold_reason") or "overnight_hold"
+            lines.append(f"  - 🛌 overnight hold: {reason}")
+
         for a in n.get("actions", []):
             action_id_str = f"id: {a['id']}, " if a.get("id") else ""
             lines.append(
@@ -107,7 +198,6 @@ def format_trip_context(
                 f"{a['content']}"
             )
 
-    # Edges
     lines.append(f"\n## Connections ({len(edges)} edges)")
     for e in edges:
         from_name = e.get("from") or node_map.get(e["from_node_id"], {}).get("name", e["from_node_id"])
@@ -122,25 +212,9 @@ def format_trip_context(
             f"- [{edge_id}] {from_name} -> {to_name} ({mode}, {time_str}{dist_str})"
         )
 
-    # Preferences
-    # if preferences:
-    #     lines.append(f"\n## Travel Preferences ({len(preferences)})")
-    #     for p in preferences:
-    #         lines.append(f"- [{p.get('category', 'general')}] {p.get('content', '')}")
-
-    # Paths
     if paths:
         lines.append("\n## Participant Paths")
         for uid, path_names in paths.items():
             lines.append(f"- {uid}: {' -> '.join(path_names)}")
-
-    # Locations
-    # if locations:
-    #     lines.append("\n## Participant Locations")
-    #     for loc in locations:
-    #         lines.append(
-    #             f"- {loc['user_name']}: {loc['description']} "
-    #             f"(as of {loc.get('updated_at', 'unknown')})"
-    #         )
 
     return "\n".join(lines)

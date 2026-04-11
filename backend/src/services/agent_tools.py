@@ -24,11 +24,16 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
         place_id: str | None = None,
         arrival_time: str | None = None,
         departure_time: str | None = None,
+        duration_minutes: int | None = None,
     ) -> dict:
         """Add a new stop to the trip itinerary. Returns the created node (including its ID).
 
         Use the returned node ID in subsequent add_edge calls to connect stops.
         NEVER use placeholder strings — only use real IDs from the trip context or from previous tool results.
+
+        Stops can be time-bound (both arrival_time and departure_time set), flexible
+        (only duration_minutes set), or mixed. For a rough stop without a firm schedule,
+        provide only duration_minutes and let downstream enrichment derive the times.
 
         Args:
             name: Name of the stop (e.g., "Hotel Lumiere, Lyon").
@@ -38,6 +43,9 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
             place_id: Google Places ID if known.
             arrival_time: ISO 8601 arrival datetime (e.g., 2026-04-10T14:00:00Z).
             departure_time: ISO 8601 departure datetime.
+            duration_minutes: Approximate duration of the stop in minutes. Use this
+                for flexible stops when the user doesn't have a firm schedule
+                (e.g. "~2 hours at the chateau" = 120).
         """
         return await executor.execute("add_node", {
             "name": name,
@@ -47,6 +55,7 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
             "place_id": place_id,
             "arrival_time": arrival_time,
             "departure_time": departure_time,
+            "duration_minutes": duration_minutes,
         })
 
     async def update_node(
@@ -57,6 +66,7 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
         lng: float | None = None,
         arrival_time: str | None = None,
         departure_time: str | None = None,
+        duration_minutes: int | None = None,
     ) -> dict:
         """Update an existing stop. Only provide the fields you want to change. Updates only this node — no downstream cascade.
 
@@ -68,6 +78,7 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
             lng: New longitude.
             arrival_time: New ISO 8601 arrival datetime.
             departure_time: New ISO 8601 departure datetime.
+            duration_minutes: New approximate duration in minutes for flexible stops.
         """
         return await executor.execute("update_node", {
             "node_id": node_id,
@@ -77,6 +88,7 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
             "lng": lng,
             "arrival_time": arrival_time,
             "departure_time": departure_time,
+            "duration_minutes": duration_minutes,
         })
 
     async def delete_node(node_id: str) -> dict:

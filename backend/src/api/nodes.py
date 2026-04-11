@@ -1,4 +1,4 @@
-"""Node endpoints: list, create, branch, update, delete, cascade, participant assignment, actions."""
+"""Node endpoints: list, create, branch, update, delete, participant assignment, actions."""
 
 from datetime import UTC, datetime
 
@@ -33,6 +33,7 @@ class NodeUpdateRequest(BaseModel):
     type: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
+    duration_minutes: int | None = None
     lat: float | None = None
     lng: float | None = None
     place_id: str | None = None
@@ -47,6 +48,7 @@ class CreateNodeRequest(BaseModel):
     place_id: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
+    duration_minutes: int | None = None
     connect_after_node_id: str | None = None
     connect_before_node_id: str | None = None
     travel_mode: str = "drive"
@@ -71,6 +73,7 @@ class ConnectedNodeRequest(BaseModel):
     place_id: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
+    duration_minutes: int | None = None
     incoming: list[ConnectionData] = []
     outgoing: list[ConnectionData] = []
 
@@ -87,6 +90,7 @@ class BranchFromNodeRequest(BaseModel):
     place_id: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
+    duration_minutes: int | None = None
     travel_mode: str = "drive"
     travel_time_hours: float = 1.0
     distance_km: float | None = None
@@ -142,6 +146,7 @@ async def create_node(
         place_id=body.place_id,
         arrival_time=body.arrival_time,
         departure_time=body.departure_time,
+        duration_minutes=body.duration_minutes,
         connect_after_node_id=body.connect_after_node_id,
         connect_before_node_id=body.connect_before_node_id,
         travel_mode=body.travel_mode,
@@ -181,6 +186,7 @@ async def create_connected_node(
         place_id=body.place_id,
         arrival_time=body.arrival_time,
         departure_time=body.departure_time,
+        duration_minutes=body.duration_minutes,
         incoming=[c.model_dump() for c in body.incoming],
         outgoing=[c.model_dump() for c in body.outgoing],
         created_by=user["uid"],
@@ -215,6 +221,7 @@ async def branch_from_node(
         place_id=body.place_id,
         arrival_time=body.arrival_time,
         departure_time=body.departure_time,
+        duration_minutes=body.duration_minutes,
         travel_mode=body.travel_mode,
         travel_time_hours=body.travel_time_hours,
         distance_km=body.distance_km,
@@ -237,7 +244,7 @@ async def update_node(
     notification_service: NotificationService = Depends(get_notification_service),
     plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
-    """Update a node. Returns cascade preview if dates changed."""
+    """Update a node and return an impact preview for downstream enrichment."""
     trip = await trip_service.get_trip(trip_id, user["uid"])
     plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
     require_plan_editable(trip, Plan(**plan_data), user["uid"])
@@ -249,7 +256,6 @@ async def update_node(
         if v is not None and k != "client_updated_at":
             updates[k] = v
 
-    # Convert lat/lng into lat_lng sub-object
     if "lat" in updates or "lng" in updates:
         updates["lat_lng"] = {
             "lat": updates.pop("lat", None),
@@ -259,11 +265,12 @@ async def update_node(
     if not updates:
         raise ValueError("No fields to update")
 
-    result = await dag_service.update_node_with_cascade_preview(
+    result = await dag_service.update_node_with_impact_preview(
         trip_id, plan_id, node_id, updates,
         client_updated_at=client_updated_at,
         edited_by=user["uid"],
         notification_service=notification_service,
+        trip_settings=trip.settings.model_dump(mode="json") if trip.settings else {},
     )
     return result
 
@@ -284,25 +291,6 @@ async def delete_node(
     require_plan_editable(trip, Plan(**plan_data), user["uid"])
 
     result = await dag_service.delete_node(trip_id, plan_id, node_id)
-    return result
-
-
-@router.post("/trips/{trip_id}/plans/{plan_id}/nodes/{node_id}/cascade/confirm")
-async def confirm_cascade(
-    trip_id: str,
-    plan_id: str,
-    node_id: str,
-    user: dict = Depends(get_current_user),
-    trip_service: TripService = Depends(get_trip_service),
-    dag_service: DAGService = Depends(get_dag_service),
-    plan_repo: PlanRepository = Depends(get_plan_repo),
-):
-    """Confirm cascading update after preview."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
-    require_plan_editable(trip, Plan(**plan_data), user["uid"])
-
-    result = await dag_service.confirm_cascade(trip_id, plan_id, node_id)
     return result
 
 

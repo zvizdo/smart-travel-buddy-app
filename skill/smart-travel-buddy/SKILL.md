@@ -38,8 +38,8 @@ If a tool call returns an auth error, the key is missing/revoked — ask the use
 
 - **Trip** → top-level container. Owned by an Admin. Has participants with roles: `admin`, `planner`, `viewer`.
 - **Plan** → a version of the itinerary. Each trip has exactly one `active` plan (what the map shows) plus any number of `draft` alternatives. Nodes/edges live **inside** a plan, not on the trip directly.
-- **Node** → a stop. Has name, type (`city | hotel | restaurant | place | activity`), lat/lng, optional arrival/departure times, and a short ID like `n_k3xd9mpq`.
-- **Edge** → a directed travel leg between two nodes. Has `travel_mode` (`drive | flight | transit | walk`); travel time/distance/polyline are auto-computed by the Routes API.
+- **Node** → a stop. Has name, type (`city | hotel | restaurant | place | activity`), lat/lng, optional arrival/departure times or a `duration_minutes`, and a short ID like `n_k3xd9mpq`.
+- **Edge** → a directed travel leg between two nodes. Has `travel_mode` (`drive | ferry | flight | transit | walk`); travel time/distance/polyline are auto-computed by the Routes API.
 - **Action** → note, todo, or place pin attached to a node.
 - **DAG invariants**: no cycles, edges are directed, a node may have multiple incoming/outgoing edges (branches = group splits).
 
@@ -49,6 +49,34 @@ If a tool call returns an auth error, the key is missing/revoked — ask the use
 - `viewer` — read-only, except `add_action` (any participant may annotate).
 
 Always default operations to the **active plan**. Pass `plan_id` only when explicitly working on a specific draft.
+
+---
+
+## 2.5 Flexible vs fixed stops
+
+Every stop falls into one of three implicit shapes — the DAG does **not** store a "shape" enum, it's derived from which fields you set when you create the node:
+
+| Shape | What you set | When to use |
+|---|---|---|
+| **Time-bound** | `arrival_time` **and** `departure_time` (ISO 8601) | Flights, hotel check-ins, concerts, reservations — anything with a firm clock time. |
+| **Mixed-bound** | One of `arrival_time` / `departure_time` **plus** `duration_minutes` | "Arrive at the airport at 6pm and stay 90 minutes", "leave home at 8am and drive 2 hours". |
+| **Flexible (duration-bound)** | Only `duration_minutes` | "~2 hours at the château", "half a day in Lucca", "3 nights in Barcelona" → 4320. No firm clock time. |
+
+For a stop without an explicit clock time, **prefer the flexible shape**. Downstream nodes will auto-derive their times from upstream anchors on the next `get_trip_context` read — you don't have to manually calculate and re-set them. Updating a flex stop's duration or updating an upstream anchor propagates forward automatically.
+
+**Durations cascade, time-bound nodes don't.** If you `update_node` on a time-bound stop and a downstream node is also time-bound, the downstream node will NOT shift — you'd get a `⚠ timing conflict` warning in the next context read. If the user wants downstream time-bound nodes to shift by the same delta, call `update_node` on each one explicitly.
+
+**Start and end.** The first chronological node needs at least a `departure_time` so the rest of the trip has an anchor, and the last node should have at least an `arrival_time`. Everything in between can be flexible.
+
+### Reading estimated times in `get_trip_context`
+
+The trip context rendering marks enriched fields:
+
+- **`~` prefix** on a time (e.g. `arrives: ~2026-06-15 14:30`) means it was derived by the read-time enrichment pass, not set by the user. **`(est.)` suffix** on the specific field (e.g. `arrives: ~14:30 (est.)`) confirms that field was inferred. **`(duration est.)`** means a 30-minute default was applied because the stop had no duration. **Do not quote these as commitments.** Soften them: "you'd reach Lyon around 2:30 pm based on the drive from Dijon", not "you arrive in Lyon at 14:30".
+- **`⚠ timing conflict: …`** under a node means propagation from upstream disagrees with the user's fixed time on that node. Surface the conflict and ask the user which to honor; do not silently overwrite either side.
+- **`🛌 overnight hold: <reason>`** means the night-drive rule or daily-drive cap forced the stop to pad its departure. If `reason` is `night_drive`, suggest adding a hotel at that stop. If it's `max_drive_hours`, suggest a rest break (meal + stop, or a shorter day).
+- **`🚩 START` / `🏁 END`** are topology chips — the nodes with no predecessors / no successors. They're derived, not stored.
+- **"Trip timing rules"** header at the top lists the active `no_drive_window` (local hours the enrichment pass avoids for drive/walk edges, default 22:00→06:00) and `max_drive_hours_per_day` (cap between rest nodes, default 10.0). Hotels, city nodes, and any stop with `duration_minutes ≥ 360` reset the drive-hours counter. Honor these when suggesting schedule changes.
 
 ---
 
@@ -67,7 +95,7 @@ Always default operations to the **active plan**. Pass `plan_id` only when expli
 |---|---|---|
 | `create_trip` | any user | **Also auto-creates an initial active plan named "Main Route"** so you can call `add_node` immediately afterward. Do NOT call `create_plan` right after `create_trip`. |
 | `delete_trip` | admin | Irreversible cascading delete of everything under the trip. |
-| `update_trip_settings` | admin | Date/time format, distance units (`km` / `miles`). |
+| `update_trip_settings` | admin | Date/time format, distance units (`km` / `miles`), and the two **flex-planning rules**: `no_drive_window_start_hour` + `no_drive_window_end_hour` (set both together, or `clear_no_drive_window=true` to disable) and `max_drive_hours_per_day` (or `clear_max_drive_hours=true`). |
 
 ### Mutating — plans (versioning)
 | Tool | Role | Notes |
@@ -79,10 +107,10 @@ Always default operations to the **active plan**. Pass `plan_id` only when expli
 ### Mutating — nodes & edges
 | Tool | Role | Notes |
 |---|---|---|
-| `add_node` | admin/planner | Creates a stop. Does NOT connect it — follow with `add_edge`. Returns the new node ID. |
-| `update_node` | admin/planner | Updates only the target node. **Does NOT cascade** schedule changes to downstream stops — if a time shift should ripple, call `update_node` on each affected stop explicitly. |
+| `add_node` | admin/planner | Creates a stop. Does NOT connect it — follow with `add_edge`. Returns the new node ID. Pass `arrival_time` / `departure_time` for time-bound stops, `duration_minutes` for flexible stops, or both for mixed-bound (see §2.5). |
+| `update_node` | admin/planner | Updates only the target node. Accepts `duration_minutes` too. **Downstream flex stops re-derive automatically** on the next read; downstream **time-bound** stops do NOT shift — if a time-bound shift should ripple, call `update_node` on each affected stop explicitly. |
 | `delete_node` | admin/planner | Removes the stop. If it had exactly one in + one out edge, surrounding edges auto-reconnect. |
-| `add_edge` | admin/planner | Connects two existing nodes. Travel time, distance, polyline auto-computed. Mode heuristic: `>800km → flight`, `<3km → walk`, else `drive`. |
+| `add_edge` | admin/planner | Connects two existing nodes. Travel time, distance, polyline auto-computed. Mode heuristic: `>800km → flight`, `<3km → walk`, else `drive`. Use `ferry` for sea/ship/cruise routes (agent-set only — not auto-inferred). |
 | `delete_edge` | admin/planner | Removes a connection. |
 
 ### Actions (annotations) — any participant, incl. viewer
@@ -152,7 +180,7 @@ Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_action
 
 **Branch handling:** the DAG supports multiple outgoing edges per node (parallel paths — e.g. group splits). When adding a new branch: add nodes and edges **alongside** the existing ones. Never delete existing edges unless explicitly asked.
 
-**Cascading schedule changes:** `update_node` on the MCP server does NOT propagate time changes downstream. If the user shifts one stop and wants later stops to move too, you must call `update_node` on each affected stop explicitly. Spell this out during the confirmation step.
+**Cascading schedule changes:** `update_node` on the MCP server does NOT propagate time changes to downstream **time-bound** nodes. Downstream **flexible** nodes (duration_minutes set, no fixed times) re-derive automatically on the next read — you don't need to touch them. But if the user shifts one stop and a downstream node is also time-bound, that downstream node will NOT move, and the next `get_trip_context` will show a `⚠ timing conflict`. In that case, call `update_node` on each affected time-bound stop explicitly. Spell this out during the confirmation step.
 
 **Alternatives via plans, not destructive edits:** if the user wants to explore "what if" (skip a city, reorder stops), prefer `create_plan` to clone the active plan into a draft and edit the draft. They can `promote_plan` if they like it, or `delete_plan` if they don't. This preserves the original.
 
@@ -160,7 +188,7 @@ Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_action
 
 ## 6. Talking to the user
 
-- **Times**: show in each stop's local timezone (e.g. "2026-06-15 10:00 CEST"). Never raw UTC / ISO 8601 to the user. Internally you still pass ISO 8601 UTC to the tools.
+- **Times**: show in each stop's local timezone (e.g. "2026-06-15 10:00 CEST"). Never raw UTC / ISO 8601 to the user. Internally you still pass ISO 8601 UTC to the tools. For estimated times (`~` prefix in the trip context), soften the phrasing — "around 2:30 pm" rather than "at 14:30". See §2.5 for the full list of enrichment markers.
 - **Participants**: refer to people by their display name, never raw UIDs.
 - **Locations**: the trip context shows participant locations as human-readable references ("near Rome"), not raw lat/lng — mirror that phrasing.
 - **Tone**: concise and decisive. Don't restate what the user said. Lead with the plan or the answer.

@@ -1,11 +1,19 @@
-"""Tests for DAGService cascade engine and node operations."""
+"""Tests for DAGService: impact previews and node operations.
+
+The old cascade engine (``compute_cascade``, ``confirm_cascade``,
+``update_node_with_cascade_preview``) has been replaced by read-time
+enrichment via ``shared.dag.time_inference.enrich_dag_times`` plus an
+``impact_preview`` diff returned by ``update_node_with_impact_preview``.
+These tests cover that new surface and the unchanged ``delete_node``
+reconnection behavior.
+"""
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from shared.dag._internals import parse_dt as _parse_dt
 from shared.services.dag_service import DAGService
-from shared.dag.cascade import parse_dt as _parse_dt
 
 
 # ── _parse_dt helper ──────────────────────────────────────────────
@@ -28,7 +36,6 @@ class TestParseDt:
         assert result.tzinfo == UTC
 
 
-# ── Cascade Preview ───────────────────────────────────────────────
 def _make_service():
     """Create a DAGService with mocked repositories."""
     trip_repo = MagicMock()
@@ -41,11 +48,12 @@ def _make_service():
 def _make_node_dict(
     id: str,
     name: str,
-    arrival: str,
+    arrival: str | None = None,
     duration_hours: float = 24,
     departure: str | None = None,
+    duration_minutes: int | None = None,
 ) -> dict:
-    if departure is None:
+    if arrival is not None and departure is None and duration_minutes is None:
         arr = datetime.fromisoformat(arrival)
         departure = (arr + timedelta(hours=duration_hours)).isoformat()
     return {
@@ -55,9 +63,11 @@ def _make_node_dict(
         "lat_lng": {"lat": 0, "lng": 0},
         "arrival_time": arrival,
         "departure_time": departure,
+        "duration_minutes": duration_minutes,
         "participant_ids": None,
         "order_index": 0,
         "place_id": None,
+        "timezone": None,
         "created_by": "user_1",
         "created_at": "2026-01-01T00:00:00+00:00",
         "updated_at": "2026-01-01T00:00:00+00:00",
@@ -75,229 +85,109 @@ def _make_edge_dict(from_id: str, to_id: str, travel_hours: float = 2) -> dict:
     }
 
 
-class TestCascadePreviewLinear:
-    """Test cascade preview on a linear DAG: A -> B -> C."""
+# ── Impact preview diff (static helper) ──────────────────────────
+class TestDiffEnrichment:
+    """``_diff_enrichment`` is a pure static helper; unit-test it directly."""
 
-    @pytest.fixture()
-    def linear_dag(self):
-        # A: June 1 10:00, 24h stay -> departs June 2 10:00
-        # B: June 2 12:00 (2h travel), 24h stay -> departs June 3 12:00
-        # C: June 3 14:00 (2h travel), 24h stay
-        nodes = [
-            _make_node_dict("A", "Paris", "2026-06-01T10:00:00+00:00", 24),
-            _make_node_dict("B", "Lyon", "2026-06-02T12:00:00+00:00", 24),
-            _make_node_dict("C", "Marseille", "2026-06-03T14:00:00+00:00", 24),
+    def test_shifting_upstream_moves_downstream_flex_node(self):
+        # A is time-bound and just slid forward 24h; B is flexible so it
+        # should follow automatically.
+        before_nodes = [
+            _make_node_dict(
+                "A", "Paris",
+                arrival="2026-06-01T10:00:00+00:00",
+                departure="2026-06-02T10:00:00+00:00",
+            ),
+            _make_node_dict("B", "Lyon", duration_minutes=120),
         ]
-        edges = [
-            _make_edge_dict("A", "B", 2),
-            _make_edge_dict("B", "C", 2),
-        ]
-        return nodes, edges
-
-    @pytest.mark.asyncio
-    async def test_cascade_propagates_to_downstream(self, linear_dag):
-        """Moving A's departure by +24h should shift B and C by +24h."""
-        nodes, edges = linear_dag
-        svc = _make_service()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
-        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
-
-        from shared.models import Node
-
-        # A is modified: arrival pushed forward by 24h
-        modified_a = Node(**{
-            **nodes[0],
-            "arrival_time": "2026-06-02T10:00:00+00:00",
-            "departure_time": "2026-06-03T10:00:00+00:00",
-        })
-
-        preview = await svc._compute_cascade_preview("trip1", "plan1", modified_a)
-
-        assert len(preview["affected_nodes"]) == 2
-        affected_ids = {n["id"] for n in preview["affected_nodes"]}
-        assert affected_ids == {"B", "C"}
-
-        # B should now arrive at June 3 12:00 (was June 2 12:00)
-        b_affected = next(n for n in preview["affected_nodes"] if n["id"] == "B")
-        assert b_affected["new_arrival"] == "2026-06-03T12:00:00+00:00"
-
-    @pytest.mark.asyncio
-    async def test_no_cascade_when_no_change(self, linear_dag):
-        """If node timing doesn't actually change downstream, no nodes affected."""
-        nodes, edges = linear_dag
-        svc = _make_service()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
-        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
-
-        from shared.models import Node
-
-        # A stays the same
-        unchanged_a = Node(**nodes[0])
-        preview = await svc._compute_cascade_preview("trip1", "plan1", unchanged_a)
-        assert len(preview["affected_nodes"]) == 0
-
-
-class TestCascadePreviewDivergent:
-    """Test cascade on a diamond DAG: A -> B, A -> C, B -> D, C -> D."""
-
-    @pytest.fixture()
-    def diamond_dag(self):
-        nodes = [
-            _make_node_dict("A", "Start", "2026-06-01T10:00:00+00:00", 12),
-            _make_node_dict("B", "Branch1", "2026-06-01T23:00:00+00:00", 12),
-            _make_node_dict("C", "Branch2", "2026-06-02T01:00:00+00:00", 12),
-            _make_node_dict("D", "Merge", "2026-06-02T14:00:00+00:00", 12),
-        ]
-        edges = [
-            _make_edge_dict("A", "B", 1),
-            _make_edge_dict("A", "C", 3),
-            _make_edge_dict("B", "D", 1),
-            _make_edge_dict("C", "D", 1),
-        ]
-        return nodes, edges
-
-    @pytest.mark.asyncio
-    async def test_cascade_follows_both_branches(self, diamond_dag):
-        """Changing A should cascade to B, C, and D."""
-        nodes, edges = diamond_dag
-        svc = _make_service()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
-        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
-
-        from shared.models import Node
-
-        # Push A forward by 12h
-        modified_a = Node(**{
-            **nodes[0],
-            "arrival_time": "2026-06-01T22:00:00+00:00",
-            "departure_time": "2026-06-02T10:00:00+00:00",
-        })
-
-        preview = await svc._compute_cascade_preview("trip1", "plan1", modified_a)
-        affected_ids = {n["id"] for n in preview["affected_nodes"]}
-        assert "B" in affected_ids
-        assert "C" in affected_ids
-        assert "D" in affected_ids
-
-
-class TestCascadeConfirm:
-    """Test that confirm_cascade writes changes atomically."""
-
-    @pytest.mark.asyncio
-    async def test_confirm_applies_batch_write(self):
-        nodes = [
-            _make_node_dict("A", "Paris", "2026-06-02T10:00:00+00:00", 24),
-            _make_node_dict("B", "Lyon", "2026-06-02T12:00:00+00:00", 24),
+        after_nodes = [
+            _make_node_dict(
+                "A", "Paris",
+                arrival="2026-06-02T10:00:00+00:00",
+                departure="2026-06-03T10:00:00+00:00",
+            ),
+            _make_node_dict("B", "Lyon", duration_minutes=120),
         ]
         edges = [_make_edge_dict("A", "B", 2)]
 
-        svc = _make_service()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
-        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
-
-        from shared.models import Node
-
-        svc._node_repo.get_node_or_raise = AsyncMock(
-            return_value=Node(**{
-                **nodes[0],
-                "arrival_time": "2026-06-02T10:00:00+00:00",
-                "departure_time": "2026-06-03T10:00:00+00:00",
-            })
+        result = DAGService._diff_enrichment(
+            before_nodes, after_nodes, edges, trip_settings={}
         )
 
-        mock_batch = MagicMock()
-        mock_batch.commit = AsyncMock()
-        svc._node_repo._db = MagicMock()
-        svc._node_repo._db.batch = MagicMock(return_value=mock_batch)
-        svc._node_repo._collection = MagicMock()
-        mock_doc = MagicMock()
-        svc._node_repo._collection.return_value.document = MagicMock(return_value=mock_doc)
+        shifted_ids = {s["id"] for s in result["estimated_shifts"]}
+        assert "B" in shifted_ids
+        assert result["new_conflicts"] == []
 
-        result = await svc.confirm_cascade("trip1", "plan1", "A")
-
-        assert result["updated_count"] == 1
-        mock_batch.update.assert_called_once()
-        mock_batch.commit.assert_awaited_once()
-
-
-class TestCascadeEdgeCases:
-    """Test edge cases in cascade computation."""
-
-    @pytest.mark.asyncio
-    async def test_leaf_node_no_cascade(self):
-        """A node with no outgoing edges should produce empty cascade."""
-        nodes = [
-            _make_node_dict("A", "Start", "2026-06-01T10:00:00+00:00", 24),
-            _make_node_dict("B", "End", "2026-06-02T12:00:00+00:00", 24),
+    def test_time_bound_downstream_surfaces_conflict(self):
+        # A is moved so that its propagated arrival to B (+2h) no longer
+        # matches B's user-set arrival. B is time-bound so it does NOT shift
+        # — the diff must surface this as a `new_conflict`.
+        before_nodes = [
+            _make_node_dict(
+                "A", "Paris",
+                arrival="2026-06-01T10:00:00+00:00",
+                departure="2026-06-01T12:00:00+00:00",
+            ),
+            _make_node_dict(
+                "B", "Lyon",
+                arrival="2026-06-01T14:00:00+00:00",
+                departure="2026-06-01T16:00:00+00:00",
+            ),
+        ]
+        after_nodes = [
+            _make_node_dict(
+                "A", "Paris",
+                arrival="2026-06-01T10:00:00+00:00",
+                departure="2026-06-01T18:00:00+00:00",  # +6h
+            ),
+            _make_node_dict(
+                "B", "Lyon",
+                arrival="2026-06-01T14:00:00+00:00",
+                departure="2026-06-01T16:00:00+00:00",
+            ),
         ]
         edges = [_make_edge_dict("A", "B", 2)]
 
-        svc = _make_service()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
-        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        result = DAGService._diff_enrichment(
+            before_nodes, after_nodes, edges, trip_settings={}
+        )
 
-        from shared.models import Node
+        conflict_ids = {c["id"] for c in result["new_conflicts"]}
+        assert "B" in conflict_ids
 
-        # Modify B (leaf) — no downstream nodes
-        modified_b = Node(**{
-            **nodes[1],
-            "arrival_time": "2026-06-05T12:00:00+00:00",
-            "departure_time": "2026-06-06T12:00:00+00:00",
-        })
-        preview = await svc._compute_cascade_preview("trip1", "plan1", modified_b)
-        assert len(preview["affected_nodes"]) == 0
-
-    @pytest.mark.asyncio
-    async def test_long_chain_cascade(self):
-        """A long chain A->B->C->D->E should cascade all the way."""
-        base_time = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
-        nodes = []
-        edges = []
-        names = ["A", "B", "C", "D", "E"]
-        for i, name in enumerate(names):
-            arrival = (base_time + timedelta(hours=26 * i)).isoformat()
-            nodes.append(_make_node_dict(name, name, arrival, 24))
-            if i > 0:
-                edges.append(_make_edge_dict(names[i - 1], name, 2))
-
-        svc = _make_service()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
-        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
-
-        from shared.models import Node
-
-        # Push A forward by 48h
-        modified_a = Node(**{
-            **nodes[0],
-            "arrival_time": "2026-06-03T10:00:00+00:00",
-            "departure_time": "2026-06-04T10:00:00+00:00",
-        })
-        preview = await svc._compute_cascade_preview("trip1", "plan1", modified_a)
-        # All 4 downstream nodes should be affected
-        assert len(preview["affected_nodes"]) == 4
-        affected_ids = [n["id"] for n in preview["affected_nodes"]]
-        assert affected_ids == ["B", "C", "D", "E"]
-
-
-# ── Cascade Guard (update_node_with_cascade_preview) ─────────────
-
-
-class TestCascadeGuard:
-    """Test that cascade preview only triggers when effective departure changes."""
-
-    @pytest.fixture()
-    def linear_dag_nodes_edges(self):
+    def test_no_change_returns_empty_lists(self):
         nodes = [
-            _make_node_dict("A", "Paris", "2026-06-01T10:00:00+00:00", 24),
-            _make_node_dict("B", "Lyon", "2026-06-02T12:00:00+00:00", 24),
+            _make_node_dict(
+                "A", "Paris",
+                arrival="2026-06-01T10:00:00+00:00",
+                departure="2026-06-02T10:00:00+00:00",
+            ),
+            _make_node_dict("B", "Lyon", duration_minutes=120),
         ]
         edges = [_make_edge_dict("A", "B", 2)]
-        return nodes, edges
+
+        result = DAGService._diff_enrichment(nodes, nodes, edges, trip_settings={})
+        assert result == {
+            "estimated_shifts": [],
+            "new_conflicts": [],
+            "new_overnight_holds": [],
+        }
+
+
+class TestUpdateNodeWithImpactPreview:
+    """End-to-end: read before, update, read after, diff."""
 
     @pytest.mark.asyncio
-    async def test_name_only_update_no_cascade(self, linear_dag_nodes_edges):
-        """Updating only the name should not compute cascade."""
-        nodes, edges = linear_dag_nodes_edges
+    async def test_name_only_update_has_empty_impact_preview(self):
+        nodes = [
+            _make_node_dict(
+                "A", "Paris",
+                arrival="2026-06-01T10:00:00+00:00",
+                departure="2026-06-02T10:00:00+00:00",
+            ),
+            _make_node_dict("B", "Lyon", duration_minutes=120),
+        ]
+        edges = [_make_edge_dict("A", "B", 2)]
         svc = _make_service()
 
         from shared.models import Node
@@ -307,18 +197,24 @@ class TestCascadeGuard:
         svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
         svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
 
-        result = await svc.update_node_with_cascade_preview(
-            "trip1", "plan1", "A", {"name": "New Paris"}
+        result = await svc.update_node_with_impact_preview(
+            "trip1", "plan1", "A", {"name": "New Paris"}, trip_settings={}
         )
 
-        assert result["cascade_preview"]["affected_nodes"] == []
-        # list_by_plan should NOT be called (cascade was skipped)
-        svc._node_repo.list_by_plan.assert_not_awaited()
+        assert result["impact_preview"]["estimated_shifts"] == []
+        assert result["impact_preview"]["new_conflicts"] == []
 
     @pytest.mark.asyncio
-    async def test_departure_change_triggers_cascade(self, linear_dag_nodes_edges):
-        """Changing departure_time should trigger cascade computation."""
-        nodes, edges = linear_dag_nodes_edges
+    async def test_departure_shift_surfaces_downstream_flex_shift(self):
+        nodes = [
+            _make_node_dict(
+                "A", "Paris",
+                arrival="2026-06-01T10:00:00+00:00",
+                departure="2026-06-02T10:00:00+00:00",
+            ),
+            _make_node_dict("B", "Lyon", duration_minutes=120),
+        ]
+        edges = [_make_edge_dict("A", "B", 2)]
         svc = _make_service()
 
         from shared.models import Node
@@ -328,20 +224,30 @@ class TestCascadeGuard:
         svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
         svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
 
-        result = await svc.update_node_with_cascade_preview(
+        result = await svc.update_node_with_impact_preview(
             "trip1", "plan1", "A",
             {"departure_time": "2026-06-03T10:00:00+00:00"},
+            trip_settings={},
         )
 
-        assert len(result["cascade_preview"]["affected_nodes"]) == 1
-        assert result["cascade_preview"]["affected_nodes"][0]["id"] == "B"
+        shifted_ids = {s["id"] for s in result["impact_preview"]["estimated_shifts"]}
+        assert "B" in shifted_ids
 
     @pytest.mark.asyncio
-    async def test_arrival_change_with_departure_set_no_cascade(
-        self, linear_dag_nodes_edges
-    ):
-        """Changing arrival_time when departure_time is set should NOT cascade."""
-        nodes, edges = linear_dag_nodes_edges
+    async def test_departure_shift_surfaces_time_bound_conflict(self):
+        nodes = [
+            _make_node_dict(
+                "A", "Paris",
+                arrival="2026-06-01T10:00:00+00:00",
+                departure="2026-06-01T12:00:00+00:00",
+            ),
+            _make_node_dict(
+                "B", "Lyon",
+                arrival="2026-06-01T14:00:00+00:00",
+                departure="2026-06-01T16:00:00+00:00",
+            ),
+        ]
+        edges = [_make_edge_dict("A", "B", 2)]
         svc = _make_service()
 
         from shared.models import Node
@@ -351,40 +257,14 @@ class TestCascadeGuard:
         svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
         svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
 
-        result = await svc.update_node_with_cascade_preview(
+        result = await svc.update_node_with_impact_preview(
             "trip1", "plan1", "A",
-            {"arrival_time": "2026-06-01T08:00:00+00:00"},
+            {"departure_time": "2026-06-01T18:00:00+00:00"},
+            trip_settings={},
         )
 
-        assert result["cascade_preview"]["affected_nodes"] == []
-        svc._node_repo.list_by_plan.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_arrival_change_without_departure_triggers_cascade(self):
-        """Changing arrival_time when departure_time is None should cascade."""
-        node_dict = _make_node_dict("A", "Paris", "2026-06-01T10:00:00+00:00")
-        node_dict["departure_time"] = None  # No departure set
-        node_b = _make_node_dict("B", "Lyon", "2026-06-02T12:00:00+00:00", 24)
-        edges = [_make_edge_dict("A", "B", 2)]
-
-        svc = _make_service()
-
-        from shared.models import Node
-
-        svc._node_repo.get_node_or_raise = AsyncMock(
-            return_value=Node(**node_dict)
-        )
-        svc._node_repo.update_node = AsyncMock()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=[node_dict, node_b])
-        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
-
-        result = await svc.update_node_with_cascade_preview(
-            "trip1", "plan1", "A",
-            {"arrival_time": "2026-06-02T10:00:00+00:00"},
-        )
-
-        # Cascade should be computed since effective departure changed
-        svc._node_repo.list_by_plan.assert_awaited_once()
+        conflict_ids = {c["id"] for c in result["impact_preview"]["new_conflicts"]}
+        assert "B" in conflict_ids
 
 
 # ── Delete Node ──────────────────────────────────────────────────

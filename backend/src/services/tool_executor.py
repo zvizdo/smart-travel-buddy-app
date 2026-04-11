@@ -22,12 +22,14 @@ class ToolExecutor:
         plan_id: str,
         user_id: str,
         preferences: list[dict] | None = None,
+        trip_settings: dict | None = None,
     ):
         self._dag = dag_service
         self._trip_id = trip_id
         self._plan_id = plan_id
         self._user_id = user_id
         self._preferences: list[dict] = preferences or []
+        self._trip_settings: dict = trip_settings or {}
         self.actions_taken: list[ActionTaken] = []
 
     async def execute(self, name: str, args: dict) -> dict:
@@ -48,11 +50,14 @@ class ToolExecutor:
 
     async def _handle_get_plan(self, args: dict) -> dict:
         """Fetch fresh plan state and return a text summary."""
-        from shared.tools.trip_context import format_trip_context
+        from shared.tools.trip_context import build_agent_trip_context
 
         dag = await self._dag.get_full_dag(self._trip_id, self._plan_id)
-        summary = format_trip_context(
-            dag["nodes"], dag["edges"], self._preferences
+        summary = build_agent_trip_context(
+            dag["nodes"],
+            dag["edges"],
+            self._trip_settings,
+            preferences=self._preferences,
         )
         return {"plan_summary": summary}
 
@@ -72,6 +77,7 @@ class ToolExecutor:
             place_id=args.get("place_id"),
             arrival_time=args.get("arrival_time"),
             departure_time=args.get("departure_time"),
+            duration_minutes=args.get("duration_minutes"),
         )
         node = result["node"]
         self.actions_taken.append(ActionTaken(

@@ -13,7 +13,7 @@ from mcpserver.src.tools._helpers import (
     tool_error_guard_text,
 )
 
-from shared.tools.trip_context import format_trip_context
+from shared.tools.trip_context import build_agent_trip_context
 
 
 @mcp.tool()
@@ -75,9 +75,10 @@ async def get_trip_context(
     if not plan:
         return f"Trip '{trip['name']}' has no active plan yet."
 
-    return f"# {trip['name']}\n\n" + format_trip_context(
+    return f"# {trip['name']}\n\n" + build_agent_trip_context(
         nodes=plan["nodes"],
         edges=plan["edges"],
+        trip_settings=trip.get("settings") or {},
         participants=trip.get("participants"),
         paths=trip.get("paths"),
         locations=trip.get("participant_locations"),
@@ -142,29 +143,79 @@ async def update_trip_settings(
     datetime_format: str | None = None,
     date_format: str | None = None,
     distance_unit: str | None = None,
+    no_drive_window_start_hour: int | None = None,
+    no_drive_window_end_hour: int | None = None,
+    clear_no_drive_window: bool = False,
+    max_drive_hours_per_day: float | None = None,
+    clear_max_drive_hours: bool = False,
 ) -> dict:
-    """Update trip display settings (date format, distance units).
+    """Update trip display + flex-planning settings.
 
-    Use this when the user wants to change how dates, times, or distances are shown
-    in the web app for this trip. Only pass the fields you want to change.
-    Role required: Admin.
-    Side effects: updates the trip's settings map. No nodes or plans are touched.
+    Covers display presets (date/time/distance) plus the two flex-planning
+    rules that govern read-time schedule enrichment:
+
+    - **no_drive_window**: a local-time range during which drive/walk edges
+      should not be traversed (default 22:00→06:00). Setting
+      ``no_drive_window_start_hour`` + ``no_drive_window_end_hour`` enables
+      or updates the window; ``clear_no_drive_window=true`` explicitly
+      disables the rule. Leaving both unset leaves the current value alone.
+    - **max_drive_hours_per_day**: a hard cap on cumulative drive hours
+      before a rest node is required (default 10.0). Works the same way:
+      provide a number to set it, or ``clear_max_drive_hours=true`` to
+      disable it.
+
+    Role required: Admin. Only pass the fields you want to change.
 
     Args:
         trip_id: The trip identifier.
         datetime_format: Datetime display preset (e.g. "24h", "12h").
         date_format: Date display preset (e.g. "iso", "us", "eu").
         distance_unit: "km" or "miles".
+        no_drive_window_start_hour: Start hour (0-23) of the no-drive window.
+            Must be provided together with no_drive_window_end_hour.
+        no_drive_window_end_hour: End hour (0-23) of the no-drive window.
+        clear_no_drive_window: Set to True to explicitly disable the no-drive window.
+        max_drive_hours_per_day: Cap on cumulative drive hours between rest
+            nodes. Float in [1.0, 24.0].
+        clear_max_drive_hours: Set to True to explicitly disable the cap.
 
     Returns: The updated settings dict.
     """
     user_id, _ = await resolve_trip_admin(ctx, trip_id)
     app: AppContext = ctx.lifespan_context
 
-    if datetime_format is None and date_format is None and distance_unit is None:
+    no_drive_window: dict | None = None
+    if no_drive_window_start_hour is not None or no_drive_window_end_hour is not None:
+        if no_drive_window_start_hour is None or no_drive_window_end_hour is None:
+            raise ValueError(
+                "Both no_drive_window_start_hour and no_drive_window_end_hour "
+                "must be provided together."
+            )
+        if not 0 <= no_drive_window_start_hour <= 23 or not 0 <= no_drive_window_end_hour <= 23:
+            raise ValueError("no_drive_window hours must be in [0, 23].")
+        no_drive_window = {
+            "start_hour": no_drive_window_start_hour,
+            "end_hour": no_drive_window_end_hour,
+        }
+
+    if max_drive_hours_per_day is not None and not 1.0 <= max_drive_hours_per_day <= 24.0:
+        raise ValueError("max_drive_hours_per_day must be in [1.0, 24.0].")
+
+    any_change = (
+        datetime_format is not None
+        or date_format is not None
+        or distance_unit is not None
+        or no_drive_window is not None
+        or clear_no_drive_window
+        or max_drive_hours_per_day is not None
+        or clear_max_drive_hours
+    )
+    if not any_change:
         raise ValueError(
             "No settings to update. Provide at least one of: "
-            "datetime_format, date_format, distance_unit."
+            "datetime_format, date_format, distance_unit, "
+            "no_drive_window_start_hour+no_drive_window_end_hour, "
+            "clear_no_drive_window, max_drive_hours_per_day, clear_max_drive_hours."
         )
 
     return await app.trip_service.update_trip_settings(
@@ -173,4 +224,8 @@ async def update_trip_settings(
         datetime_format=datetime_format,
         date_format=date_format,
         distance_unit=distance_unit,
+        no_drive_window=no_drive_window,
+        clear_no_drive_window=clear_no_drive_window,
+        max_drive_hours_per_day=max_drive_hours_per_day,
+        clear_max_drive_hours=clear_max_drive_hours,
     )

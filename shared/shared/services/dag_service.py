@@ -1,14 +1,16 @@
-"""DAG service: node/edge CRUD, cascade engine, cycle detection, polyline management.
+"""DAG service: node/edge CRUD, cycle detection, polyline management, impact previews.
 
-Includes cascade engine for propagating schedule changes downstream through the DAG.
+Schedule changes are no longer cascaded imperatively; downstream timings are
+derived on read via ``shared.dag.time_inference.enrich_dag_times``. Mutation
+endpoints that want to show the user "what will shift" run the enrichment
+twice (before/after) and diff the results — see ``update_node_with_impact_preview``.
 """
 
 import asyncio
 import logging
 import math
-import time
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from shared.repositories.action_repository import ActionRepository
@@ -21,8 +23,9 @@ from shared.tools.id_gen import edge_id, node_id
 if TYPE_CHECKING:
     from shared.services.route_service import RouteService
 
-from shared.dag.cascade import compute_cascade, parse_dt
+from shared.dag._internals import parse_dt
 from shared.dag.cycle import CycleDetectedError, detect_cycle, would_create_cycle
+from shared.dag.time_inference import enrich_dag_times
 from shared.models import (
     Edge,
     LatLng,
@@ -209,48 +212,27 @@ class DAGService:
         place_id: str | None = None,
         arrival_time: str | None = None,
         departure_time: str | None = None,
+        duration_minutes: int | None = None,
         connect_before_node_id: str | None = None,
         route_polyline: str | None = None,
     ) -> dict:
         """Create a new node, optionally inserting it after an existing node.
 
-        arrival_time / departure_time come from the frontend (user-provided).
-        If not provided, arrival is computed from the source node's departure
-        + travel time when connecting, or defaults to now.
+        Timing fields are all optional. Flex nodes can be created with only a
+        duration (or nothing at all) — the read-time enrichment pass fills in
+        propagated times when the graph has a concrete anchor upstream.
         """
         all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
         max_order = max((n.get("order_index", 0) for n in all_nodes), default=0)
 
-        # Fetch source node upfront when connecting after an existing node so
-        # we have its lat_lng available for polyline fetching regardless of
-        # whether arrival_time was supplied by the caller.
         source = None
         if connect_after_node_id:
             source = await self._node_repo.get_node_or_raise(
                 trip_id, plan_id, connect_after_node_id
             )
 
-        # Resolve arrival
-        resolved_arrival: datetime
-        if arrival_time:
-            resolved_arrival = parse_dt(arrival_time)
-        elif source is not None:
-            departure = source.departure_time
-            if departure is None and source.arrival_time:
-                departure = parse_dt(source.arrival_time)
-            elif departure:
-                departure = parse_dt(departure)
-            resolved_arrival = (
-                (departure + timedelta(hours=travel_time_hours)) if departure
-                else datetime.now(UTC)
-            )
-        else:
-            resolved_arrival = datetime.now(UTC)
-
-        # Resolve departure
-        resolved_departure: datetime | None = None
-        if departure_time:
-            resolved_departure = parse_dt(departure_time)
+        resolved_arrival = parse_dt(arrival_time) if arrival_time else None
+        resolved_departure = parse_dt(departure_time) if departure_time else None
 
         new_node = Node(
             id=node_id(),
@@ -259,6 +241,7 @@ class DAGService:
             lat_lng=LatLng(lat=lat, lng=lng),
             arrival_time=resolved_arrival,
             departure_time=resolved_departure,
+            duration_minutes=duration_minutes,
             timezone=resolve_timezone(lat, lng),
             place_id=place_id,
             order_index=max_order + 1,
@@ -418,33 +401,19 @@ class DAGService:
         place_id: str | None = None,
         arrival_time: str | None = None,
         departure_time: str | None = None,
+        duration_minutes: int | None = None,
         route_polyline: str | None = None,
     ) -> dict:
         """Create a new node branching off from an existing node.
 
         Creates the node, an edge from source to new node, and optionally
-        an edge from new node to a merge target.
+        an edge from new node to a merge target. Timing fields are all
+        optional; enrichment fills propagated values on read.
         """
         source = await self._node_repo.get_node_or_raise(trip_id, plan_id, from_node_id)
 
-        # Resolve arrival
-        if arrival_time:
-            resolved_arrival = parse_dt(arrival_time)
-        else:
-            departure = source.departure_time
-            if departure is None and source.arrival_time:
-                departure = parse_dt(source.arrival_time)
-            elif departure:
-                departure = parse_dt(departure)
-            resolved_arrival = (
-                (departure + timedelta(hours=travel_time_hours)) if departure
-                else datetime.now(UTC)
-            )
-
-        # Resolve departure
-        resolved_departure: datetime | None = None
-        if departure_time:
-            resolved_departure = parse_dt(departure_time)
+        resolved_arrival = parse_dt(arrival_time) if arrival_time else None
+        resolved_departure = parse_dt(departure_time) if departure_time else None
 
         all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
         max_order = max((n.get("order_index", 0) for n in all_nodes), default=0)
@@ -456,6 +425,7 @@ class DAGService:
             lat_lng=LatLng(lat=lat, lng=lng),
             arrival_time=resolved_arrival,
             departure_time=resolved_departure,
+            duration_minutes=duration_minutes,
             timezone=resolve_timezone(lat, lng),
             place_id=place_id,
             order_index=max_order + 1,
@@ -565,7 +535,7 @@ class DAGService:
 
         return node_dict
 
-    async def update_node_with_cascade_preview(
+    async def update_node_with_impact_preview(
         self,
         trip_id: str,
         plan_id: str,
@@ -574,19 +544,29 @@ class DAGService:
         client_updated_at: str | None = None,
         edited_by: str | None = None,
         notification_service=None,
+        trip_settings: dict | None = None,
     ) -> dict:
-        """Update a node and compute cascade preview for downstream nodes.
+        """Update a node and return an impact preview diffed from enrichment.
 
-        If client_updated_at is provided, compares with the node's current
-        updated_at. If they differ (another user edited concurrently),
+        Runs ``enrich_dag_times`` twice — once over the pre-edit graph and once
+        over the post-edit graph — and reports the delta as:
+        - ``estimated_shifts``: downstream nodes whose enriched arrival moved
+        - ``new_conflicts``: nodes that picked up a ``timing_conflict`` flag
+        - ``new_overnight_holds``: nodes that newly trip the night / max-drive rule
+
+        If ``client_updated_at`` is provided, compares with the node's current
+        ``updated_at``. If they differ (another user edited concurrently),
         sends an edit_conflict notification. Last-write-wins.
-
-        Returns the updated node and a cascade_preview with affected nodes.
         """
         node = await self._node_repo.get_node_or_raise(trip_id, plan_id, node_id)
         node_dict = node.model_dump(mode="json")
 
-        # Conflict detection: compare timestamps
+        # Snapshot the pre-edit graph so we can diff enrichment later. The
+        # node under edit needs to be swapped out for its in-memory copy so
+        # both runs see a consistent view.
+        all_nodes_before = await self._node_repo.list_by_plan(trip_id, plan_id)
+        all_edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
+
         conflict = False
         if client_updated_at and node_dict.get("updated_at"):
             server_ts = parse_dt(node_dict["updated_at"])
@@ -612,8 +592,7 @@ class DAGService:
             node_dict[key] = value
         node_dict["updated_at"] = datetime.now(UTC).isoformat()
 
-        # Re-resolve timezone if location changed
-        if "lat" in updates or "lng" in updates:
+        if "lat_lng" in updates:
             lat_lng = node_dict.get("lat_lng", {})
             lat = lat_lng.get("lat") if isinstance(lat_lng, dict) else getattr(lat_lng, "lat", None)
             lng = lat_lng.get("lng") if isinstance(lat_lng, dict) else getattr(lat_lng, "lng", None)
@@ -622,7 +601,6 @@ class DAGService:
 
         await self._node_repo.update_node(trip_id, plan_id, node_id, node_dict)
 
-        # Recalculate polylines for connected edges when location actually changed
         if "lat_lng" in updates:
             old_lat = node.lat_lng.lat if node.lat_lng else None
             old_lng = node.lat_lng.lng if node.lat_lng else None
@@ -633,23 +611,81 @@ class DAGService:
                     trip_id, plan_id, node_id, {"lat": new_lat, "lng": new_lng}
                 )
 
-        updated_node = Node(**node_dict)
+        all_nodes_after = [
+            dict(node_dict) if n["id"] == node_id else n
+            for n in all_nodes_before
+        ]
 
-        # Only compute cascade when effective departure actually changed
-        old_effective = node.departure_time or node.arrival_time
-        new_effective = updated_node.departure_time or updated_node.arrival_time
-
-        if old_effective != new_effective and new_effective is not None:
-            cascade_preview = await self._compute_cascade_preview(
-                trip_id, plan_id, updated_node
-            )
-        else:
-            cascade_preview = {"affected_nodes": [], "conflicts": []}
+        impact_preview = self._diff_enrichment(
+            all_nodes_before, all_nodes_after, all_edges, trip_settings or {}
+        )
 
         return {
             "node": node_dict,
-            "cascade_preview": cascade_preview,
+            "impact_preview": impact_preview,
             "conflict": conflict,
+        }
+
+    @staticmethod
+    def _diff_enrichment(
+        nodes_before: list[dict],
+        nodes_after: list[dict],
+        edges: list[dict],
+        trip_settings: dict,
+    ) -> dict:
+        """Run enrichment over both graphs and surface what changed.
+
+        Returns a dict with three lists keyed by affected node id. Uses the
+        same shape the frontend edit sheet consumes so inline preview and
+        post-save response stay in sync.
+        """
+        before = {n["id"]: n for n in enrich_dag_times(nodes_before, edges, trip_settings)}
+        after = {n["id"]: n for n in enrich_dag_times(nodes_after, edges, trip_settings)}
+
+        estimated_shifts: list[dict] = []
+        new_conflicts: list[dict] = []
+        new_overnight_holds: list[dict] = []
+
+        for node_id_, after_node in after.items():
+            before_node = before.get(node_id_)
+            if before_node is None:
+                continue
+
+            arrival_changed = parse_dt(after_node.get("arrival_time")) != parse_dt(
+                before_node.get("arrival_time")
+            )
+            departure_changed = parse_dt(after_node.get("departure_time")) != parse_dt(
+                before_node.get("departure_time")
+            )
+            if arrival_changed or departure_changed:
+                estimated_shifts.append({
+                    "id": node_id_,
+                    "name": after_node.get("name", ""),
+                    "old_arrival": before_node.get("arrival_time"),
+                    "new_arrival": after_node.get("arrival_time"),
+                    "old_departure": before_node.get("departure_time"),
+                    "new_departure": after_node.get("departure_time"),
+                })
+
+            after_conflict = after_node.get("timing_conflict")
+            if after_conflict and after_conflict != before_node.get("timing_conflict"):
+                new_conflicts.append({
+                    "id": node_id_,
+                    "name": after_node.get("name", ""),
+                    "message": after_conflict,
+                })
+
+            if after_node.get("overnight_hold") and not before_node.get("overnight_hold"):
+                new_overnight_holds.append({
+                    "id": node_id_,
+                    "name": after_node.get("name", ""),
+                    "reason": after_node.get("hold_reason"),
+                })
+
+        return {
+            "estimated_shifts": estimated_shifts,
+            "new_conflicts": new_conflicts,
+            "new_overnight_holds": new_overnight_holds,
         }
 
     async def _recalculate_connected_polylines(
@@ -716,57 +752,6 @@ class DAGService:
             "Queued polyline recalculation for %d edges connected to node %s",
             queued, node_id,
         )
-
-    async def _compute_cascade_preview(
-        self,
-        trip_id: str,
-        plan_id: str,
-        modified_node: Node,
-    ) -> dict:
-        """BFS from modified node to compute new arrival times for downstream nodes."""
-        all_nodes_raw = await self._node_repo.list_by_plan(trip_id, plan_id)
-        all_edges_raw = await self._edge_repo.list_by_plan(trip_id, plan_id)
-
-        departure = modified_node.departure_time
-        if departure is None:
-            departure = parse_dt(modified_node.arrival_time)
-        else:
-            departure = parse_dt(departure)
-
-        return compute_cascade(modified_node.id, departure, all_nodes_raw, all_edges_raw)
-
-    async def confirm_cascade(
-        self,
-        trip_id: str,
-        plan_id: str,
-        node_id: str,
-    ) -> dict:
-        """Recompute and apply cascade from the given node atomically via batch write."""
-        start = time.perf_counter()
-        node = await self._node_repo.get_node_or_raise(trip_id, plan_id, node_id)
-        preview = await self._compute_cascade_preview(trip_id, plan_id, node)
-
-        affected = preview["affected_nodes"]
-        if not affected:
-            return {"updated_count": 0}
-
-        batch = self._node_repo._db.batch()
-        now = datetime.now(UTC).isoformat()
-        for entry in affected:
-            doc_ref = self._node_repo._collection(
-                trip_id=trip_id, plan_id=plan_id
-            ).document(entry["id"])
-            batch.update(doc_ref, {
-                "arrival_time": entry["new_arrival"],
-                "departure_time": entry["new_departure"],
-                "updated_at": now,
-            })
-        await batch.commit()
-
-        elapsed = time.perf_counter() - start
-        logger.info("cascade confirm completed in %.2fs (%d nodes updated)", elapsed, len(affected))
-        return {"updated_count": len(affected)}
-
 
     async def cleanup_stale_participant_ids(
         self, trip_id: str, plan_id: str
@@ -912,6 +897,7 @@ class DAGService:
         place_id: str | None = None,
         arrival_time: str | None = None,
         departure_time: str | None = None,
+        duration_minutes: int | None = None,
         leg_a_travel_mode: str | None = None,
         leg_a_travel_time_hours: float | None = None,
         leg_a_distance_km: float | None = None,
@@ -957,25 +943,9 @@ class DAGService:
         all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
         max_order = max((n.get("order_index", 0) for n in all_nodes), default=0)
 
-        # Resolve arrival time
-        if arrival_time:
-            resolved_arrival = parse_dt(arrival_time)
-        else:
-            departure = from_node.departure_time
-            if departure is None and from_node.arrival_time:
-                departure = parse_dt(from_node.arrival_time)
-            elif departure:
-                departure = parse_dt(departure)
-            resolved_arrival = (
-                (departure + timedelta(hours=leg_a_travel_time_hours or 0))
-                if departure else datetime.now(UTC)
-            )
+        resolved_arrival = parse_dt(arrival_time) if arrival_time else None
+        resolved_departure = parse_dt(departure_time) if departure_time else None
 
-        resolved_departure: datetime | None = None
-        if departure_time:
-            resolved_departure = parse_dt(departure_time)
-
-        # Build entities
         new_node = Node(
             id=node_id(),
             name=name,
@@ -983,6 +953,7 @@ class DAGService:
             lat_lng=LatLng(lat=lat, lng=lng),
             arrival_time=resolved_arrival,
             departure_time=resolved_departure,
+            duration_minutes=duration_minutes,
             timezone=resolve_timezone(lat, lng),
             place_id=place_id,
             order_index=max_order + 1,
@@ -1091,6 +1062,7 @@ class DAGService:
         place_id: str | None = None,
         arrival_time: str | None = None,
         departure_time: str | None = None,
+        duration_minutes: int | None = None,
     ) -> dict:
         """Create a node with multiple incoming and outgoing connections.
 
@@ -1127,14 +1099,8 @@ class DAGService:
 
         max_order = max((n.get("order_index", 0) for n in all_nodes_raw), default=0)
 
-        # Resolve arrival time
-        resolved_arrival = (
-            parse_dt(arrival_time) if arrival_time else datetime.now(UTC)
-        )
-
-        resolved_departure: datetime | None = None
-        if departure_time:
-            resolved_departure = parse_dt(departure_time)
+        resolved_arrival = parse_dt(arrival_time) if arrival_time else None
+        resolved_departure = parse_dt(departure_time) if departure_time else None
 
         new_node = Node(
             id=new_id,
@@ -1143,6 +1109,7 @@ class DAGService:
             lat_lng=LatLng(lat=lat, lng=lng),
             arrival_time=resolved_arrival,
             departure_time=resolved_departure,
+            duration_minutes=duration_minutes,
             timezone=resolve_timezone(lat, lng),
             place_id=place_id,
             order_index=max_order + 1,

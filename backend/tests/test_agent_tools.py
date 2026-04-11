@@ -38,11 +38,13 @@ TOOL_CALL_FIXTURES: dict[str, dict] = {
         "place_id": "ChIJabcdef",
         "arrival_time": "2026-08-02T03:00:00Z",
         "departure_time": "2026-08-02T04:00:00Z",
+        "duration_minutes": 120,
     },
     "update_node": {
         "node_id": "n_hh61r82c",
         "arrival_time": "2026-08-02T03:00:00Z",
         "departure_time": "2026-08-02T04:00:00Z",
+        "duration_minutes": 180,
     },
     "delete_node": {"node_id": "n_hh61r82c"},
     "add_edge": {

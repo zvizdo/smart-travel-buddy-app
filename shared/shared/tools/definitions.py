@@ -11,7 +11,10 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
         "name": "add_node",
         "description": (
             "Add a new stop to the trip itinerary. Returns the created node "
-            "with its ID. Use add_edge separately to connect it to other stops."
+            "with its ID. Use add_edge separately to connect it to other stops. "
+            "Stops can be time-bound (arrival_time and/or departure_time set) "
+            "or flexible (only duration_minutes set — times are then derived "
+            "on read from upstream anchors)."
         ),
         "parameters": {
             "type": "object",
@@ -39,6 +42,14 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "description": "ISO 8601 departure datetime",
                 },
+                "duration_minutes": {
+                    "type": "integer",
+                    "description": (
+                        "Approximate duration of the stop in minutes, for "
+                        "flexible stops without a firm schedule (e.g. '~2h at "
+                        "the chateau' = 120)."
+                    ),
+                },
             },
             "required": ["name", "type", "lat", "lng"],
         },
@@ -49,7 +60,9 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
         "description": (
             "Update an existing stop. Only provide the fields you want to change. "
             "Updates only this stop — does NOT cascade schedule changes to "
-            "downstream nodes. Update each downstream stop explicitly if needed."
+            "downstream nodes. Downstream flex stops re-derive their times "
+            "automatically on read; downstream time-bound stops must be "
+            "updated explicitly if you want them to shift."
         ),
         "parameters": {
             "type": "object",
@@ -73,6 +86,10 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
                 "departure_time": {
                     "type": "string",
                     "description": "New ISO 8601 departure datetime",
+                },
+                "duration_minutes": {
+                    "type": "integer",
+                    "description": "New approximate duration in minutes for flexible stops.",
                 },
             },
             "required": ["node_id"],

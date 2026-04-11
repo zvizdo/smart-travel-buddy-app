@@ -34,7 +34,7 @@ from shared.models import Preference, PreferenceCategory, Trip
 from shared.services.dag_service import DAGService
 from shared.services.flight_service import FlightService
 from shared.tools.id_gen import generate_id
-from shared.tools.trip_context import format_trip_context
+from shared.tools.trip_context import build_agent_trip_context
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +65,18 @@ def build_trip_context(
     nodes: list[dict],
     edges: list[dict],
     preferences: list[dict],
+    trip_settings: dict | None = None,
 ) -> str:
     """Build a text summary of the current trip state for the agent.
 
-    Used both for the initial system prompt context and by the get_plan
-    tool to return a refreshed view after mutations.
+    Runs ``enrich_dag_times`` first so the agent sees the same propagated /
+    estimated times the UI does, then renders the markdown view. Used both
+    for the initial system prompt context and by the get_plan tool to
+    return a refreshed view after mutations.
     """
-    return format_trip_context(nodes, edges, preferences)
+    return build_agent_trip_context(
+        nodes, edges, trip_settings, preferences=preferences
+    )
 
 
 class AgentService:
@@ -234,7 +239,8 @@ class AgentService:
         ToolExecutor, which dispatches to DAGService.
         """
         start = time.perf_counter()
-        trip_context = build_trip_context(nodes, edges, preferences)
+        trip_settings_dict = trip.settings.model_dump(mode="json") if trip.settings else {}
+        trip_context = build_trip_context(nodes, edges, preferences, trip_settings_dict)
         user_ctx = build_user_context(trip, user_id, display_name, nodes, edges, plan_id, trip.active_plan_id)
         user_context_text = build_user_context_text(user_ctx)
         system_prompt = ONGOING_SYSTEM_PROMPT + "\n\n" + trip_context + "\n\n" + user_context_text
@@ -256,7 +262,11 @@ class AgentService:
         )
 
         # Create tool executor and callable tools for this request
-        executor = ToolExecutor(dag_service, trip_id, plan_id, user_id, preferences)
+        executor = ToolExecutor(
+            dag_service, trip_id, plan_id, user_id,
+            preferences=preferences,
+            trip_settings=trip_settings_dict,
+        )
         tools = create_agent_tools(executor, can_mutate=user_ctx.can_mutate)
         if flight_service:
             tools.extend(create_search_tools(flight_service))

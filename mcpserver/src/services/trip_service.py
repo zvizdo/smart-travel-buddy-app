@@ -210,6 +210,7 @@ class TripService:
             "trip": {
                 "id": trip_id,
                 "name": trip_data["name"],
+                "settings": trip_data.get("settings") or {},
                 "participants": enriched_participants,
                 "plan": {
                     "id": plan_id,
@@ -362,12 +363,17 @@ class TripService:
         datetime_format: str | None = None,
         date_format: str | None = None,
         distance_unit: str | None = None,
+        no_drive_window: dict | None = None,
+        clear_no_drive_window: bool = False,
+        max_drive_hours_per_day: float | None = None,
+        clear_max_drive_hours: bool = False,
     ) -> dict:
-        """Update trip-level display settings. Admin only.
+        """Update trip-level display + flex-planning settings. Admin only.
 
         The caller must already be resolved as admin via resolve_trip_admin;
         this method does not re-check the role. It does re-fetch the trip
-        to merge settings cleanly.
+        to merge settings cleanly. The ``clear_*`` booleans distinguish
+        "explicitly disable the rule" from "leave it unchanged".
         """
         trip_data = await self._trip_repo.get_or_raise(trip_id)
         current = trip_data.get("settings") or {}
@@ -377,6 +383,14 @@ class TripService:
             current["date_format"] = date_format
         if distance_unit is not None:
             current["distance_unit"] = distance_unit
+        if clear_no_drive_window:
+            current["no_drive_window"] = None
+        elif no_drive_window is not None:
+            current["no_drive_window"] = no_drive_window
+        if clear_max_drive_hours:
+            current["max_drive_hours_per_day"] = None
+        elif max_drive_hours_per_day is not None:
+            current["max_drive_hours_per_day"] = max_drive_hours_per_day
 
         await self._trip_repo.update(
             trip_id,

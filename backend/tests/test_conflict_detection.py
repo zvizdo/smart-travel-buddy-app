@@ -47,7 +47,7 @@ class TestConflictDetection:
         svc._node_repo.list_by_plan = AsyncMock(return_value=[node.model_dump(mode="json")])
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
 
-        result = await svc.update_node_with_cascade_preview(
+        result = await svc.update_node_with_impact_preview(
             "trip1", "plan1", "n1",
             {"name": "Updated"},
             client_updated_at="2026-06-01T10:00:00+00:00",
@@ -63,7 +63,7 @@ class TestConflictDetection:
         svc._node_repo.list_by_plan = AsyncMock(return_value=[node.model_dump(mode="json")])
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
 
-        result = await svc.update_node_with_cascade_preview(
+        result = await svc.update_node_with_impact_preview(
             "trip1", "plan1", "n1",
             {"name": "Updated"},
             client_updated_at="2026-06-01T10:00:00+00:00",
@@ -93,7 +93,7 @@ class TestConflictDetection:
         mock_notification_service = MagicMock()
         mock_notification_service.create_notification = AsyncMock(return_value={})
 
-        result = await svc.update_node_with_cascade_preview(
+        result = await svc.update_node_with_impact_preview(
             "trip1", "plan1", "n1",
             {"name": "Updated"},
             client_updated_at="2026-06-01T10:00:00+00:00",
@@ -115,7 +115,7 @@ class TestConflictDetection:
         svc._node_repo.list_by_plan = AsyncMock(return_value=[node.model_dump(mode="json")])
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
 
-        result = await svc.update_node_with_cascade_preview(
+        result = await svc.update_node_with_impact_preview(
             "trip1", "plan1", "n1",
             {"name": "Updated"},
         )
