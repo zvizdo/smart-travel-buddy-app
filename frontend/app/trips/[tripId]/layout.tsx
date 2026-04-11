@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useTrip, useTripPlans } from "@/lib/firestore-hooks";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 export interface PlanData {
   id: string;
@@ -41,8 +42,6 @@ interface TripContextValue {
   loading: boolean;
   error: Error | null;
   refetch: () => void;
-  mapFitted: boolean;
-  markMapFitted: () => void;
   mapCamera: MapCamera | null;
   setMapCamera: (camera: MapCamera) => void;
   viewedPlanId: string | null;
@@ -79,26 +78,22 @@ export default function TripLayout({ children }: { children: ReactNode }) {
   const [apiTrip, setApiTrip] = useState<TripData | null>(null);
   const [apiLoading, setApiLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
-  const mapFittedRef = useRef(false);
-  const mapCameraRef = useRef<MapCamera | null>(null);
 
-  // Restore camera state from sessionStorage on mount (survives navigation to /profile)
-  const restoredRef = useRef(false);
-  if (!restoredRef.current) {
-    restoredRef.current = true;
+  // Lazy-initialized snapshot of the persisted map camera. TripMap consumes
+  // `savedCamera` only at mount, so we deliberately don't update this state
+  // on pan — setMapCamera just persists to sessionStorage, avoiding the
+  // re-render storm that would otherwise fire on every map move.
+  const [savedCamera] = useState<MapCamera | null>(() => {
+    if (typeof window === "undefined") return null;
     try {
-      mapFittedRef.current = sessionStorage.getItem(`trip-map-fitted:${tripId}`) === "1";
       const raw = sessionStorage.getItem(`trip-map-camera:${tripId}`);
-      if (raw) mapCameraRef.current = JSON.parse(raw) as MapCamera;
-    } catch {}
-  }
+      return raw ? (JSON.parse(raw) as MapCamera) : null;
+    } catch {
+      return null;
+    }
+  });
 
-  const markMapFitted = useCallback(() => {
-    mapFittedRef.current = true;
-    try { sessionStorage.setItem(`trip-map-fitted:${tripId}`, "1"); } catch {}
-  }, [tripId]);
   const setMapCamera = useCallback((camera: MapCamera) => {
-    mapCameraRef.current = camera;
     try { sessionStorage.setItem(`trip-map-camera:${tripId}`, JSON.stringify(camera)); } catch {}
   }, [tripId]);
   const [viewedPlanId, setViewedPlanId] = useState<string | null>(null);
@@ -114,6 +109,7 @@ export default function TripLayout({ children }: { children: ReactNode }) {
   // so we stop shadowing once Firestore catches up.
   const [plansOverride, setPlansOverride] = useState<PlanData[] | null>(null);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPlansOverride(null);
   }, [livePlans]);
   const plans: PlanData[] = useMemo(
@@ -149,6 +145,7 @@ export default function TripLayout({ children }: { children: ReactNode }) {
       router.push("/sign-in");
       return;
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchTrip();
   }, [tripId, authLoading, user, router]);
 
@@ -164,25 +161,41 @@ export default function TripLayout({ children }: { children: ReactNode }) {
   // Firestore participant records may lack display_name for users who joined
   // before the field was added.
   const [userDataMap, setUserDataMap] = useState<Record<string, { display_name: string; location_tracking_enabled: boolean }>>({});
+  const [enrichmentFailed, setEnrichmentFailed] = useState(false);
+  const [enrichmentAttempt, setEnrichmentAttempt] = useState(0);
   const fetchedUidsRef = useRef<string>("");
+
+  const retryParticipantEnrichment = useCallback(() => {
+    fetchedUidsRef.current = "";
+    setEnrichmentFailed(false);
+    setEnrichmentAttempt((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     if (!rawTrip?.participants) return;
     const uids = Object.keys(rawTrip.participants);
-    // Avoid re-fetching for the same set of participants.
     const key = [...uids].sort().join(",");
     if (key === fetchedUidsRef.current) return;
     fetchedUidsRef.current = key;
 
+    let cancelled = false;
     api
       .post<{ users: Record<string, { display_name: string; location_tracking_enabled: boolean }> }>(
         "/users/batch",
         { user_ids: uids },
       )
-      .then((res) => setUserDataMap(res.users))
-      .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawTrip?.participants]);
+      .then((res) => {
+        if (!cancelled) setUserDataMap(res.users);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn("Failed to enrich participants:", err);
+        setEnrichmentFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rawTrip?.participants, enrichmentAttempt]);
 
   const trip = useMemo(() => {
     if (!rawTrip) return null;
@@ -228,8 +241,22 @@ export default function TripLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <TripContext.Provider value={{ tripId, trip, loading, error, refetch: fetchTrip, mapFitted: mapFittedRef.current, markMapFitted, mapCamera: mapCameraRef.current, setMapCamera, viewedPlanId, setViewedPlanId, plans, plansLoading, setPlans }}>
-      {children}
-    </TripContext.Provider>
+    <ErrorBoundary onRetry={fetchTrip}>
+      <TripContext.Provider value={{ tripId, trip, loading, error, refetch: fetchTrip, mapCamera: savedCamera, setMapCamera, viewedPlanId, setViewedPlanId, plans, plansLoading, setPlans }}>
+        {enrichmentFailed && (
+          <div className="flex items-center justify-between gap-2 bg-error-container/80 px-3 py-1.5 text-xs text-on-error-container">
+            <span>Couldn&apos;t load participant names.</span>
+            <button
+              type="button"
+              onClick={retryParticipantEnrichment}
+              className="font-medium underline"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {children}
+      </TripContext.Provider>
+    </ErrorBoundary>
   );
 }

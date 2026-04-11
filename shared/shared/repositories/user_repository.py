@@ -28,6 +28,26 @@ class UserRepository(BaseRepository):
         data = await self.get_or_raise(user_id)
         return User(**data)
 
+    async def get_users_by_ids(self, user_ids: list[str]) -> dict[str, User]:
+        """Fetch multiple users in parallel. Missing users are simply absent.
+
+        Uses asyncio.gather over individual ``get`` calls — the async
+        Firestore client doesn't expose ``get_all`` over documents in a
+        single subcollection, but parallel reads still avoid the serial
+        latency of an N+1 loop.
+        """
+        if not user_ids:
+            return {}
+
+        import asyncio
+
+        results = await asyncio.gather(*[self.get(uid) for uid in user_ids])
+        return {
+            uid: User(**data)
+            for uid, data in zip(user_ids, results, strict=True)
+            if data is not None
+        }
+
     async def create_api_key(self, user_id: str, api_key: ApiKey) -> dict[str, Any]:
         """Store an API key in the user's api_keys subcollection."""
         doc_dict = api_key.model_dump(mode="json")

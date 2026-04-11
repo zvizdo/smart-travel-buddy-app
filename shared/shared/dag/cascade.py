@@ -26,11 +26,16 @@ def compute_cascade(
     all_nodes: list[dict],
     all_edges: list[dict],
 ) -> dict:
-    """Pure BFS cascade computation — no I/O.
+    """Pure cascade computation — no I/O.
 
     Starting from the modified node's new departure time, computes new
     arrival/departure times for all downstream nodes. Preserves each node's
     stay duration (departure - arrival) when cascading.
+
+    Merge nodes (multiple incoming edges from the affected subgraph) must
+    wait for their latest parent to arrive — we use Kahn-style topological
+    processing, holding a node back until every one of its in-subgraph
+    parents has been resolved, and taking max() across parent arrivals.
 
     Returns {"affected_nodes": [...], "conflicts": [...]}.
     Each affected node entry: {id, name, old_arrival, new_arrival, old_departure, new_departure}.
@@ -40,39 +45,57 @@ def compute_cascade(
     for e in all_edges:
         adj[e["from_node_id"]].append(e)
 
-    affected_nodes: list[dict] = []
-    conflicts: list[dict] = []
+    # Reachable subgraph from the modified node (children only).
+    reachable: set[str] = set()
+    stack: list[str] = [modified_node_id]
+    while stack:
+        node_id = stack.pop()
+        for edge in adj.get(node_id, []):
+            child_id = edge["to_node_id"]
+            if child_id not in reachable:
+                reachable.add(child_id)
+                stack.append(child_id)
 
+    # In-degree restricted to edges from the reachable subgraph (including
+    # the modified node). Nodes reached via other roots keep their original
+    # schedule for those edges; we only constrain on parents we cascade from.
+    in_deg: dict[str, int] = defaultdict(int)
+    for parent_id in {modified_node_id, *reachable}:
+        for edge in adj.get(parent_id, []):
+            child_id = edge["to_node_id"]
+            if child_id in reachable:
+                in_deg[child_id] += 1
+
+    pending_arrival: dict[str, datetime] = {}
+    remaining: dict[str, int] = dict(in_deg)
     queue: deque[str] = deque()
-    parent_departure: dict[str, datetime] = {}
 
     for edge in adj.get(modified_node_id, []):
         child_id = edge["to_node_id"]
         travel_hours = edge.get("travel_time_hours", 0)
-        new_arrival = departure + timedelta(hours=travel_hours)
-        parent_departure[child_id] = new_arrival
-        queue.append(child_id)
+        candidate = departure + timedelta(hours=travel_hours)
+        existing = pending_arrival.get(child_id)
+        if existing is None or candidate > existing:
+            pending_arrival[child_id] = candidate
+        remaining[child_id] -= 1
+        if remaining[child_id] == 0:
+            queue.append(child_id)
 
-    visited: set[str] = set()
+    affected_nodes: list[dict] = []
+    conflicts: list[dict] = []
+
     while queue:
         current_id = queue.popleft()
-        if current_id in visited:
-            continue
-        visited.add(current_id)
-
         current = node_map.get(current_id)
         if current is None:
             continue
 
-        new_arrival = parent_departure[current_id]
+        new_arrival = pending_arrival[current_id]
         old_arrival_str = current.get("arrival_time")
         old_arrival = parse_dt(old_arrival_str) if old_arrival_str else None
 
-        if old_arrival and abs((new_arrival - old_arrival).total_seconds()) < 60:
-            continue
-
-        # Preserve the node's stay duration (departure - arrival) when cascading
-        old_arrival_dt = parse_dt(old_arrival_str) if old_arrival_str else new_arrival
+        # Preserve stay duration (departure - arrival) when cascading.
+        old_arrival_dt = old_arrival if old_arrival else new_arrival
         old_departure_str = current.get("departure_time")
         if old_departure_str:
             stay_duration = parse_dt(old_departure_str) - old_arrival_dt
@@ -80,21 +103,30 @@ def compute_cascade(
         else:
             new_departure = new_arrival
 
-        affected_nodes.append({
-            "id": current_id,
-            "name": current.get("name", ""),
-            "old_arrival": old_arrival.isoformat() if old_arrival else None,
-            "new_arrival": new_arrival.isoformat(),
-            "old_departure": current.get("departure_time"),
-            "new_departure": new_departure.isoformat(),
-        })
+        schedule_changed = not (
+            old_arrival and abs((new_arrival - old_arrival).total_seconds()) < 60
+        )
+        if schedule_changed:
+            affected_nodes.append({
+                "id": current_id,
+                "name": current.get("name", ""),
+                "old_arrival": old_arrival.isoformat() if old_arrival else None,
+                "new_arrival": new_arrival.isoformat(),
+                "old_departure": current.get("departure_time"),
+                "new_departure": new_departure.isoformat(),
+            })
 
         for edge in adj.get(current_id, []):
             child_id = edge["to_node_id"]
-            if child_id not in visited:
-                travel_hours = edge.get("travel_time_hours", 0)
-                child_arrival = new_departure + timedelta(hours=travel_hours)
-                parent_departure[child_id] = child_arrival
+            if child_id not in reachable:
+                continue
+            travel_hours = edge.get("travel_time_hours", 0)
+            candidate = new_departure + timedelta(hours=travel_hours)
+            existing = pending_arrival.get(child_id)
+            if existing is None or candidate > existing:
+                pending_arrival[child_id] = candidate
+            remaining[child_id] -= 1
+            if remaining[child_id] == 0:
                 queue.append(child_id)
 
     return {

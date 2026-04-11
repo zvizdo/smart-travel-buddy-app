@@ -94,14 +94,9 @@ def format_trip_context(
         coords = _node_coords(n)
         coords_str = f", {coords[0]:.4f},{coords[1]:.4f}" if coords else ""
 
-        pids = n.get("participant_ids")
-        participant_info = ""
-        # if pids:
-        #     participant_info = f" [assigned to: {', '.join(pids)}]"
-
         lines.append(
             f"- [{n['id']}] {n['name']} ({n.get('type', 'place')}"
-            f"{coords_str}{tz_str}{time_info}){participant_info}"
+            f"{coords_str}{tz_str}{time_info})"
         )
 
         # Actions attached to nodes (MCP enriched format)

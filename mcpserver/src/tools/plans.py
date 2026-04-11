@@ -2,10 +2,15 @@
 
 from fastmcp import Context
 from mcpserver.src.main import AppContext, mcp
-from mcpserver.src.tools._helpers import resolve_trip_admin, resolve_trip_plan
+from mcpserver.src.tools._helpers import (
+    resolve_trip_admin,
+    resolve_trip_plan,
+    tool_error_guard,
+)
 
 
 @mcp.tool()
+@tool_error_guard
 async def create_plan(
     trip_id: str,
     name: str,
@@ -47,6 +52,7 @@ async def create_plan(
 
 
 @mcp.tool()
+@tool_error_guard
 async def promote_plan(trip_id: str, plan_id: str, ctx: Context) -> dict:
     """Make a plan the active plan for the trip. The previously active plan becomes a draft.
 
@@ -73,6 +79,7 @@ async def promote_plan(trip_id: str, plan_id: str, ctx: Context) -> dict:
 
 
 @mcp.tool()
+@tool_error_guard
 async def delete_plan(trip_id: str, plan_id: str, ctx: Context) -> dict:
     """Permanently delete a non-active plan and all its nodes, edges, and actions.
 

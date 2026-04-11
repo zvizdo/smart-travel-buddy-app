@@ -7,12 +7,17 @@ Write: create_trip, delete_trip, update_trip_settings.
 from fastmcp import Context
 from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
-from mcpserver.src.tools._helpers import resolve_trip_admin
+from mcpserver.src.tools._helpers import (
+    resolve_trip_admin,
+    tool_error_guard,
+    tool_error_guard_text,
+)
 
 from shared.tools.trip_context import format_trip_context
 
 
 @mcp.tool()
+@tool_error_guard
 async def get_trips(ctx: Context) -> dict:
     """Get a list of all trips you have access to.
 
@@ -26,6 +31,7 @@ async def get_trips(ctx: Context) -> dict:
 
 
 @mcp.tool()
+@tool_error_guard
 async def get_trip_plans(trip_id: str, ctx: Context) -> dict:
     """Get all plans (main + alternatives) for a trip.
 
@@ -42,6 +48,7 @@ async def get_trip_plans(trip_id: str, ctx: Context) -> dict:
 
 
 @mcp.tool()
+@tool_error_guard_text
 async def get_trip_context(
     trip_id: str,
     ctx: Context,
@@ -81,6 +88,7 @@ async def get_trip_context(
 
 
 @mcp.tool()
+@tool_error_guard
 async def create_trip(name: str, ctx: Context) -> dict:
     """Create a new trip. You become its sole Admin.
 
@@ -106,6 +114,7 @@ async def create_trip(name: str, ctx: Context) -> dict:
 
 
 @mcp.tool()
+@tool_error_guard
 async def delete_trip(trip_id: str, ctx: Context) -> dict:
     """Permanently delete a trip and every plan, node, edge, action, and invite under it.
 
@@ -126,6 +135,7 @@ async def delete_trip(trip_id: str, ctx: Context) -> dict:
 
 
 @mcp.tool()
+@tool_error_guard
 async def update_trip_settings(
     trip_id: str,
     ctx: Context,
@@ -152,7 +162,10 @@ async def update_trip_settings(
     app: AppContext = ctx.lifespan_context
 
     if datetime_format is None and date_format is None and distance_unit is None:
-        return {"error": "No settings to update. Provide at least one of: datetime_format, date_format, distance_unit."}
+        raise ValueError(
+            "No settings to update. Provide at least one of: "
+            "datetime_format, date_format, distance_unit."
+        )
 
     return await app.trip_service.update_trip_settings(
         user_id=user_id,

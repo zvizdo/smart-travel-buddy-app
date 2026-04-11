@@ -58,16 +58,16 @@ async def update_profile(
         location_tracking_enabled=body.location_tracking_enabled,
     )
 
-    # When disabling location tracking, delete all location docs for this user
+    # When disabling location tracking, delete all location docs for this user.
+    # Firestore delete is idempotent, so a missing doc is a no-op — any error
+    # here is a genuine failure that should propagate rather than leave stale
+    # location data while reporting success.
     if body.location_tracking_enabled is False:
         trips = await trip_service.list_trips(user["uid"])
         for trip in trips:
-            try:
-                await location_repo.delete(
-                    user["uid"], trip_id=trip["id"]
-                )
-            except Exception:
-                pass  # Location doc may not exist
+            await location_repo.delete(
+                user["uid"], trip_id=trip["id"]
+            )
 
     return result
 

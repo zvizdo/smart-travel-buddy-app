@@ -16,10 +16,10 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from google.cloud.firestore import AsyncClient
-from google.cloud.firestore_v1.base_query import FieldFilter
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from fastmcp.server.dependencies import get_access_token
+from google.cloud.firestore import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 if TYPE_CHECKING:
     from fastmcp import Context
@@ -31,7 +31,8 @@ _cache: dict[str, tuple[str, float]] = {}
 _CACHE_TTL_SECONDS = 300  # 5 minutes
 _CACHE_MAX_ENTRIES = 1000
 
-# Rate limiting: track failed auth attempts by key hash prefix
+# Rate limiting: track failed auth attempts keyed on the full HMAC hash so
+# two distinct API keys never share a rate-limit bucket.
 _fail_tracker: dict[str, list[float]] = {}
 _RATE_LIMIT_WINDOW = 60  # seconds
 _RATE_LIMIT_MAX_FAILURES = 10
@@ -57,16 +58,17 @@ async def resolve_user_from_api_key(
         hmac_secret.encode(), api_key.encode(), hashlib.sha256
     ).hexdigest()
 
-    # Rate limit check: reject if too many recent failures for this key prefix
+    # Rate limit check: reject if too many recent failures for this exact
+    # key hash. Keying on the full HMAC hash rather than a prefix eliminates
+    # any chance of two distinct keys sharing a rate-limit bucket.
     now = time.monotonic()
-    hash_prefix = key_hash[:8]
-    if hash_prefix in _fail_tracker:
-        _fail_tracker[hash_prefix] = [
-            t for t in _fail_tracker[hash_prefix] if now - t < _RATE_LIMIT_WINDOW
+    if key_hash in _fail_tracker:
+        _fail_tracker[key_hash] = [
+            t for t in _fail_tracker[key_hash] if now - t < _RATE_LIMIT_WINDOW
         ]
-        if not _fail_tracker[hash_prefix]:
-            del _fail_tracker[hash_prefix]
-        elif len(_fail_tracker[hash_prefix]) >= _RATE_LIMIT_MAX_FAILURES:
+        if not _fail_tracker[key_hash]:
+            del _fail_tracker[key_hash]
+        elif len(_fail_tracker[key_hash]) >= _RATE_LIMIT_MAX_FAILURES:
             raise RateLimitError("Too many failed authentication attempts")
 
     # Check cache
@@ -89,7 +91,7 @@ async def resolve_user_from_api_key(
         break
 
     if matched_doc is None:
-        _fail_tracker.setdefault(hash_prefix, []).append(now)
+        _fail_tracker.setdefault(key_hash, []).append(now)
         raise PermissionError("Invalid or revoked API key")
 
     # Extract user_id from document path: "users/{userId}/api_keys/{keyId}"
@@ -97,7 +99,7 @@ async def resolve_user_from_api_key(
     user_id = path_parts[1]
 
     # Clear failure tracker on successful auth
-    _fail_tracker.pop(hash_prefix, None)
+    _fail_tracker.pop(key_hash, None)
 
     # Update last_used_at (non-critical)
     with contextlib.suppress(Exception):
@@ -111,7 +113,11 @@ async def resolve_user_from_api_key(
         del _cache[oldest_key]
     _cache[key_hash] = (user_id, now + _CACHE_TTL_SECONDS)
 
-    logger.info("API key authenticated for user %s", user_id)
+    # Do not log the user_id at info level — anything the server process
+    # can write to shared logs is a potential user-enumeration vector for
+    # other operators. Demote to debug so it's there during development
+    # but silent in production (which runs at INFO).
+    logger.debug("API key authenticated")
     return user_id
 
 

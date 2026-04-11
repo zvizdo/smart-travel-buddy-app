@@ -4,7 +4,14 @@ Exposes trip management tools to external AI agents via the Model Context Protoc
 Transport is streamable-http only — each request carries an
 Authorization: Bearer <key> header that is resolved per-request to a user ID
 via HMAC-SHA256 + Firestore lookup.
+
+E402 is globally suppressed for this file: dotenv must load before any
+Firebase/GCP imports, and tool modules must import after the `mcp` object
+exists so @mcp.tool() decorators can register against it. Both patterns
+are documented in AGENTS.md.
 """
+
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -19,15 +26,15 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 import firebase_admin
-from google.cloud.firestore import AsyncClient
+import httpx
 from fastmcp import FastMCP
 from fastmcp.server.providers.skills import SkillProvider
-
-import httpx
+from google.cloud.firestore import AsyncClient
 from mcpserver.src.auth.api_key_auth import ApiKeyTokenVerifier
 from mcpserver.src.config import get_config
 from mcpserver.src.services.places_service import PlacesService
 from mcpserver.src.services.trip_service import TripService
+
 from shared.repositories import (
     ActionRepository,
     EdgeRepository,
@@ -142,15 +149,15 @@ mcp = FastMCP(
     auth=_token_verifier,
 )
 
-# Import tools to register them with the server
-import mcpserver.src.tools.actions  # noqa: E402, F401
-import mcpserver.src.tools.nodes  # noqa: E402, F401
-import mcpserver.src.tools.edges  # noqa: E402, F401
-import mcpserver.src.tools.flights  # noqa: E402, F401
-import mcpserver.src.tools.places  # noqa: E402, F401
-import mcpserver.src.tools.plans  # noqa: E402, F401
-import mcpserver.src.tools.trips  # noqa: E402, F401
-
+# Import tools for their @mcp.tool() registration side-effects. The mcp object
+# must exist before these modules are imported, so they live at the bottom.
+import mcpserver.src.tools.actions
+import mcpserver.src.tools.edges
+import mcpserver.src.tools.flights
+import mcpserver.src.tools.nodes
+import mcpserver.src.tools.places
+import mcpserver.src.tools.plans
+import mcpserver.src.tools.trips  # noqa: F401
 
 # Streamable-HTTP ASGI app. fastmcp's http_app() includes:
 #   - Session manager lifespan (task group init)

@@ -3,16 +3,19 @@
 from fastmcp import Context
 from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
+from mcpserver.src.tools._helpers import tool_error_guard
+
 from shared.services.flight_service import FlightSearchError, format_flight_results
 
 
 @mcp.tool()
+@tool_error_guard
 async def find_flights(
     origin: str,
     destination: str,
     date: str,
     ctx: Context,
-    return_date: str = None,
+    return_date: str | None = None,
     cabin: str = "economy",
     max_stops: str = "any",
     max_results: int = 5,

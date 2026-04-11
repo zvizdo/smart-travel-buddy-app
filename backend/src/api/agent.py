@@ -20,17 +20,17 @@ from backend.src.deps import (
 from backend.src.repositories.chat_history_repository import ChatHistoryRepository
 from backend.src.repositories.preference_repository import PreferenceRepository
 from backend.src.services.agent_service import AgentService
-from shared.services.dag_service import DAGService
 from backend.src.services.trip_service import TripService
 from backend.src.services.user_service import UserService
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from shared.models import Plan, PlanStatus, TripRole
-from shared.services.flight_service import FlightService
 from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
+from shared.services.dag_service import DAGService
+from shared.services.flight_service import FlightService
 from shared.tools.id_gen import generate_id
 
 logger = logging.getLogger(__name__)
@@ -108,10 +108,7 @@ async def import_build(
     await plan_repo.create_plan(trip_id, plan)
 
     # Set as active plan
-    await dag_service._trip_repo.update_trip(trip_id, {
-        "active_plan_id": plan.id,
-        "updated_at": datetime.now(UTC).isoformat(),
-    })
+    await dag_service.set_active_plan(trip_id, plan.id)
 
     # Run the build agent — nodes/edges are written to Firestore as they're created
     messages = [m.model_dump() for m in body.messages]
@@ -183,7 +180,7 @@ async def ongoing_chat(
     trip = await trip_service.get_trip(trip_id, user["uid"])
     plan_id = body.plan_id or trip.active_plan_id
     if not plan_id:
-        raise ValueError("Trip has no active plan. Import an itinerary first.")
+        raise LookupError("Trip has no active plan. Import an itinerary first.")
 
     # Resolve user's display name from the users collection
     user_profile = await user_service.get_user(user["uid"])
@@ -213,10 +210,10 @@ async def ongoing_chat(
         flight_service=flight_service,
     )
 
-    # Save preferences if any were extracted
+    # Save preferences if any were extracted — single batched write.
     extracted_prefs = agent_service.extract_preferences(result, user["uid"])
-    for pref in extracted_prefs:
-        await preference_repo.create_preference(trip_id, pref)
+    if extracted_prefs:
+        await preference_repo.batch_create_preferences(trip_id, extracted_prefs)
 
     # Update conversation history in GCS
     history.append({"role": "user", "content": body.message})

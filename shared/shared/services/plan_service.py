@@ -10,8 +10,6 @@ import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from shared.tools.id_gen import action_id, edge_id, node_id, plan_id
-
 from shared.models import (
     Action,
     Edge,
@@ -26,6 +24,7 @@ from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
 from shared.repositories.trip_repository import TripRepository
+from shared.tools.id_gen import action_id, edge_id, node_id, plan_id
 
 if TYPE_CHECKING:
     # Avoid a runtime import cycle: NotificationService lives in backend/.
@@ -113,13 +112,21 @@ class PlanService:
         if new_edges:
             await self._edge_repo.batch_create(trip_id, new_plan.id, new_edges)
 
-        # Clone actions if requested
+        # Clone actions if requested. Fetch actions for every source node in
+        # parallel, then batch-write the cloned action docs under the new
+        # plan — avoids the old N+1 sequential pattern.
         actions_cloned = 0
-        if include_actions and self._action_repo is not None:
-            for old_node_id, new_node_id in node_id_map.items():
-                source_actions = await self._action_repo.list_by_node(
-                    trip_id, source_plan_id, old_node_id
-                )
+        if include_actions and self._action_repo is not None and node_id_map:
+            old_ids = list(node_id_map.keys())
+            action_lists = await asyncio.gather(*[
+                self._action_repo.list_by_node(trip_id, source_plan_id, old_id)
+                for old_id in old_ids
+            ])
+
+            db = self._node_repo._db
+            pending: list[tuple[str, Action]] = []
+            for old_id, source_actions in zip(old_ids, action_lists, strict=True):
+                new_node_id_for_actions = node_id_map[old_id]
                 for a in source_actions:
                     new_action = Action(
                         **{
@@ -128,10 +135,23 @@ class PlanService:
                             "created_at": datetime.now(UTC),
                         },
                     )
-                    await self._action_repo.create_action(
-                        trip_id, new_plan.id, new_node_id, new_action
+                    pending.append((new_node_id_for_actions, new_action))
+
+            batch_size = 500
+            for i in range(0, len(pending), batch_size):
+                batch = db.batch()
+                for new_node_id_for_action, new_action in pending[i : i + batch_size]:
+                    action_col = self._action_repo._collection(
+                        trip_id=trip_id,
+                        plan_id=new_plan.id,
+                        node_id=new_node_id_for_action,
                     )
-                    actions_cloned += 1
+                    batch.set(
+                        action_col.document(new_action.id),
+                        new_action.model_dump(mode="json"),
+                    )
+                await batch.commit()
+            actions_cloned = len(pending)
 
         return {
             "plan": new_plan.model_dump(mode="json"),
@@ -231,7 +251,7 @@ class PlanService:
 
         node_col = self._node_repo._collection(trip_id=trip_id, plan_id=plan_id)
         if action_lists:
-            for node, actions in zip(nodes, action_lists):
+            for node, actions in zip(nodes, action_lists, strict=True):
                 action_col = self._action_repo._collection(
                     trip_id=trip_id, plan_id=plan_id, node_id=node["id"]
                 )

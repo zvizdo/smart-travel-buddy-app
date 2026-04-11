@@ -141,6 +141,48 @@ function findEdgeBetween(edges: EdgeData[], fromId: string, toId: string): EdgeD
   return edges.find((e) => e.from_node_id === fromId && e.to_node_id === toId);
 }
 
+/**
+ * Compute gap compression offsets for a sorted sequence of timed nodes.
+ * Returns a per-node cumulative compression offset (to subtract from raw Y)
+ * plus the list of compressed gap regions.
+ *
+ * Used by both the multi-lane global pass and the single-lane per-lane pass.
+ */
+function compressGaps(
+  timedNodes: { id: string; arrival: Date; departure: Date | null }[],
+  edges: EdgeData[],
+  pxPerHour: number,
+): { compressionOffsets: Map<string, number>; gapRegions: GapRegion[] } {
+  const compressionOffsets = new Map<string, number>();
+  const gapRegions: GapRegion[] = [];
+  let cumulativeCompression = 0;
+
+  for (let i = 0; i < timedNodes.length; i++) {
+    compressionOffsets.set(timedNodes[i].id, cumulativeCompression);
+
+    if (i >= timedNodes.length - 1) continue;
+    const curr = timedNodes[i];
+    const next = timedNodes[i + 1];
+    const currEnd = curr.departure ?? curr.arrival;
+    const gapHours = (next.arrival.getTime() - currEnd.getTime()) / 3_600_000;
+    const edge = findEdgeBetween(edges, curr.id, next.id);
+    const travelHours = edge?.travel_time_hours ?? 0;
+    const idleHours = gapHours - travelHours;
+
+    if (idleHours > GAP_THRESHOLD_HOURS) {
+      const savedPx = idleHours * pxPerHour - GAP_COMPRESSED_HEIGHT_PX;
+      cumulativeCompression += savedPx;
+      gapRegions.push({
+        afterNodeId: curr.id,
+        compressedHeightPx: GAP_COMPRESSED_HEIGHT_PX,
+        realDurationHours: idleHours,
+      });
+    }
+  }
+
+  return { compressionOffsets, gapRegions };
+}
+
 /** Topological sort via Kahn's algorithm. Returns node IDs in order. */
 function topoSort(nodeIds: string[], edges: EdgeData[]): string[] {
   const inDeg = new Map<string, number>();
@@ -230,7 +272,6 @@ export function computeTimelineLayout(
   pathResult: PathResult | null,
   pathMode: "all" | "mine",
   currentUserId: string | null,
-  participantIds: string[],
   zoomLevel: TimelineZoomLevel,
   dateFormat: "eu" | "us" | "iso" | "short",
   participantNames?: Map<string, string>,
@@ -256,7 +297,7 @@ export function computeTimelineLayout(
   // -----------------------------------------------------------------------
   // Step 1: Determine active lanes
   // -----------------------------------------------------------------------
-  const laneDefinitions = determineLanes(nodes, edges, pathResult, pathMode, currentUserId, participantIds, participantNames);
+  const laneDefinitions = determineLanes(nodes, edges, pathResult, pathMode, currentUserId, participantNames);
 
   // -----------------------------------------------------------------------
   // Step 2: Resolve missing times by interpolation
@@ -391,32 +432,12 @@ export function computeTimelineLayout(
     }
 
     // Compute global gap compression
-    let cumulativeCompression = 0;
-    const compressionOffsets = new Map<string, number>();
-
-    for (let i = 0; i < allTimedNodes.length; i++) {
-      compressionOffsets.set(allTimedNodes[i].id, cumulativeCompression);
-
-      if (i < allTimedNodes.length - 1) {
-        const curr = allTimedNodes[i];
-        const next = allTimedNodes[i + 1];
-        const currEnd = curr.departure ?? curr.arrival;
-        const gapHours = (next.arrival.getTime() - currEnd.getTime()) / 3_600_000;
-        const edge = findEdgeBetween(edges, curr.id, next.id);
-        const travelHours = edge?.travel_time_hours ?? 0;
-        const idleHours = gapHours - travelHours;
-
-        if (idleHours > GAP_THRESHOLD_HOURS) {
-          const savedPx = (idleHours * pxPerHour) - GAP_COMPRESSED_HEIGHT_PX;
-          cumulativeCompression += savedPx;
-          globalGapRegions.push({
-            afterNodeId: curr.id,
-            compressedHeightPx: GAP_COMPRESSED_HEIGHT_PX,
-            realDurationHours: idleHours,
-          });
-        }
-      }
-    }
+    const { compressionOffsets, gapRegions: globalGaps } = compressGaps(
+      allTimedNodes,
+      edges,
+      pxPerHour,
+    );
+    globalGapRegions.push(...globalGaps);
 
     // Apply compression and enforce minimum spacing
     let prevBottom = 0;
@@ -572,40 +593,16 @@ export function computeTimelineLayout(
       }
 
       // Gap compression
-      let cumulativeCompression = 0;
-      const compressionOffsets = new Map<string, number>();
-
-      for (let i = 0; i < timedNodeIds.length; i++) {
-        const nodeId = timedNodeIds[i];
-        compressionOffsets.set(nodeId, cumulativeCompression);
-
-        if (i < timedNodeIds.length - 1) {
-          const currentNodeId = timedNodeIds[i];
-          const nextNodeId = timedNodeIds[i + 1];
-          const currentResolved = resolvedTimes.get(currentNodeId)!;
-          const nextResolved = resolvedTimes.get(nextNodeId)!;
-
-          const currentEnd = currentResolved.departure ?? currentResolved.arrival!;
-          const nextStart = nextResolved.arrival!;
-          const gapHours = (nextStart.getTime() - currentEnd.getTime()) / 3_600_000;
-
-          const edge = findEdgeBetween(edges, currentNodeId, nextNodeId);
-          const travelHours = edge?.travel_time_hours ?? 0;
-          const idleHours = gapHours - travelHours;
-
-          if (idleHours > GAP_THRESHOLD_HOURS) {
-            const originalGapPx = idleHours * pxPerHour;
-            const savedPx = originalGapPx - GAP_COMPRESSED_HEIGHT_PX;
-            cumulativeCompression += savedPx;
-
-            gapRegions.push({
-              afterNodeId: currentNodeId,
-              compressedHeightPx: GAP_COMPRESSED_HEIGHT_PX,
-              realDurationHours: idleHours,
-            });
-          }
-        }
-      }
+      const laneTimedNodes = timedNodeIds.map((id) => {
+        const resolved = resolvedTimes.get(id)!;
+        return { id, arrival: resolved.arrival!, departure: resolved.departure };
+      });
+      const { compressionOffsets, gapRegions: laneGaps } = compressGaps(
+        laneTimedNodes,
+        edges,
+        pxPerHour,
+      );
+      gapRegions.push(...laneGaps);
 
       // Apply positions with compression and enforce minimums
       let prevBottom = 0;
@@ -792,7 +789,6 @@ function determineLanes(
   pathResult: PathResult | null,
   pathMode: "all" | "mine",
   currentUserId: string | null,
-  _participantIds: string[],
   participantNames?: Map<string, string>,
 ): LaneDefinition[] {
   // Edge case: no nodes

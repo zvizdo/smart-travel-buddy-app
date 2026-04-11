@@ -3,12 +3,12 @@
 import asyncio
 from datetime import UTC, datetime
 
-from google.cloud.firestore_v1.transforms import DELETE_FIELD
-
 from backend.src.errors import ConflictError
 from backend.src.repositories.invite_link_repository import InviteLinkRepository
 from backend.src.repositories.notification_repository import NotificationRepository
 from backend.src.repositories.preference_repository import PreferenceRepository
+from google.cloud.firestore_v1.transforms import DELETE_FIELD
+
 from shared.models import Participant, Trip, TripRole
 from shared.repositories.action_repository import ActionRepository
 from shared.repositories.edge_repository import EdgeRepository
@@ -134,7 +134,7 @@ class TripService:
             actions_lists = plan_actions[plan_idx]
 
             # Actions (innermost)
-            for node, actions in zip(nodes, actions_lists):
+            for node, actions in zip(nodes, actions_lists, strict=True):
                 action_col = self._action_repo._collection(
                     trip_id=trip_id, plan_id=plan_id, node_id=node["id"]
                 )
@@ -247,7 +247,7 @@ class TripService:
             batch = db.batch()
             batch_count = 0
 
-            for plan, nodes in zip(plans, nodes_per_plan):
+            for plan, nodes in zip(plans, nodes_per_plan, strict=True):
                 plan_id = plan["id"]
                 for node in nodes:
                     pids = node.get("participant_ids")
@@ -270,11 +270,10 @@ class TripService:
             if batch_count > 0:
                 await batch.commit()
 
-        # Location cleanup
-        try:
-            await self._location_repo.delete(target_user_id, trip_id=trip_id)
-        except Exception:
-            pass  # Location doc may not exist
+        # Location cleanup. Firestore delete is idempotent, so a missing doc
+        # is a no-op — any error here should propagate instead of leaving
+        # the removed participant's location data behind.
+        await self._location_repo.delete(target_user_id, trip_id=trip_id)
 
         # Remove from trip participants map
         await self._trip_repo.update_trip(trip_id, {

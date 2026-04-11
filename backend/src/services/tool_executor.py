@@ -2,9 +2,8 @@
 
 import logging
 
-from shared.services.dag_service import DAGService
-
 from shared.agent.schemas import ActionTaken
+from shared.services.dag_service import DAGService
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +142,8 @@ class ToolExecutor:
     async def _handle_delete_edge(self, args: dict) -> dict:
         edge_id = args["edge_id"]
         # Look up edge to get node names before deleting
-        edge_data = await self._dag._edge_repo.get(
-            edge_id, trip_id=self._trip_id, plan_id=self._plan_id,
+        edge_data = await self._dag.get_edge(
+            self._trip_id, self._plan_id, edge_id,
         )
         if edge_data:
             from_name = await self._resolve_node_name(edge_data.get("from_node_id", ""))
@@ -166,10 +165,6 @@ class ToolExecutor:
 
     async def _resolve_node_name(self, node_id: str) -> str:
         """Look up a node's name by ID, returning the ID as fallback."""
-        try:
-            data = await self._dag._node_repo.get(
-                node_id, trip_id=self._trip_id, plan_id=self._plan_id,
-            )
-            return data.get("name", node_id) if data else node_id
-        except Exception:
-            return node_id
+        return await self._dag.get_node_name(
+            self._trip_id, self._plan_id, node_id,
+        )

@@ -106,10 +106,11 @@ class UserService:
         await self._user_repo.deactivate_api_key(uid, key_id)
 
     async def get_users_batch(self, uids: list[str]) -> dict[str, dict]:
-        """Get display names for a batch of user IDs."""
+        """Get display names for a batch of user IDs. Parallel fetch."""
+        found = await self._user_repo.get_users_by_ids(uids)
         result: dict[str, dict] = {}
         for uid in uids:
-            user = await self._user_repo.get_user(uid)
+            user = found.get(uid)
             if user:
                 result[uid] = {
                     "display_name": user.display_name,
@@ -117,5 +118,9 @@ class UserService:
                     "location_tracking_enabled": user.location_tracking_enabled,
                 }
             else:
-                result[uid] = {"display_name": uid, "email": "", "location_tracking_enabled": False}
+                result[uid] = {
+                    "display_name": uid,
+                    "email": "",
+                    "location_tracking_enabled": False,
+                }
         return result

@@ -3,12 +3,12 @@
 from backend.src.auth.firebase_auth import get_current_user
 from backend.src.auth.permissions import require_role
 from backend.src.deps import get_plan_service, get_trip_service
-from shared.services.plan_service import PlanService
 from backend.src.services.trip_service import TripService
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from shared.models import TripRole
+from shared.services.plan_service import PlanService
 
 router = APIRouter(tags=["plans"])
 

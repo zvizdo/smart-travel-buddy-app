@@ -139,7 +139,7 @@ def would_create_cycle(
         path.reverse()
         # path is now: to_node -> ... -> from_node
         # The full cycle is: from_node -> to_node -> ... -> from_node
-        return [from_node_id] + path
+        return [from_node_id, *path]
 
     return None
 

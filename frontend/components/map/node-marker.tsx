@@ -8,11 +8,9 @@ interface NodeMarkerProps {
   type: string;
   lat: number;
   lng: number;
-  arrivalTime?: string;
   selected?: boolean;
   isMergeNode?: boolean;
   isStartNode?: boolean;
-  pathColor?: string;
   dimmed?: boolean;
   /** Scale factor (0-1) for when nodes are too close together. Defaults to 1. */
   proximityScale?: number;

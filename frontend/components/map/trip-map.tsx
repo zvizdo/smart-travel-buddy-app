@@ -13,6 +13,7 @@ import { EdgePolyline } from "@/components/map/edge-polyline";
 import { FanOutTether } from "@/components/map/fan-out-tether";
 import { PulseAvatars } from "@/components/map/pulse-avatars";
 import { type PlaceResult } from "@/components/map/places-autocomplete";
+import { setsEqual } from "@/lib/set-utils";
 
 interface TripMapProps {
   nodes: DocumentData[];
@@ -26,8 +27,10 @@ interface TripMapProps {
   onMapClick?: (place: PlaceResult) => void;
   selectedNodeId?: string | null;
   selectedEdgeId?: string | null;
-  skipInitialFit?: boolean;
-  onInitialFitDone?: () => void;
+  /** Plan id currently being viewed. When this changes, the map re-fits to the new plan's nodes. */
+  planId?: string | null;
+  /** Hold off the initial fit until the parent has resolved any pre-fit state (e.g. path mode). Defaults to true. */
+  readyForInitialFit?: boolean;
   savedCamera?: { center: { lat: number; lng: number }; zoom: number } | null;
   onCameraChange?: (camera: { center: { lat: number; lng: number }; zoom: number }) => void;
   pulseLocations?: DocumentData[];
@@ -86,8 +89,8 @@ export function TripMap({
   onMapClick,
   selectedNodeId,
   selectedEdgeId,
-  skipInitialFit,
-  onInitialFitDone,
+  planId,
+  readyForInitialFit = true,
   savedCamera,
   onCameraChange,
   pulseLocations,
@@ -172,12 +175,9 @@ export function TripMap({
       bounds.extend({ lat: n.lat_lng.lat, lng: n.lat_lng.lng });
     }
     targetMap.fitBounds(bounds, uiPadding);
-
-    google.maps.event.addListenerOnce(targetMap, "idle", () => {
-      const z = targetMap.getZoom() ?? 10;
-      if (z > 14) targetMap.setZoom(14);
-      if (z < 3) targetMap.setZoom(3);
-    });
+    const z = targetMap.getZoom() ?? 10;
+    if (z > 14) targetMap.setZoom(14);
+    if (z < 3) targetMap.setZoom(3);
   }, [uiPadding]);
 
   // Resolve which nodes to use for initial fit: scope to "my" nodes when in My Path mode
@@ -188,24 +188,51 @@ export function TripMap({
     return nodes;
   }, [nodes, myNodeIds]);
 
-  // Fit map bounds on initial load (skip if returning from settings/agent)
-  useEffect(() => {
-    if (!map || skipInitialFit) return;
-    fitToNodes(map, initialFitNodes, false);
-    onInitialFitDone?.();
-  }, [map, initialFitNodes, skipInitialFit, onInitialFitDone, fitToNodes]);
+  // True once we've performed the initial fit (or accepted a saved camera in lieu of fitting).
+  // Persists across re-renders so subsequent Firestore updates don't trigger refits.
+  const hasFittedRef = useRef(false);
 
-  // Re-fit bounds (animated) when user toggles path filter after initial load
+  // Reset the fit guard when the user switches plans — the geographic set has
+  // materially changed and a fresh fit is appropriate once the new plan's nodes arrive.
+  const prevPlanIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (prevPlanIdRef.current === undefined) {
+      prevPlanIdRef.current = planId;
+      return;
+    }
+    if (prevPlanIdRef.current === planId) return;
+    prevPlanIdRef.current = planId;
+    hasFittedRef.current = false;
+  }, [planId]);
+
+  // The fit effect runs on every Firestore update but the hasFittedRef guard
+  // makes it a cheap noop after the initial fit, so the camera stays put.
+  useEffect(() => {
+    if (!map || hasFittedRef.current) return;
+    // A restored camera (sessionStorage on remount) is the user's last viewport — honor it.
+    if (savedCamera) {
+      hasFittedRef.current = true;
+      return;
+    }
+    if (!readyForInitialFit) return;
+    if (initialFitNodes.length === 0) return;
+    fitToNodes(map, initialFitNodes, false);
+    hasFittedRef.current = true;
+  }, [map, initialFitNodes, savedCamera, readyForInitialFit, fitToNodes]);
+
+  // Re-fit bounds (animated) when the user toggles the path filter or when their
+  // resolved path materially changes (e.g. after resolving a divergence). The set
+  // identity churns on every Firestore snapshot, so compare by content instead.
   const prevMyNodeIdsRef = useRef<Set<string> | null | undefined>(undefined);
   useEffect(() => {
-    // Skip the very first render (initial fit handles it)
-    if (prevMyNodeIdsRef.current === undefined) {
+    const prev = prevMyNodeIdsRef.current;
+    // Skip the very first render (initial fit handles it).
+    if (prev === undefined) {
       prevMyNodeIdsRef.current = myNodeIds;
       return;
     }
-    // Only re-fit if myNodeIds actually changed (user toggled filter)
-    if (prevMyNodeIdsRef.current === myNodeIds) return;
     prevMyNodeIdsRef.current = myNodeIds;
+    if (setsEqual(prev, myNodeIds)) return;
 
     if (!map) return;
     const targetNodes = myNodeIds && myNodeIds.size > 0
@@ -376,7 +403,7 @@ export function TripMap({
   // Compute pixel distances for each edge (between its from/to nodes)
   // zoomTick is included in deps to recompute when the user zooms/pans.
   const edgePixelDistances = useMemo(() => {
-    if (!map || zoomTick < 0) return new Map<string, number>();
+    if (!map) return new Map<string, number>();
     const distances = new Map<string, number>();
     for (const edge of edges) {
       const from = nodeMap.get(edge.from_node_id);
@@ -390,7 +417,7 @@ export function TripMap({
 
   // Compute proximity scale for each node based on minimum pixel distance to any neighbor
   const nodeProximityScales = useMemo(() => {
-    if (!map || zoomTick < 0) return new Map<string, number>();
+    if (!map) return new Map<string, number>();
 
     // Build adjacency: for each node, find its nearest neighbor pixel distance
     const minDistances = new Map<string, number>();
@@ -422,7 +449,7 @@ export function TripMap({
   // Returns a Map of nodeId -> { lat, lng, realLat, realLng } for displaced nodes.
   const nodeFanOutPositions = useMemo(() => {
     const positions = new Map<string, { lat: number; lng: number; realLat: number; realLng: number }>();
-    if (!map || zoomTick < 0) return positions;
+    if (!map) return positions;
 
     const projection = map.getProjection();
     const zoom = map.getZoom();
@@ -683,7 +710,6 @@ export function TripMap({
             type={node.type}
             lat={fanOut?.lat ?? node.lat_lng?.lat ?? 0}
             lng={fanOut?.lng ?? node.lat_lng?.lng ?? 0}
-            arrivalTime={node.arrival_time}
             selected={selectedNodeId === node.id}
             isMergeNode={mergeNodeIds?.has(node.id)}
             isStartNode={rootNodeIds.has(node.id)}

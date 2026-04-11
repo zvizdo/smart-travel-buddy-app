@@ -198,12 +198,20 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   );
 }, (prev, next) =>
   prev.nodeId === next.nodeId &&
+  prev.name === next.name &&
+  prev.type === next.type &&
+  prev.timezone === next.timezone &&
   prev.selected === next.selected &&
   prev.dimmed === next.dimmed &&
   prev.heightPx === next.heightPx &&
   prev.arrivalTime === next.arrivalTime &&
   prev.departureTime === next.departureTime &&
-  prev.isShared === next.isShared
+  prev.hasMissingTime === next.hasMissingTime &&
+  prev.isInterpolated === next.isInterpolated &&
+  prev.hasTimingConflict === next.hasTimingConflict &&
+  prev.isShared === next.isShared &&
+  prev.datetimeFormat === next.datetimeFormat &&
+  prev.dateFormat === next.dateFormat
 );
 
 const MIN_HEIGHT = 56;

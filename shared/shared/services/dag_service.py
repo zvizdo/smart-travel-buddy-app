@@ -16,7 +16,7 @@ from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
 from shared.repositories.trip_repository import TripRepository
-from shared.tools.id_gen import edge_id, node_id, plan_id
+from shared.tools.id_gen import edge_id, node_id
 
 if TYPE_CHECKING:
     from shared.services.route_service import RouteService
@@ -29,8 +29,6 @@ from shared.models import (
     Node,
     NodeType,
     NotificationType,
-    Plan,
-    PlanStatus,
     RelatedEntity,
     TravelMode,
 )
@@ -73,6 +71,18 @@ class DAGService:
         self._edge_repo = edge_repo
         self._route_service = route_service
         self._action_repo = action_repo
+        # Holds strong references to background polyline tasks so they don't
+        # get collected mid-flight. Tasks remove themselves on completion.
+        self._background_tasks: set[asyncio.Task] = set()
+
+    def _spawn_background(self, coro) -> asyncio.Task:
+        """Fire-and-forget helper that keeps a strong reference to the task
+        until it completes, so the asyncio event loop can't drop it early.
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     async def _find_existing_edge(
         self,
@@ -80,9 +90,19 @@ class DAGService:
         plan_id: str,
         from_node_id: str,
         to_node_id: str,
+        existing_edges: list[dict] | None = None,
     ) -> dict | None:
-        """Return an existing edge between the two nodes, or None."""
-        edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
+        """Return an existing edge between the two nodes, or None.
+
+        If `existing_edges` is provided, scan it instead of re-fetching the
+        full edge list — lets callers that already have the list avoid the
+        redundant Firestore read.
+        """
+        edges = (
+            existing_edges
+            if existing_edges is not None
+            else await self._edge_repo.list_by_plan(trip_id, plan_id)
+        )
         for e in edges:
             if e["from_node_id"] == from_node_id and e["to_node_id"] == to_node_id:
                 return e
@@ -95,6 +115,7 @@ class DAGService:
         edge: Edge,
         from_latlng: dict | None = None,
         to_latlng: dict | None = None,
+        existing_edges: list[dict] | None = None,
     ) -> dict:
         """Create an edge only if no edge exists between the same from/to pair.
 
@@ -104,9 +125,13 @@ class DAGService:
         If the new edge has no route_polyline, is not a flight, and a
         RouteService is available, fires a background task to fetch and
         patch the polyline.
+
+        Pass `existing_edges` when the caller already fetched the edge list
+        (e.g. for a cycle check) so we don't re-read the whole collection.
         """
         existing = await self._find_existing_edge(
             trip_id, plan_id, edge.from_node_id, edge.to_node_id,
+            existing_edges=existing_edges,
         )
         if existing:
             return existing
@@ -116,7 +141,7 @@ class DAGService:
             and edge.travel_mode not in (TravelMode.FLIGHT, TravelMode.FERRY)
             and self._route_service is not None
         ):
-            asyncio.create_task(
+            self._spawn_background(
                 self._route_service.fetch_and_patch_polyline(
                     trip_id=trip_id,
                     plan_id=plan_id,
@@ -141,6 +166,32 @@ class DAGService:
             "nodes": nodes,
             "edges": edges,
         }
+
+    async def get_edge(
+        self, trip_id: str, plan_id: str, edge_id: str
+    ) -> dict | None:
+        """Fetch a single edge as a dict, or None if it does not exist."""
+        return await self._edge_repo.get(
+            edge_id, trip_id=trip_id, plan_id=plan_id,
+        )
+
+    async def get_node_name(
+        self, trip_id: str, plan_id: str, node_id: str, default: str | None = None
+    ) -> str:
+        """Return a node's display name, or `default` (or the node_id) if missing."""
+        data = await self._node_repo.get(
+            node_id, trip_id=trip_id, plan_id=plan_id,
+        )
+        if data is None:
+            return default if default is not None else node_id
+        return data.get("name") or (default if default is not None else node_id)
+
+    async def set_active_plan(self, trip_id: str, plan_id: str) -> None:
+        """Set the trip's active plan pointer and bump updated_at."""
+        await self._trip_repo.update_trip(trip_id, {
+            "active_plan_id": plan_id,
+            "updated_at": datetime.now(UTC).isoformat(),
+        })
 
     async def create_node(
         self,
@@ -610,7 +661,7 @@ class DAGService:
     ) -> None:
         """Fire background polyline recalculation for all edges connected to a node.
 
-        Called when a node's location changes. Skips flight edges.
+        Called when a node's location changes. Skips flight/ferry edges.
         """
         if not self._route_service:
             return
@@ -620,33 +671,35 @@ class DAGService:
             e for e in all_edges
             if e["from_node_id"] == node_id or e["to_node_id"] == node_id
         ]
+        if not connected:
+            return
 
+        # Batch-fetch every distinct other-endpoint node in a single
+        # list_by_plan call, then look up lat/lng from the in-memory map.
+        # Previously this did one get_node_or_raise per connected edge.
+        all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
+        node_latlng_by_id: dict[str, dict | None] = {}
+        for n in all_nodes:
+            ll = n.get("lat_lng")
+            if ll and ll.get("lat") is not None and ll.get("lng") is not None:
+                node_latlng_by_id[n["id"]] = {"lat": ll["lat"], "lng": ll["lng"]}
+            else:
+                node_latlng_by_id[n["id"]] = None
+
+        queued = 0
         for edge_dict in connected:
             travel_mode = edge_dict.get("travel_mode", "drive")
             if travel_mode in ("flight", "ferry"):
                 continue
 
-            # Determine the other endpoint's latlng
             if edge_dict["from_node_id"] == node_id:
                 from_latlng = new_latlng
-                other_node = await self._node_repo.get_node_or_raise(
-                    trip_id, plan_id, edge_dict["to_node_id"]
-                )
-                to_latlng = (
-                    {"lat": other_node.lat_lng.lat, "lng": other_node.lat_lng.lng}
-                    if other_node.lat_lng else None
-                )
+                to_latlng = node_latlng_by_id.get(edge_dict["to_node_id"])
             else:
                 to_latlng = new_latlng
-                other_node = await self._node_repo.get_node_or_raise(
-                    trip_id, plan_id, edge_dict["from_node_id"]
-                )
-                from_latlng = (
-                    {"lat": other_node.lat_lng.lat, "lng": other_node.lat_lng.lng}
-                    if other_node.lat_lng else None
-                )
+                from_latlng = node_latlng_by_id.get(edge_dict["from_node_id"])
 
-            asyncio.create_task(
+            self._spawn_background(
                 self._route_service.fetch_and_patch_polyline(
                     trip_id=trip_id,
                     plan_id=plan_id,
@@ -657,10 +710,11 @@ class DAGService:
                     edge_repo=self._edge_repo,
                 )
             )
+            queued += 1
 
         logger.debug(
             "Queued polyline recalculation for %d edges connected to node %s",
-            len(connected), node_id,
+            queued, node_id,
         )
 
     async def _compute_cascade_preview(
@@ -733,15 +787,22 @@ class DAGService:
             return 0
 
         all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
-        cleaned = 0
-        for node_dict in all_nodes:
-            if node_dict.get("participant_ids"):
-                await self._node_repo.update_node(
-                    trip_id, plan_id, node_dict["id"],
+        to_clean = [n for n in all_nodes if n.get("participant_ids")]
+        if not to_clean:
+            return 0
+
+        node_col = self._node_repo._collection(trip_id=trip_id, plan_id=plan_id)
+        db = self._node_repo._db
+        batch_size = 500
+        for i in range(0, len(to_clean), batch_size):
+            batch = db.batch()
+            for node_dict in to_clean[i : i + batch_size]:
+                batch.update(
+                    node_col.document(node_dict["id"]),
                     {"participant_ids": None},
                 )
-                cleaned += 1
-        return cleaned
+            await batch.commit()
+        return len(to_clean)
 
     async def create_standalone_edge(
         self,
@@ -763,12 +824,11 @@ class DAGService:
         from_node = await self._node_repo.get_node_or_raise(trip_id, plan_id, from_node_id)
         to_node = await self._node_repo.get_node_or_raise(trip_id, plan_id, to_node_id)
 
-        # Cycle check — reject before expensive route data fetch
+        # Cycle check — reject before expensive route data fetch. The same
+        # edge list is reused for the duplicate-edge check below so we only
+        # hit Firestore once.
         existing_edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
-        edge_dicts = [{"from_node_id": e.from_node_id, "to_node_id": e.to_node_id}
-                      if hasattr(e, "from_node_id") else e
-                      for e in existing_edges]
-        cycle_path = would_create_cycle(from_node_id, to_node_id, edge_dicts)
+        cycle_path = would_create_cycle(from_node_id, to_node_id, existing_edges)
         if cycle_path:
             raise CycleDetectedError(cycle_path)
 
@@ -826,6 +886,7 @@ class DAGService:
             trip_id, plan_id, edge,
             from_latlng=from_latlng,
             to_latlng=to_latlng,
+            existing_edges=existing_edges,
         )
 
     async def delete_edge_by_id(
@@ -883,7 +944,6 @@ class DAGService:
 
         # Split travel time proportionally if not provided
         orig_time = original.travel_time_hours or 0
-        orig_dist = original.distance_km or 0
         if leg_a_travel_time_hours is None and leg_b_travel_time_hours is None:
             if leg_a_distance_km and leg_b_distance_km and (leg_a_distance_km + leg_b_distance_km) > 0:
                 ratio = leg_a_distance_km / (leg_a_distance_km + leg_b_distance_km)
@@ -997,14 +1057,14 @@ class DAGService:
 
         if self._route_service:
             if edge_a.route_polyline is None and mode_a not in (TravelMode.FLIGHT, TravelMode.FERRY):
-                asyncio.create_task(
+                self._spawn_background(
                     self._route_service.fetch_and_patch_polyline(
                         trip_id, plan_id, edge_a.id,
                         from_latlng, new_latlng, str(mode_a), self._edge_repo,
                     )
                 )
             if edge_b.route_polyline is None and mode_b not in (TravelMode.FLIGHT, TravelMode.FERRY):
-                asyncio.create_task(
+                self._spawn_background(
                     self._route_service.fetch_and_patch_polyline(
                         trip_id, plan_id, edge_b.id,
                         new_latlng, to_latlng, str(mode_b), self._edge_repo,
@@ -1068,10 +1128,9 @@ class DAGService:
         max_order = max((n.get("order_index", 0) for n in all_nodes_raw), default=0)
 
         # Resolve arrival time
-        if arrival_time:
-            resolved_arrival = parse_dt(arrival_time)
-        else:
-            resolved_arrival = datetime.now(UTC)
+        resolved_arrival = (
+            parse_dt(arrival_time) if arrival_time else datetime.now(UTC)
+        )
 
         resolved_departure: datetime | None = None
         if departure_time:
@@ -1165,9 +1224,9 @@ class DAGService:
 
         # Fire background polyline fetch for edges missing polylines
         if self._route_service:
-            for e, (from_ll, to_ll) in zip(edges_to_create, edge_latlng_pairs):
+            for e, (from_ll, to_ll) in zip(edges_to_create, edge_latlng_pairs, strict=True):
                 if e.route_polyline is None and e.travel_mode not in (TravelMode.FLIGHT, TravelMode.FERRY):
-                    asyncio.create_task(
+                    self._spawn_background(
                         self._route_service.fetch_and_patch_polyline(
                             trip_id, plan_id, e.id,
                             from_ll, to_ll, str(e.travel_mode), self._edge_repo,

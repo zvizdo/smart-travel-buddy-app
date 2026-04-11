@@ -3,12 +3,8 @@ from backend.src.repositories.invite_link_repository import InviteLinkRepository
 from backend.src.repositories.notification_repository import NotificationRepository
 from backend.src.repositories.preference_repository import PreferenceRepository
 from backend.src.services.agent_service import AgentService
-from shared.services.dag_service import DAGService
-from shared.services.flight_service import FlightService
 from backend.src.services.invite_service import InviteService
 from backend.src.services.notification_service import NotificationService
-from shared.services.plan_service import PlanService
-from shared.services.route_service import RouteService
 from backend.src.services.trip_service import TripService
 from backend.src.services.user_service import UserService
 from fastapi import Depends, Request
@@ -22,6 +18,10 @@ from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
 from shared.repositories.trip_repository import TripRepository
 from shared.repositories.user_repository import UserRepository
+from shared.services.dag_service import DAGService
+from shared.services.flight_service import FlightService
+from shared.services.plan_service import PlanService
+from shared.services.route_service import RouteService
 
 
 def get_firestore(request: Request) -> AsyncClient:

@@ -119,67 +119,77 @@ class RouteService:
                 headers=headers,
                 timeout=5.0,
             )
-            if response.status_code != 200:
-                logger.warning(
-                    "Routes API returned %d: %s",
-                    response.status_code,
-                    response.text[:200],
-                )
-                return None
-
-            data = response.json()
-            routes = data.get("routes")
-            if not routes:
-                logger.warning("Routes API returned no routes for %r -> %r", from_latlng, to_latlng)
-                return None
-
-            route = routes[0]
-            polyline = route.get("polyline", {}).get("encodedPolyline")
-
-            # Duration comes as "3600s" string
-            duration_str = route.get("duration")
-            duration_seconds = None
-            if duration_str and isinstance(duration_str, str) and duration_str.endswith("s"):
-                try:
-                    duration_seconds = int(duration_str[:-1])
-                except ValueError:
-                    pass
-
-            distance_meters = route.get("distanceMeters")
-
-            # Extract route advisory warnings
-            _NOISE = {"This route includes a highway."}
-            _ADVISORY_PATTERNS = ("may be closed", "parts of this road")
-            warnings: list[str] = []
-            for w in route.get("warnings", []):
-                if w not in _NOISE:
-                    warnings.append(w)
-            for leg in route.get("legs", []):
-                for step in leg.get("steps", []):
-                    instr = (
-                        step.get("navigationInstruction", {})
-                        .get("instructions", "")
-                    )
-                    if any(p in instr.lower() for p in _ADVISORY_PATTERNS):
-                        if instr not in warnings:
-                            warnings.append(instr)
-
-            return RouteData(
-                polyline=polyline,
-                duration_seconds=duration_seconds,
-                distance_meters=distance_meters,
-                warnings=warnings or None,
-            )
-
-        except Exception:
+        except httpx.TimeoutException:
             logger.warning(
-                "Failed to fetch route data from %r to %r (mode=%r)",
-                from_latlng,
-                to_latlng,
-                travel_mode,
-                exc_info=True,
+                "Routes API timed out for %r -> %r (mode=%r)",
+                from_latlng, to_latlng, travel_mode,
             )
             return None
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Routes API transport error for %r -> %r (mode=%r): %s",
+                from_latlng, to_latlng, travel_mode, exc,
+            )
+            return None
+
+        if response.status_code != 200:
+            logger.warning(
+                "Routes API returned %d: %s",
+                response.status_code,
+                response.text[:200],
+            )
+            return None
+
+        try:
+            data = response.json()
+        except ValueError:
+            logger.warning("Routes API returned non-JSON response")
+            return None
+
+        routes = data.get("routes")
+        if not routes:
+            logger.warning("Routes API returned no routes for %r -> %r", from_latlng, to_latlng)
+            return None
+
+        route = routes[0]
+        polyline = route.get("polyline", {}).get("encodedPolyline")
+
+        # Duration comes as "3600s" string
+        duration_str = route.get("duration")
+        duration_seconds: int | None = None
+        if duration_str and isinstance(duration_str, str) and duration_str.endswith("s"):
+            try:
+                duration_seconds = int(duration_str[:-1])
+            except ValueError:
+                duration_seconds = None
+
+        distance_meters = route.get("distanceMeters")
+
+        # Extract route advisory warnings
+        noise = {"This route includes a highway."}
+        advisory_patterns = ("may be closed", "parts of this road")
+        warnings: list[str] = []
+        for w in route.get("warnings", []):
+            if w not in noise:
+                warnings.append(w)
+        for leg in route.get("legs", []):
+            for step in leg.get("steps", []):
+                instr = (
+                    step.get("navigationInstruction", {})
+                    .get("instructions", "")
+                )
+                if (
+                    any(p in instr.lower() for p in advisory_patterns)
+                    and instr not in warnings
+                ):
+                    warnings.append(instr)
+
+        return RouteData(
+            polyline=polyline,
+            duration_seconds=duration_seconds,
+            distance_meters=distance_meters,
+            warnings=warnings or None,
+        )
 
     async def fetch_and_patch_route_data(
         self,

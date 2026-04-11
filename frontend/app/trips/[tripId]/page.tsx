@@ -68,7 +68,7 @@ interface CascadePreviewData {
 }
 
 export default function TripMapPage() {
-  const { tripId, trip, plans, mapFitted, markMapFitted, mapCamera, setMapCamera, viewedPlanId, setViewedPlanId, setPlans } = useTripContext();
+  const { tripId, trip, plans, mapCamera, setMapCamera, viewedPlanId, setViewedPlanId, setPlans } = useTripContext();
   const { user } = useAuth();
   const activePlanId = trip?.active_plan_id ?? null;
 
@@ -813,8 +813,8 @@ export default function TripMapPage() {
                 onMapClick={handleMapClick}
                 selectedNodeId={selectedNodeId}
                 selectedEdgeId={selectedEdgeId}
-                skipInitialFit={mapFitted || (!pathModeReady && !mapCamera)}
-                onInitialFitDone={markMapFitted}
+                planId={displayPlanId}
+                readyForInitialFit={pathModeReady}
                 savedCamera={mapCamera}
                 onCameraChange={setMapCamera}
                 pulseLocations={liveLocations}

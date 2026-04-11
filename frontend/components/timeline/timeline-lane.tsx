@@ -313,5 +313,7 @@ export const TimelineLane = memo(function TimelineLane({
   prev.selectedNodeId === next.selectedNodeId &&
   prev.selectedEdgeId === next.selectedEdgeId &&
   prev.dimmedNodeIds === next.dimmedNodeIds &&
-  prev.timingConflictEdgeIds === next.timingConflictEdgeIds
+  prev.timingConflictEdgeIds === next.timingConflictEdgeIds &&
+  prev.nodes === next.nodes &&
+  prev.edges === next.edges
 );

@@ -3,9 +3,11 @@
 from fastmcp import Context
 from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
+from mcpserver.src.tools._helpers import tool_error_guard_text
 
 
 @mcp.tool()
+@tool_error_guard_text
 async def find_places(
     query: str,
     lat: float,

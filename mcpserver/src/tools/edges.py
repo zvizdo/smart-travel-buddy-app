@@ -2,10 +2,11 @@
 
 from fastmcp import Context
 from mcpserver.src.main import AppContext, mcp
-from mcpserver.src.tools._helpers import resolve_trip_plan
+from mcpserver.src.tools._helpers import resolve_trip_plan, tool_error_guard
 
 
 @mcp.tool()
+@tool_error_guard
 async def add_edge(
     trip_id: str,
     from_node_id: str,
@@ -42,6 +43,7 @@ async def add_edge(
 
 
 @mcp.tool()
+@tool_error_guard
 async def delete_edge(
     trip_id: str,
     edge_id: str,

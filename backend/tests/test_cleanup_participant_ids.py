@@ -11,7 +11,22 @@ def _make_service():
     plan_repo = MagicMock()
     node_repo = MagicMock()
     edge_repo = MagicMock()
-    return DAGService(trip_repo, plan_repo, node_repo, edge_repo)
+
+    # Stub the Firestore batch path so cleanup_stale_participant_ids can
+    # call node_repo._db.batch() -> batch.update(...) -> batch.commit().
+    batch = MagicMock()
+    batch.update = MagicMock()
+    batch.commit = AsyncMock()
+    node_repo._db = MagicMock()
+    node_repo._db.batch = MagicMock(return_value=batch)
+
+    collection = MagicMock()
+    collection.document = MagicMock(return_value=MagicMock())
+    node_repo._collection = MagicMock(return_value=collection)
+
+    svc = DAGService(trip_repo, plan_repo, node_repo, edge_repo)
+    svc._test_batch = batch  # expose for assertions
+    return svc
 
 
 class TestCleanupStaleParticipantIds:
@@ -28,12 +43,12 @@ class TestCleanupStaleParticipantIds:
             {"id": "B", "participant_ids": None},
             {"id": "C", "participant_ids": ["user_2"]},
         ])
-        svc._node_repo.update_node = AsyncMock()
 
         cleaned = await svc.cleanup_stale_participant_ids("trip1", "plan1")
 
         assert cleaned == 2
-        assert svc._node_repo.update_node.await_count == 2
+        assert svc._test_batch.update.call_count == 2
+        svc._test_batch.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_divergent_dag(self):
@@ -47,6 +62,7 @@ class TestCleanupStaleParticipantIds:
         cleaned = await svc.cleanup_stale_participant_ids("trip1", "plan1")
 
         assert cleaned == 0
+        svc._test_batch.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_cleanup_when_already_clean(self):
@@ -59,12 +75,11 @@ class TestCleanupStaleParticipantIds:
             {"id": "A", "participant_ids": None},
             {"id": "B", "participant_ids": None},
         ])
-        svc._node_repo.update_node = AsyncMock()
 
         cleaned = await svc.cleanup_stale_participant_ids("trip1", "plan1")
 
         assert cleaned == 0
-        svc._node_repo.update_node.assert_not_awaited()
+        svc._test_batch.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_dag(self):
@@ -96,7 +111,6 @@ class TestDeleteNodeCleansParticipantIds:
             {"id": "A", "participant_ids": ["user_1"]},
             {"id": "C", "participant_ids": ["user_2"]},
         ])
-        svc._node_repo.update_node = AsyncMock()
 
         result = await svc.delete_node("trip1", "plan1", "B")
 

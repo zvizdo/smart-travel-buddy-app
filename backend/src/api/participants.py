@@ -25,7 +25,8 @@ async def remove_participant(
     """Remove a participant from a trip. Admins can remove anyone; any participant can remove themselves."""
     # Capture trip state before removal for notifications
     trip = await trip_service.get_trip(trip_id, user["uid"])
-    target_name = trip.participants[user_id].display_name if user_id in trip.participants else "Unknown"
+    target_participant = trip.participants.get(user_id)
+    target_name = target_participant.display_name if target_participant else "Unknown"
     remaining_ids = [uid for uid in trip.participants if uid != user_id]
 
     result = await trip_service.remove_participant(trip_id, user_id, user["uid"])
@@ -51,8 +52,10 @@ async def change_participant_role(
 ):
     """Change a participant's role. Admin only."""
     trip = await trip_service.get_trip(trip_id, user["uid"])
-    target_name = trip.participants[user_id].display_name if user_id in trip.participants else "Unknown"
-    actor_name = trip.participants[user["uid"]].display_name if user["uid"] in trip.participants else "Unknown"
+    target_participant = trip.participants.get(user_id)
+    target_name = target_participant.display_name if target_participant else "Unknown"
+    actor_participant = trip.participants.get(user["uid"])
+    actor_name = actor_participant.display_name if actor_participant else "Unknown"
 
     result = await trip_service.change_participant_role(trip_id, user_id, body.role, user["uid"])
 

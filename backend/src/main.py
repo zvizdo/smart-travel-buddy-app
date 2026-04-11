@@ -1,3 +1,13 @@
+"""Smart Travel Buddy backend entry point.
+
+E402 is suppressed for this file: `load_dotenv` must run before any backend
+modules are imported so they can read env vars (Firebase creds, bucket names,
+etc.) at import time.
+"""
+
+# ruff: noqa: E402
+
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -5,6 +15,8 @@ from pathlib import Path
 import firebase_admin
 import httpx
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from backend.src.api import (
@@ -20,15 +32,17 @@ from backend.src.api import (
     trips,
     users,
 )
-from shared.services.flight_service import FlightService
-from shared.services.route_service import RouteService
+from backend.src.errors import ConflictError
+from backend.src.repositories.chat_history_repository import ChatHistoryError
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from backend.src.errors import ConflictError
-from shared.dag.cycle import CycleDetectedError
 from google.cloud.firestore import AsyncClient
 from google.cloud.storage import Client as GCSClient
+
+from shared.dag.cycle import CycleDetectedError
+from shared.services.flight_service import FlightService
+from shared.services.route_service import RouteService
 
 
 @asynccontextmanager
@@ -107,14 +121,26 @@ async def not_found_handler(request: Request, exc: LookupError):
     )
 
 
+@app.exception_handler(ChatHistoryError)
+async def chat_history_error_handler(request: Request, exc: ChatHistoryError):
+    logger.exception("Chat history store unavailable", exc_info=exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "code": "CHAT_HISTORY_UNAVAILABLE",
+                "message": "Chat history is temporarily unavailable. Please try again.",
+            },
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def generic_error_handler(request: Request, exc: Exception):
-    import traceback
-
-    traceback.print_exc()
+    logger.exception("Unhandled exception in request", exc_info=exc)
     return JSONResponse(
         status_code=500,
-        content={"error": {"code": "INTERNAL_ERROR", "message": str(exc)}},
+        content={"error": {"code": "INTERNAL_ERROR", "message": "Internal server error"}},
     )
 
 

@@ -129,16 +129,16 @@ class FlightService:
         # Validate IATA codes
         try:
             origin_airport = Airport[origin.upper()]
-        except KeyError:
+        except KeyError as exc:
             raise FlightSearchError(
                 f"Unknown airport code: {origin.upper()}. Use IATA codes like JFK, LHR, CDG."
-            )
+            ) from exc
         try:
             dest_airport = Airport[destination.upper()]
-        except KeyError:
+        except KeyError as exc:
             raise FlightSearchError(
                 f"Unknown airport code: {destination.upper()}. Use IATA codes like JFK, LHR, CDG."
-            )
+            ) from exc
 
         # Validate cabin and stops
         seat_type = _CABIN_MAP.get(cabin.lower())
@@ -256,7 +256,7 @@ def format_flight_results(result: FlightSearchResult) -> str:
             f"({result.date} / {result.return_date}):"
         )
         for i, (out, ret) in enumerate(
-            zip(result.outbound, result.return_flights), 1
+            zip(result.outbound, result.return_flights, strict=False), 1
         ):
             combined_price = out.price + ret.price
             sym = _CURRENCY_SYMBOLS.get(out.currency, out.currency + " ")

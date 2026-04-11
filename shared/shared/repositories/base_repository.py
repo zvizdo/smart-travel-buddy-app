@@ -50,7 +50,19 @@ class BaseRepository(ABC):
         """Delete a document by ID."""
         await self._collection(**path_params).document(doc_id).delete()
 
-    async def list_all(self, **path_params: str) -> list[dict[str, Any]]:
-        """List all documents in the collection."""
-        docs = self._collection(**path_params).stream()
+    async def list_all(
+        self, *, limit: int | None = None, **path_params: str
+    ) -> list[dict[str, Any]]:
+        """List all documents in the collection.
+
+        Pass ``limit`` when the caller knows an upper bound to cap the
+        in-memory result size. No limit means "stream everything" — fine
+        for small subcollections under a trip, but risky for unbounded
+        top-level collections, so new callers should think twice before
+        relying on the default.
+        """
+        query = self._collection(**path_params)
+        if limit is not None:
+            query = query.limit(limit)
+        docs = query.stream()
         return [doc.to_dict() async for doc in docs]

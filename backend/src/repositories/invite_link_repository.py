@@ -1,6 +1,7 @@
 from typing import Any
 
 from google.cloud.firestore import AsyncClient
+
 from shared.models import InviteLink
 from shared.repositories.base_repository import BaseRepository
 

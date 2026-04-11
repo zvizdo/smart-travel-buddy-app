@@ -11,6 +11,16 @@ SESSION_TTL_HOURS = 12
 logger = logging.getLogger(__name__)
 
 
+class ChatHistoryError(RuntimeError):
+    """Raised when the GCS-backed chat history store fails unexpectedly.
+
+    A missing blob or an expired session is not an error — those return
+    an empty history. This exception signals that GCS itself failed
+    (permissions, throttling, corrupt JSON) and the caller should decide
+    how to respond.
+    """
+
+
 class ChatHistoryRepository:
     """Read/write agent chat history from GCS.
 
@@ -35,9 +45,10 @@ class ChatHistoryRepository:
     def load(self, user_id: str, trip_id: str) -> tuple[list[dict], bool]:
         """Load chat history. Returns (messages, is_new_session).
 
-        If the file doesn't exist, the bucket is missing, or the session
-        has expired (>12h since last interaction), returns an empty list
-        with is_new_session=True.
+        Returns ([], True) when the blob does not exist or the session has
+        expired (>12h since last interaction). Raises ChatHistoryError on
+        underlying GCS or JSON decode failures so the caller knows the
+        history is unavailable rather than simply empty.
         """
         try:
             blob = self._get_blob(user_id, trip_id)
@@ -52,9 +63,9 @@ class ChatHistoryRepository:
             content = blob.download_as_text()
             messages = json.loads(content)
             return messages, False
-        except Exception:
-            logger.warning("Failed to load chat history, starting new session", exc_info=True)
-            return [], True
+        except Exception as exc:
+            logger.exception("Failed to load chat history from GCS")
+            raise ChatHistoryError("Failed to load chat history") from exc
 
     def save(self, user_id: str, trip_id: str, messages: list[dict]) -> None:
         """Save chat history to GCS, overwriting any existing file."""
@@ -64,14 +75,16 @@ class ChatHistoryRepository:
                 json.dumps(messages, default=str),
                 content_type="application/json",
             )
-        except Exception:
-            logger.warning("Failed to save chat history to GCS", exc_info=True)
+        except Exception as exc:
+            logger.exception("Failed to save chat history to GCS")
+            raise ChatHistoryError("Failed to save chat history") from exc
 
     def delete(self, user_id: str, trip_id: str) -> None:
-        """Delete chat history from GCS."""
+        """Delete chat history from GCS. Missing blob is a no-op."""
         try:
             blob = self._get_blob(user_id, trip_id)
             if blob.exists():
                 blob.delete()
-        except Exception:
-            logger.warning("Failed to delete chat history from GCS", exc_info=True)
+        except Exception as exc:
+            logger.exception("Failed to delete chat history from GCS")
+            raise ChatHistoryError("Failed to delete chat history") from exc

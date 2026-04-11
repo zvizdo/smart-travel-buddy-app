@@ -8,10 +8,9 @@ Tools are defined once in _define_all_tools() and composed into subsets
 by create_agent_tools() and create_build_tools().
 """
 
-from __future__ import annotations
-
 from backend.src.services.tool_executor import ToolExecutor
-from shared.services.flight_service import FlightService, FlightSearchError, format_flight_results
+
+from shared.services.flight_service import FlightSearchError, FlightService, format_flight_results
 
 
 def _define_all_tools(executor: ToolExecutor) -> dict:
@@ -22,9 +21,9 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
         type: str,
         lat: float,
         lng: float,
-        place_id: str = None,
-        arrival_time: str = None,
-        departure_time: str = None,
+        place_id: str | None = None,
+        arrival_time: str | None = None,
+        departure_time: str | None = None,
     ) -> dict:
         """Add a new stop to the trip itinerary. Returns the created node (including its ID).
 
@@ -52,14 +51,14 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
 
     async def update_node(
         node_id: str,
-        name: str = None,
-        type: str = None,
-        lat: float = None,
-        lng: float = None,
-        arrival_time: str = None,
-        departure_time: str = None,
+        name: str | None = None,
+        type: str | None = None,
+        lat: float | None = None,
+        lng: float | None = None,
+        arrival_time: str | None = None,
+        departure_time: str | None = None,
     ) -> dict:
-        """Update an existing stop. Only provide the fields you want to change. Schedule changes cascade downstream.
+        """Update an existing stop. Only provide the fields you want to change. Updates only this node — no downstream cascade.
 
         Args:
             node_id: ID of the node to update.
@@ -92,7 +91,7 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
         from_node_id: str,
         to_node_id: str,
         travel_mode: str = "drive",
-        notes: str = None,
+        notes: str | None = None,
     ) -> dict:
         """Create a connection between two existing stops. Travel time and distance are auto-calculated.
 
@@ -175,7 +174,7 @@ def create_search_tools(flight_service: FlightService) -> list:
         origin: str,
         destination: str,
         date: str,
-        return_date: str = None,
+        return_date: str | None = None,
         cabin: str = "economy",
         max_stops: str = "any",
         max_results: int = 5,

@@ -12,8 +12,6 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
-from google.cloud.firestore_v1.transforms import DELETE_FIELD
-
 from shared.dag.paths import compute_participant_paths
 from shared.models import (
     Action,
@@ -34,7 +32,9 @@ from shared.repositories import (
     TripRepository,
     UserRepository,
 )
-from shared.tools.id_gen import action_id, plan_id as gen_plan_id, trip_id as gen_trip_id
+from shared.tools.id_gen import action_id
+from shared.tools.id_gen import plan_id as gen_plan_id
+from shared.tools.id_gen import trip_id as gen_trip_id
 
 
 def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -239,13 +239,12 @@ class TripService:
             return []
 
         participants = trip_data.get("participants", {})
-        # Fetch user profiles to check location_tracking_enabled and get names
+        # Fetch user profiles in parallel to check location_tracking_enabled
+        # and get display names.
         user_ids = [loc.get("user_id") for loc in locations if loc.get("user_id")]
-        user_profiles: dict[str, Any] = {}
-        for uid in user_ids:
-            user = await self._user_repo.get_user(uid)
-            if user:
-                user_profiles[uid] = user
+        user_profiles: dict[str, Any] = await self._user_repo.get_users_by_ids(
+            user_ids
+        )
 
         # Build list of nodes with lat/lng for distance computation
         node_points = []
@@ -465,7 +464,7 @@ class TripService:
             actions_lists = plan_actions[plan_idx]
 
             # Actions (innermost)
-            for node, actions in zip(nodes, actions_lists):
+            for node, actions in zip(nodes, actions_lists, strict=True):
                 action_col = self._action_repo._collection(
                     trip_id=trip_id, plan_id=plan_id_val, node_id=node["id"]
                 )

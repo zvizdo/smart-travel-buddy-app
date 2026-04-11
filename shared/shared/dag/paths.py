@@ -238,7 +238,6 @@ def detect_unresolved_flows(
 
     Returns list of {user_id, divergence_node_id, message} for each unresolved flow.
     """
-    _, _ = build_adjacency(edges)
     node_map: dict[str, dict] = {n["id"]: n for n in nodes}
     divergences = detect_divergence_points(nodes, edges)
     warnings: list[dict] = []

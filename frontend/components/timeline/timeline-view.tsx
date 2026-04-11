@@ -7,6 +7,8 @@ import { TimelineDateGutter } from "./timeline-date-gutter";
 import { TimelineLane } from "./timeline-lane";
 import { TimelineEmptyState } from "./timeline-empty-state";
 
+const SCROLL_TOP_BUFFER_PX = 80;
+
 interface NodeData {
   id: string;
   name: string;
@@ -83,11 +85,6 @@ export function TimelineView({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const hasScrolledInitially = useRef(false);
 
-  const participantIds = useMemo(
-    () => Object.keys(participants),
-    [participants],
-  );
-
   const participantNames = useMemo(() => {
     const map = new Map<string, string>();
     for (const [uid, p] of Object.entries(participants)) {
@@ -104,12 +101,11 @@ export function TimelineView({
         pathResult,
         pathMode,
         currentUserId,
-        participantIds,
         zoomLevel,
         dateFormat,
         participantNames,
       ),
-    [nodes, edges, pathResult, pathMode, currentUserId, participantIds, zoomLevel, dateFormat, participantNames],
+    [nodes, edges, pathResult, pathMode, currentUserId, zoomLevel, dateFormat, participantNames],
   );
 
   // Anchor scroll position on zoom change so content stays centered
@@ -122,7 +118,9 @@ export function TimelineView({
       const newPxPerHour = PX_PER_HOUR[zoomLevel];
       const ratio = newPxPerHour / oldPxPerHour;
       const viewCenter = container.scrollTop + container.clientHeight / 2;
-      container.scrollTop = Math.max(0, viewCenter * ratio - container.clientHeight / 2);
+      const target = viewCenter * ratio - container.clientHeight / 2;
+      const maxScroll = Math.max(0, container.scrollHeight * ratio - container.clientHeight);
+      container.scrollTop = Math.min(maxScroll, Math.max(0, target));
     }
     prevZoomRef.current = zoomLevel;
   }, [zoomLevel]);
@@ -143,7 +141,7 @@ export function TimelineView({
     // Find today marker or just scroll to top
     const todayMarker = layout.dateMarkers.find((m) => m.isToday);
     if (todayMarker && scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = Math.max(0, todayMarker.yOffsetPx - 80);
+      scrollContainerRef.current.scrollTop = Math.max(0, todayMarker.yOffsetPx - SCROLL_TOP_BUFFER_PX);
     }
   }, [layout, nodes]);
 
@@ -343,21 +341,35 @@ function CurrentTimeIndicator({ layout, nodes }: {
     .filter((p) => p.resolvedArrival)
     .sort((a, b) => a.resolvedArrival!.getTime() - b.resolvedArrival!.getTime());
 
-  if (sortedNodes.length < 2) return null;
+  if (sortedNodes.length === 0) return null;
 
-  // Find surrounding nodes
+  // Find surrounding nodes and interpolate Y for current time
   let yOffset = 0;
+  let found = false;
   for (let i = 0; i < sortedNodes.length - 1; i++) {
     const curr = sortedNodes[i];
     const next = sortedNodes[i + 1];
-    if (nowMs >= curr.resolvedArrival!.getTime() && nowMs <= next.resolvedArrival!.getTime()) {
-      const ratio = (nowMs - curr.resolvedArrival!.getTime()) / (next.resolvedArrival!.getTime() - curr.resolvedArrival!.getTime());
+    const currMs = curr.resolvedArrival!.getTime();
+    const nextMs = next.resolvedArrival!.getTime();
+    if (nowMs >= currMs && nowMs <= nextMs) {
+      const span = nextMs - currMs;
+      const ratio = span > 0 ? (nowMs - currMs) / span : 0;
       yOffset = curr.yOffsetPx + ratio * (next.yOffsetPx - curr.yOffsetPx);
+      found = true;
       break;
     }
   }
 
-  if (yOffset === 0) return null;
+  // Single-node lane or exact match at the only node
+  if (!found && sortedNodes.length === 1) {
+    const only = sortedNodes[0];
+    if (nowMs >= only.resolvedArrival!.getTime()) {
+      yOffset = only.yOffsetPx;
+      found = true;
+    }
+  }
+
+  if (!found) return null;
 
   return (
     <div

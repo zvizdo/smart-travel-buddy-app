@@ -5,10 +5,12 @@ import os
 import time
 from datetime import UTC, datetime
 
-from backend.src.services.agent_tools import create_agent_tools, create_build_tools, create_search_tools
+from backend.src.services.agent_tools import (
+    create_agent_tools,
+    create_build_tools,
+    create_search_tools,
+)
 from backend.src.services.agent_user_context import build_user_context, build_user_context_text
-from shared.services.dag_service import DAGService
-from shared.services.flight_service import FlightService
 from backend.src.services.tool_executor import ToolExecutor
 from google import genai
 from google.genai import types
@@ -28,11 +30,35 @@ from shared.agent.schemas import (
     ImportChatResponse,
     OngoingChatResponse,
 )
+from shared.models import Preference, PreferenceCategory, Trip
+from shared.services.dag_service import DAGService
+from shared.services.flight_service import FlightService
 from shared.tools.id_gen import generate_id
 from shared.tools.trip_context import format_trip_context
-from shared.models import Preference, PreferenceCategory, Trip
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_response_text(response) -> str:
+    """Concatenate text parts from the first candidate.
+
+    Equivalent to ``response.text`` but without the SDK warning that fires
+    when the final candidate contains unexecuted ``function_call`` parts
+    (AFC hit its call cap or the model mixed text + function_call in the
+    last turn). Logs any pending function calls so we notice if it recurs.
+    """
+    if not response.candidates:
+        return ""
+    parts = response.candidates[0].content.parts or []
+    pending = [
+        p.function_call.name for p in parts if getattr(p, "function_call", None)
+    ]
+    if pending:
+        logger.warning(
+            "Agent response contained %d unexecuted function_call part(s): %s",
+            len(pending), pending,
+        )
+    return "".join(p.text for p in parts if getattr(p, "text", None))
 
 
 def build_trip_context(
@@ -154,21 +180,24 @@ class AgentService:
                     *tools,
                 ],
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                    maximum_remote_calls=128,
+                    maximum_remote_calls=256,
                 ),
             ),
         )
 
+        # Derive node/edge counts from the executor's recorded actions — this
+        # is the source of truth regardless of whether the structured reply
+        # parses. If the LLM echoes different counts in its JSON we still
+        # trust what actually hit Firestore.
+        node_count = sum(1 for a in executor.actions_taken if a.type == "node_added")
+        edge_count = sum(1 for a in executor.actions_taken if a.type == "edge_added")
+        response_text = _extract_response_text(response)
         try:
-            reply = BuildDagReply.model_validate_json(response.text)
+            reply = BuildDagReply.model_validate_json(response_text)
             summary = reply.summary
-            node_count = reply.node_count
-            edge_count = reply.edge_count
         except Exception:
-            logger.warning("Failed to parse BuildDagReply, using fallback", exc_info=True)
-            summary = response.text or "Trip built."
-            node_count = sum(1 for a in executor.actions_taken if a.type == "node_added")
-            edge_count = sum(1 for a in executor.actions_taken if a.type == "edge_added")
+            logger.warning("Failed to parse BuildDagReply, using raw text", exc_info=True)
+            summary = response_text or "Trip built."
 
         elapsed = time.perf_counter() - start
         logger.info(
@@ -245,20 +274,21 @@ class AgentService:
                     *tools,
                 ],
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                    maximum_remote_calls=50,
+                    maximum_remote_calls=100,
                 ),
             ),
         )
 
         # Parse structured reply (AgentReply: reply + preferences_extracted)
+        response_text = _extract_response_text(response)
         try:
-            agent_reply = AgentReply.model_validate_json(response.text)
+            agent_reply = AgentReply.model_validate_json(response_text)
             reply = agent_reply.reply
             preferences_extracted = agent_reply.preferences_extracted
         except Exception:
             # Fallback: use raw text if structured parsing fails
             logger.warning("Failed to parse AgentReply, using raw text", exc_info=True)
-            reply = response.text or "I wasn't able to generate a response."
+            reply = response_text or "I wasn't able to generate a response."
             preferences_extracted = []
 
         elapsed = time.perf_counter() - start

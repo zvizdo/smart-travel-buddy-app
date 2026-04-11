@@ -2,13 +2,64 @@
 
 from fastmcp import Context
 from mcpserver.src.main import AppContext, mcp
-from mcpserver.src.tools._helpers import resolve_trip_participant
+from mcpserver.src.tools._helpers import (
+    resolve_trip_participant,
+    tool_error_guard,
+    tool_error_guard_text,
+)
+
 from shared.models import ActionType, PlaceData
 
 _VALID_TYPES = {t.value for t in ActionType}
 
 
+def _build_place_data(
+    action_type: ActionType,
+    *,
+    place_name: str | None,
+    place_id: str | None,
+    place_lat: float | None,
+    place_lng: float | None,
+    place_category: str | None,
+) -> PlaceData | None:
+    """Validate and construct PlaceData for an action.
+
+    Returns None for note/todo actions. For place actions, requires
+    place_name and place_id. Raises ValueError on any misuse.
+    """
+    place_fields_set = any(
+        v is not None
+        for v in (place_name, place_id, place_lat, place_lng, place_category)
+    )
+
+    if action_type != ActionType.PLACE:
+        if place_fields_set:
+            raise ValueError(
+                f"place_* fields are only allowed when type='place' "
+                f"(got type='{action_type.value}')."
+            )
+        return None
+
+    if not place_name or not place_id:
+        raise ValueError(
+            "type='place' requires both place_name and place_id. "
+            "Call find_places first to obtain a Google place_id."
+        )
+
+    lat_lng = None
+    if place_lat is not None and place_lng is not None:
+        lat_lng = {"lat": place_lat, "lng": place_lng}
+
+    return PlaceData(
+        name=place_name,
+        place_id=place_id,
+        lat_lng=lat_lng,
+        category=place_category,
+    )
+
+
 @mcp.tool()
+@tool_error_guard
 async def add_action(
     trip_id: str,
     node_id: str,
@@ -30,7 +81,7 @@ async def add_action(
         trip_id: The trip identifier.
         node_id: The stop to attach the action to. Must exist on the target plan.
         type: One of 'note', 'todo', or 'place'.
-        content: Text body of the action (1–2000 chars). For 'place', use this
+        content: Text body of the action (1-2000 chars). For 'place', use this
             for a short description or reason ("cheap dinner spot", "must try").
         plan_id: Optional plan to target. Defaults to the trip's active plan.
         place_name: Display name of the place. **Required when type='place'.**
@@ -51,31 +102,14 @@ async def add_action(
         )
     action_type = ActionType(type)
 
-    place_fields_set = any(
-        v is not None
-        for v in (place_name, place_id, place_lat, place_lng, place_category)
+    place_data = _build_place_data(
+        action_type,
+        place_name=place_name,
+        place_id=place_id,
+        place_lat=place_lat,
+        place_lng=place_lng,
+        place_category=place_category,
     )
-
-    place_data: PlaceData | None = None
-    if action_type == ActionType.PLACE:
-        if not place_name or not place_id:
-            raise ValueError(
-                "type='place' requires both place_name and place_id. "
-                "Call find_places first to obtain a Google place_id."
-            )
-        lat_lng = None
-        if place_lat is not None and place_lng is not None:
-            lat_lng = {"lat": place_lat, "lng": place_lng}
-        place_data = PlaceData(
-            name=place_name,
-            place_id=place_id,
-            lat_lng=lat_lng,
-            category=place_category,
-        )
-    elif place_fields_set:
-        raise ValueError(
-            f"place_* fields are only allowed when type='place' (got type='{type}')."
-        )
 
     return await app.trip_service.add_action(
         user_id=user_id,
@@ -89,6 +123,7 @@ async def add_action(
 
 
 @mcp.tool()
+@tool_error_guard_text
 async def list_actions(
     trip_id: str,
     node_id: str,
@@ -159,6 +194,7 @@ async def list_actions(
 
 
 @mcp.tool()
+@tool_error_guard
 async def delete_action(
     trip_id: str,
     node_id: str,

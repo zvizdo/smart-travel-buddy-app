@@ -2,10 +2,11 @@
 
 from fastmcp import Context
 from mcpserver.src.main import AppContext, mcp
-from mcpserver.src.tools._helpers import resolve_trip_plan
+from mcpserver.src.tools._helpers import resolve_trip_plan, tool_error_guard
 
 
 @mcp.tool()
+@tool_error_guard
 async def add_node(
     trip_id: str,
     name: str,
@@ -56,6 +57,7 @@ async def add_node(
 
 
 @mcp.tool()
+@tool_error_guard
 async def update_node(
     trip_id: str,
     node_id: str,
@@ -102,7 +104,7 @@ async def update_node(
         updates["departure_time"] = departure_time
 
     if not updates:
-        return {"error": "No fields to update."}
+        raise ValueError("No fields to update.")
 
     node = await app.dag_service.update_node_only(
         trip_id=trip_id,
@@ -114,6 +116,7 @@ async def update_node(
 
 
 @mcp.tool()
+@tool_error_guard
 async def delete_node(
     trip_id: str,
     node_id: str,
