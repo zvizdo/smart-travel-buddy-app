@@ -6,11 +6,12 @@ import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { useTripContext, type PlanData } from "@/app/trips/[tripId]/layout";
 import { useAuth } from "@/components/auth/auth-provider";
 import { api } from "@/lib/api";
-import { useTripNodes, useTripEdges, usePulseLocations, useNodeActions } from "@/lib/firestore-hooks";
+import { usePulseLocations, useNodeActions } from "@/lib/firestore-hooks";
+import { useEnrichedNodes } from "@/lib/use-enriched-nodes";
+import type { TripSettingsLike } from "@/lib/time-inference";
 import { TripMap } from "@/components/map/trip-map";
 import { NodeDetailSheet } from "@/components/dag/node-detail-sheet";
 import { EdgeDetail } from "@/components/dag/edge-detail";
-import { CascadePreview } from "@/components/dag/cascade-preview";
 import { NotificationBell } from "@/components/ui/notification-bell";
 import { PathFilter } from "@/components/map/path-filter";
 import { AddNodeSheet } from "@/components/dag/add-node-sheet";
@@ -40,8 +41,19 @@ interface NodeData {
   lat_lng: { lat: number; lng: number } | null;
   arrival_time: string | null;
   departure_time: string | null;
+  duration_minutes?: number | null;
   order_index: number;
   participant_ids?: string[] | null;
+  timezone?: string | null;
+  // Enrichment flags appended by `useEnrichedNodes` / `enrichDagTimes`.
+  arrival_time_estimated?: boolean;
+  departure_time_estimated?: boolean;
+  duration_estimated?: boolean;
+  timing_conflict?: string | null;
+  overnight_hold?: boolean;
+  hold_reason?: "night_drive" | "max_drive_hours" | null;
+  is_start?: boolean;
+  is_end?: boolean;
   [key: string]: unknown;
 }
 
@@ -55,16 +67,28 @@ interface EdgeData {
   [key: string]: unknown;
 }
 
-interface CascadePreviewData {
-  affected_nodes: {
-    id: string;
-    name: string;
-    old_arrival: string | null;
-    new_arrival: string;
-    old_departure: string | null;
-    new_departure: string;
-  }[];
-  conflicts: { id: string; message: string }[];
+interface ImpactShift {
+  id: string;
+  name: string;
+  old_arrival: string | null;
+  new_arrival: string | null;
+}
+
+interface ImpactConflict {
+  id: string;
+  name: string;
+  message: string;
+}
+
+interface ImpactOvernightHold {
+  id: string;
+  reason: "night_drive" | "max_drive_hours";
+}
+
+interface ImpactPreview {
+  estimated_shifts: ImpactShift[];
+  new_conflicts: ImpactConflict[];
+  new_overnight_holds: ImpactOvernightHold[];
 }
 
 export default function TripMapPage() {
@@ -82,14 +106,19 @@ export default function TripMapPage() {
     }
   }
 
-  const { data: liveNodes, loading: nodesLoading } = useTripNodes(
-    tripId,
-    displayPlanId,
+  const enrichmentSettings = useMemo<TripSettingsLike>(
+    () => ({
+      no_drive_window: trip?.settings?.no_drive_window ?? null,
+      max_drive_hours_per_day: trip?.settings?.max_drive_hours_per_day ?? null,
+    }),
+    [trip?.settings?.no_drive_window, trip?.settings?.max_drive_hours_per_day],
   );
-  const { data: liveEdges, loading: edgesLoading } = useTripEdges(
-    tripId,
-    displayPlanId,
-  );
+
+  const {
+    nodes: liveNodes,
+    edges: liveEdges,
+    loading: enrichmentLoading,
+  } = useEnrichedNodes(tripId, displayPlanId, enrichmentSettings);
 
   const { data: rawLocations } = usePulseLocations(tripId);
 
@@ -111,29 +140,9 @@ export default function TripMapPage() {
     }
   }, [online]);
 
-  const nodes = liveNodes as NodeData[];
-  const edges = liveEdges as EdgeData[];
-  const loading = nodesLoading || edgesLoading;
-
-  // Clear recalculating state when edges update from Firestore
-  const prevEdgePolylinesRef = useRef<Map<string, unknown>>(new Map());
-  useEffect(() => {
-    const prev = prevEdgePolylinesRef.current;
-    const changed: string[] = [];
-    for (const e of edges) {
-      if (prev.has(e.id) && prev.get(e.id) !== (e as Record<string, unknown>).route_polyline) {
-        changed.push(e.id);
-      }
-      prev.set(e.id, (e as Record<string, unknown>).route_polyline);
-    }
-    if (changed.length > 0) {
-      setRecalculatingEdges((s) => {
-        const next = new Set(s);
-        for (const id of changed) next.delete(id);
-        return next.size === s.size ? s : next;
-      });
-    }
-  }, [edges]);
+  const nodes = liveNodes as unknown as NodeData[];
+  const edges = liveEdges as unknown as EdgeData[];
+  const loading = enrichmentLoading;
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -170,11 +179,6 @@ export default function TripMapPage() {
     [nodeActions, deletedActionIds],
   );
 
-  const [cascadePreview, setCascadePreview] =
-    useState<CascadePreviewData | null>(null);
-  const [cascadeNodeId, setCascadeNodeId] = useState<string | null>(null);
-  const [cascadeLoading, setCascadeLoading] = useState(false);
-
   const [pathMode, setPathMode] = useState<"all" | "mine">("all");
   const pathModeInitialized = useRef(false);
   // Tracks whether the path mode decision has been made (so map can wait for it)
@@ -183,6 +187,26 @@ export default function TripMapPage() {
   const [addNodePlace, setAddNodePlace] = useState<PlaceResult | null>(null);
   const [insertEdgeId, setInsertEdgeId] = useState<string | null>(null);
   const [recalculatingEdges, setRecalculatingEdges] = useState<Set<string>>(new Set());
+
+  // Clear recalculating state when edges update from Firestore
+  const prevEdgePolylinesRef = useRef<Map<string, unknown>>(new Map());
+  useEffect(() => {
+    const prev = prevEdgePolylinesRef.current;
+    const changed: string[] = [];
+    for (const e of edges) {
+      if (prev.has(e.id) && prev.get(e.id) !== (e as Record<string, unknown>).route_polyline) {
+        changed.push(e.id);
+      }
+      prev.set(e.id, (e as Record<string, unknown>).route_polyline);
+    }
+    if (changed.length > 0) {
+      setRecalculatingEdges((s) => {
+        const next = new Set(s);
+        for (const id of changed) next.delete(id);
+        return next.size === s.size ? s : next;
+      });
+    }
+  }, [edges]);
 
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -201,7 +225,7 @@ export default function TripMapPage() {
     },
     [searchParams, router, pathname],
   );
-  const [timelineZoom, setTimelineZoom] = useState<TimelineZoomLevel>(0);
+  const [timelineZoom, setTimelineZoom] = useState<TimelineZoomLevel>(2);
 
   const [activeTab, setActiveTab] = useState<"map" | "agent" | "settings">("map");
   const [showCreateDraft, setShowCreateDraft] = useState(false);
@@ -466,15 +490,16 @@ export default function TripMapPage() {
     }
 
     try {
-      const result = await api.patch<{
+      // The PATCH response now carries an `impact_preview` diff produced by
+      // `enrich_dag_times(before)` vs `enrich_dag_times(after)`. The page-level
+      // edit path doesn't surface it — the live impact panel in the edit sheet
+      // (Commit 5) is the intended consumer. We still await the call so the
+      // optimistic UI follows the backend write.
+      await api.patch<{
         node: NodeData;
-        cascade_preview: CascadePreviewData;
+        impact_preview: ImpactPreview;
+        conflict: boolean;
       }>(`/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}`, updates);
-
-      if (result.cascade_preview.affected_nodes.length > 0) {
-        setCascadePreview(result.cascade_preview);
-        setCascadeNodeId(nodeId);
-      }
     } catch {
       // Error handled by api client
     }
@@ -694,22 +719,6 @@ export default function TripMapPage() {
     }
   }
 
-  async function handleCascadeConfirm() {
-    if (!displayPlanId || !cascadeNodeId) return;
-    setCascadeLoading(true);
-    try {
-      await api.post(
-        `/trips/${tripId}/plans/${displayPlanId}/nodes/${cascadeNodeId}/cascade/confirm`,
-      );
-      setCascadePreview(null);
-      setCascadeNodeId(null);
-    } catch {
-      // Error handled by api client
-    } finally {
-      setCascadeLoading(false);
-    }
-  }
-
   if (!displayPlanId) {
     return (
       <div className="flex flex-col flex-1 bg-surface">
@@ -913,25 +922,6 @@ export default function TripMapPage() {
         />
       )}
 
-      {cascadePreview && (
-        <CascadePreview
-          preview={cascadePreview}
-          nodeTimezones={Object.fromEntries(
-            nodes
-              .filter((n) => n.timezone)
-              .map((n) => [n.id, n.timezone as string]),
-          )}
-          datetimeFormat={datetimeFormat}
-          dateFormat={dateFormat}
-          loading={cascadeLoading}
-          onConfirm={handleCascadeConfirm}
-          onCancel={() => {
-            setCascadePreview(null);
-            setCascadeNodeId(null);
-          }}
-        />
-      )}
-
       {/* DivergenceResolver — floats above bottom nav */}
       {displayPlanId && user && edges.length > 0 && (
         <DivergenceResolver
@@ -948,7 +938,6 @@ export default function TripMapPage() {
             !!selectedNode ||
             !!selectedEdge ||
             !!addNodePlace ||
-            !!cascadePreview ||
             !!insertEdgeId ||
             !!disambiguationEdges ||
             viewMode === "timeline"

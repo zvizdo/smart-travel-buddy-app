@@ -5,22 +5,24 @@
  * from raw Firestore data. No React dependencies.
  */
 
-import { computeParticipantPaths, type PathResult } from "@/lib/path-computation";
+import { type PathResult } from "@/lib/path-computation";
 import { formatUserName } from "@/lib/user-display";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type TimelineZoomLevel = 0 | 1 | 2 | 3 | 4;
+export type TimelineZoomLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
-/** Pixels per hour for each zoom level */
+/** Pixels per hour for each zoom level. Level 2 is the default (8 px/h). */
 export const PX_PER_HOUR: Record<TimelineZoomLevel, number> = {
-  0: 8,
-  1: 16,
-  2: 32,
-  3: 60,
-  4: 120,
+  0: 2,
+  1: 4,
+  2: 8,
+  3: 16,
+  4: 32,
+  5: 60,
+  6: 120,
 };
 
 export interface PositionedNode {
@@ -29,9 +31,15 @@ export interface PositionedNode {
   heightPx: number;
   laneIndex: number;
   hasMissingTime: boolean;
-  isInterpolated: boolean;
   resolvedArrival: Date | null;
   resolvedDeparture: Date | null;
+  arrivalEstimated: boolean;
+  departureEstimated: boolean;
+  durationEstimated: boolean;
+  overnightHold: boolean;
+  holdReason: "night_drive" | "max_drive_hours" | null;
+  timingConflict: string | null;
+  spansDays: number;
   isShared?: boolean;
   sharedNodeRole?: "diverge" | "merge" | null;
 }
@@ -84,9 +92,21 @@ interface NodeData {
   lat_lng: { lat: number; lng: number } | null;
   arrival_time: string | null;
   departure_time: string | null;
+  duration_minutes?: number | null;
   order_index: number;
   participant_ids?: string[] | null;
   timezone?: string | null;
+  // Enrichment flags populated by `enrichDagTimes`. Optional for callers
+  // that pass raw Firestore data (tests); production always runs through
+  // `useEnrichedNodes` first so these are present.
+  arrival_time_estimated?: boolean;
+  departure_time_estimated?: boolean;
+  duration_estimated?: boolean;
+  timing_conflict?: string | null;
+  overnight_hold?: boolean;
+  hold_reason?: "night_drive" | "max_drive_hours" | null;
+  is_start?: boolean;
+  is_end?: boolean;
   [key: string]: unknown;
 }
 
@@ -103,6 +123,18 @@ interface EdgeData {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+interface ResolvedTime {
+  arrival: Date | null;
+  departure: Date | null;
+  hasMissing: boolean;
+  arrivalEstimated: boolean;
+  departureEstimated: boolean;
+  durationEstimated: boolean;
+  timingConflict: string | null;
+  overnightHold: boolean;
+  holdReason: "night_drive" | "max_drive_hours" | null;
+}
 
 const MIN_NODE_HEIGHT_PX = 56;
 const MIN_CONNECTOR_HEIGHT_PX = 40;
@@ -219,35 +251,6 @@ function topoSort(nodeIds: string[], edges: EdgeData[]): string[] {
   return sorted;
 }
 
-function getStartOfDay(date: Date, timezone: string): Date {
-  // Get the date components in the target timezone
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    timeZone: timezone,
-  }).formatToParts(date);
-
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  const dateStr = `${get("year")}-${get("month")}-${get("day")}T00:00:00`;
-
-  // Create a UTC date then adjust for timezone offset
-  const utcGuess = new Date(dateStr + "Z").getTime();
-  const inTz = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date(utcGuess));
-
-  const getTz = (type: string) => Number(inTz.find((p) => p.type === type)?.value ?? 0);
-  const got = Date.UTC(getTz("year"), getTz("month") - 1, getTz("day"), getTz("hour"), getTz("minute"));
-  return new Date(utcGuess - (got - utcGuess));
-}
-
 function isSameDay(a: Date, b: Date, timezone: string): boolean {
   const fmt = new Intl.DateTimeFormat("sv-SE", {
     year: "numeric",
@@ -262,6 +265,33 @@ function isToday(date: Date, timezone: string): boolean {
   return isSameDay(date, new Date(), timezone);
 }
 
+/**
+ * Number of calendar day boundaries a node crosses between its arrival and
+ * departure in the given zone. Same-day stays = 0, overnight = 1, etc.
+ */
+function daysSpanned(
+  arrival: Date,
+  departure: Date | null,
+  timezone: string,
+): number {
+  if (!departure) return 0;
+  const fmt = new Intl.DateTimeFormat("sv-SE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: timezone,
+  });
+  const toDayMs = (d: Date): number => {
+    const parts = fmt.formatToParts(d);
+    const get = (t: string) =>
+      Number(parts.find((p) => p.type === t)?.value ?? 0);
+    return Date.UTC(get("year"), get("month") - 1, get("day"));
+  };
+  const aDay = toDayMs(arrival);
+  const dDay = toDayMs(departure);
+  return Math.max(0, Math.round((dDay - aDay) / 86_400_000));
+}
+
 // ---------------------------------------------------------------------------
 // Main layout function
 // ---------------------------------------------------------------------------
@@ -273,7 +303,7 @@ export function computeTimelineLayout(
   pathMode: "all" | "mine",
   currentUserId: string | null,
   zoomLevel: TimelineZoomLevel,
-  dateFormat: "eu" | "us" | "iso" | "short",
+  _dateFormat: "eu" | "us" | "iso" | "short",
   participantNames?: Map<string, string>,
 ): TimelineLayout {
   // Edge case: no nodes
@@ -300,62 +330,33 @@ export function computeTimelineLayout(
   const laneDefinitions = determineLanes(nodes, edges, pathResult, pathMode, currentUserId, participantNames);
 
   // -----------------------------------------------------------------------
-  // Step 2: Resolve missing times by interpolation
+  // Step 2: Read timing fields directly from nodes.
+  //
+  // Enrichment is upstream now (`useEnrichedNodes` → `enrichDagTimes`) so
+  // the timeline layout only needs to consume already-enriched nodes. It no
+  // longer interpolates anything itself — if `arrival_time` is still null
+  // after enrichment, the node really has no derivable time and should be
+  // bucketed as untimed.
   // -----------------------------------------------------------------------
-  const resolvedTimes = new Map<string, { arrival: Date | null; departure: Date | null; hasMissing: boolean; isInterpolated: boolean }>();
+  const resolvedTimes = new Map<string, ResolvedTime>();
   const missingTimeNodeIds = new Set<string>();
 
   for (const node of nodes) {
     const arrival = node.arrival_time ? new Date(node.arrival_time) : null;
     const departure = node.departure_time ? new Date(node.departure_time) : null;
-    const hasMissing = !node.arrival_time;
+    const hasMissing = !arrival;
     if (hasMissing) missingTimeNodeIds.add(node.id);
-    resolvedTimes.set(node.id, { arrival, departure, hasMissing, isInterpolated: false });
-  }
-
-  // Interpolate missing times from DAG neighbors
-  for (const node of nodes) {
-    const resolved = resolvedTimes.get(node.id)!;
-    if (resolved.arrival && resolved.departure) continue;
-
-    // Try to infer arrival from parent's departure + travel time
-    if (!resolved.arrival) {
-      const parents = revAdj.get(node.id) ?? [];
-      for (const parentId of parents) {
-        const parentResolved = resolvedTimes.get(parentId);
-        const parentDep = parentResolved?.departure ?? parentResolved?.arrival;
-        if (parentDep) {
-          const edge = findEdgeBetween(edges, parentId, node.id);
-          const travelMs = (edge?.travel_time_hours ?? 0) * 3_600_000;
-          resolved.arrival = new Date(parentDep.getTime() + travelMs);
-          resolved.isInterpolated = true;
-          break;
-        }
-      }
-    }
-
-    // Try to infer departure from child's arrival - travel time
-    if (!resolved.departure && resolved.arrival) {
-      // If we have arrival but no departure, assume 1h duration
-      resolved.departure = new Date(resolved.arrival.getTime() + 3_600_000);
-      resolved.isInterpolated = true;
-    } else if (!resolved.departure) {
-      const children = adj.get(node.id) ?? [];
-      for (const childId of children) {
-        const childResolved = resolvedTimes.get(childId);
-        const childArr = childResolved?.arrival;
-        if (childArr) {
-          const edge = findEdgeBetween(edges, node.id, childId);
-          const travelMs = (edge?.travel_time_hours ?? 0) * 3_600_000;
-          resolved.departure = new Date(childArr.getTime() - travelMs);
-          if (!resolved.arrival) {
-            resolved.arrival = new Date(resolved.departure.getTime() - 3_600_000);
-          }
-          resolved.isInterpolated = true;
-          break;
-        }
-      }
-    }
+    resolvedTimes.set(node.id, {
+      arrival,
+      departure,
+      hasMissing,
+      arrivalEstimated: node.arrival_time_estimated ?? false,
+      departureEstimated: node.departure_time_estimated ?? false,
+      durationEstimated: node.duration_estimated ?? false,
+      timingConflict: node.timing_conflict ?? null,
+      overnightHold: node.overnight_hold ?? false,
+      holdReason: node.hold_reason ?? null,
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -461,6 +462,25 @@ export function computeTimelineLayout(
     }
   }
 
+  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  function getEnrichmentProps(nodeId: string, resolved: ResolvedTime) {
+    const node = nodeMap.get(nodeId);
+    const tz = node?.timezone ?? browserTz;
+    const spansDays = resolved.arrival
+      ? daysSpanned(resolved.arrival, resolved.departure, tz)
+      : 0;
+    return {
+      arrivalEstimated: resolved.arrivalEstimated,
+      departureEstimated: resolved.departureEstimated,
+      durationEstimated: resolved.durationEstimated,
+      overnightHold: resolved.overnightHold,
+      holdReason: resolved.holdReason,
+      timingConflict: resolved.timingConflict,
+      spansDays,
+    };
+  }
+
   const lanes: LaneLayout[] = [];
 
   for (let li = 0; li < laneDefinitions.length; li++) {
@@ -490,15 +510,16 @@ export function computeTimelineLayout(
       // All missing times — stack at equal spacing
       for (let i = 0; i < sortedNodeIds.length; i++) {
         const nodeId = sortedNodeIds[i];
+        const resolved = resolvedTimes.get(nodeId)!;
         positionedNodes.set(nodeId, {
           nodeId,
           yOffsetPx: i * ORPHAN_SPACING_PX,
           heightPx: MIN_NODE_HEIGHT_PX,
           laneIndex: li,
           hasMissingTime: true,
-          isInterpolated: false,
           resolvedArrival: null,
           resolvedDeparture: null,
+          ...getEnrichmentProps(nodeId, resolved),
           ...getSharedProps(nodeId),
         });
       }
@@ -557,9 +578,9 @@ export function computeTimelineLayout(
             heightPx: globalPos.heightPx,
             laneIndex: li,
             hasMissingTime: resolved.hasMissing,
-            isInterpolated: resolved.isInterpolated,
             resolvedArrival: resolved.arrival,
             resolvedDeparture: resolved.departure,
+            ...getEnrichmentProps(nodeId, resolved),
             ...getSharedProps(nodeId),
           });
           currentY = globalPos.yOffsetPx + globalPos.heightPx;
@@ -630,9 +651,9 @@ export function computeTimelineLayout(
           heightPx,
           laneIndex: li,
           hasMissingTime: resolved.hasMissing,
-          isInterpolated: resolved.isInterpolated,
           resolvedArrival: resolved.arrival,
           resolvedDeparture: resolved.departure,
+          ...getEnrichmentProps(nodeId, resolved),
           ...getSharedProps(nodeId),
         });
 
@@ -650,7 +671,7 @@ export function computeTimelineLayout(
 
       const fromPos = positionedNodes.get(fromId)!;
       const toPos = positionedNodes.get(toId)!;
-      let connectorHeightPx = Math.max(
+      const connectorHeightPx = Math.max(
         MIN_CONNECTOR_HEIGHT_PX,
         toPos.yOffsetPx - (fromPos.yOffsetPx + fromPos.heightPx),
       );
@@ -692,7 +713,7 @@ export function computeTimelineLayout(
       const toPos = positionedNodes.get(edge.to_node_id);
       if (!fromPos || !toPos) continue;
 
-      let connectorHeightPx = Math.max(
+      const connectorHeightPx = Math.max(
         MIN_CONNECTOR_HEIGHT_PX,
         toPos.yOffsetPx - (fromPos.yOffsetPx + fromPos.heightPx),
       );
@@ -732,9 +753,9 @@ export function computeTimelineLayout(
         heightPx: MIN_NODE_HEIGHT_PX,
         laneIndex: li,
         hasMissingTime: true,
-        isInterpolated: resolved.isInterpolated,
         resolvedArrival: null,
         resolvedDeparture: null,
+        ...getEnrichmentProps(nodeId, resolved),
         ...getSharedProps(nodeId),
       });
     }
@@ -752,7 +773,7 @@ export function computeTimelineLayout(
   // -----------------------------------------------------------------------
   // Step 9: Compute date markers
   // -----------------------------------------------------------------------
-  const dateMarkers = computeDateMarkers(lanes, resolvedTimes, nodeMap, dateFormat, earliestMs, pxPerHour);
+  const dateMarkers = computeDateMarkers(lanes, resolvedTimes, nodeMap);
 
   // Compute total height
   let maxBottom = 0;
@@ -949,7 +970,7 @@ function inferBranchLabel(
 
 function sortNodesByTime(
   nodeIds: string[],
-  resolvedTimes: Map<string, { arrival: Date | null; departure: Date | null }>,
+  resolvedTimes: Map<string, ResolvedTime>,
   edges: EdgeData[],
 ): string[] {
   // Separate timed and untimed
@@ -980,11 +1001,8 @@ function sortNodesByTime(
 
 function computeDateMarkers(
   lanes: LaneLayout[],
-  resolvedTimes: Map<string, { arrival: Date | null; departure: Date | null }>,
+  resolvedTimes: Map<string, ResolvedTime>,
   nodeMap: Map<string, NodeData>,
-  dateFormat: "eu" | "us" | "iso" | "short",
-  earliestMs: number,
-  pxPerHour: number,
 ): DateMarker[] {
   if (lanes.length === 0) return [];
 

@@ -2,7 +2,7 @@
 
 import { type SetStateAction, useEffect, useMemo, useRef } from "react";
 import { computeTimelineLayout, PX_PER_HOUR, type TimelineZoomLevel } from "@/lib/timeline-layout";
-import { computeParticipantPaths, type PathResult } from "@/lib/path-computation";
+import { type PathResult } from "@/lib/path-computation";
 import { TimelineDateGutter } from "./timeline-date-gutter";
 import { TimelineLane } from "./timeline-lane";
 import { TimelineEmptyState } from "./timeline-empty-state";
@@ -208,7 +208,22 @@ export function TimelineView({
           />
 
           {/* Lane area */}
-          <div className={`flex flex-1 min-w-0 ${layout.lanes.length > 3 ? "overflow-x-auto scroll-snap-x mandatory" : ""}`}>
+          <div className={`relative flex flex-1 min-w-0 ${layout.lanes.length > 3 ? "overflow-x-auto scroll-snap-x mandatory" : ""}`}>
+            {/* Day divider lines — full-width horizontal at each new day in the
+                primary lane's timezone. Rendered behind the lanes (z-0). */}
+            {layout.dateMarkers.map((marker, i) => (
+              <div
+                key={`day-divider-${i}`}
+                aria-hidden
+                className="absolute left-0 right-0 pointer-events-none z-0 border-t border-dashed"
+                style={{
+                  top: marker.yOffsetPx,
+                  borderColor: marker.isToday
+                    ? "rgba(179,27,37,0.35)"
+                    : "rgba(196,199,197,0.55)",
+                }}
+              />
+            ))}
             {layout.lanes.map((lane, i) => (
               <div
                 key={lane.laneId}
@@ -232,7 +247,6 @@ export function TimelineView({
                   distanceUnit={distanceUnit}
                   nodeBlockRefs={nodeBlockRefs}
                   dimmedNodeIds={dimmedNodeIds}
-                  timingConflictEdgeIds={layout.timingConflictEdgeIds}
                   nodes={nodes}
                   edges={edges}
                 />
@@ -253,10 +267,7 @@ export function TimelineView({
         </div>
 
         {/* Current time indicator */}
-        <CurrentTimeIndicator
-          layout={layout}
-          nodes={nodes}
-        />
+        <CurrentTimeIndicator layout={layout} />
       </div>
 
       {/* FAB */}
@@ -277,8 +288,8 @@ export function TimelineView({
       {/* Zoom controls */}
       <div className={`fixed right-3 bottom-[136px] z-[25] flex flex-col items-center rounded-[20px] bg-surface-lowest/90 shadow-soft transition-opacity duration-150 ${isSheetOpen ? "opacity-0 pointer-events-none" : "opacity-100"}`} style={{ width: 32 }}>
         <button
-          onClick={() => onZoomChange(prev => Math.min(4, prev + 1) as TimelineZoomLevel)}
-          disabled={zoomLevel >= 4}
+          onClick={() => onZoomChange(prev => Math.min(6, prev + 1) as TimelineZoomLevel)}
+          disabled={zoomLevel >= 6}
           className="h-9 w-8 flex items-center justify-center text-on-surface-variant active:bg-surface-high active:scale-[0.94] transition-all rounded-t-[20px] disabled:opacity-30"
           aria-label="Zoom in"
         >
@@ -307,9 +318,8 @@ export function TimelineView({
 // Current time indicator
 // ---------------------------------------------------------------------------
 
-function CurrentTimeIndicator({ layout, nodes }: {
+function CurrentTimeIndicator({ layout }: {
   layout: ReturnType<typeof computeTimelineLayout>;
-  nodes: NodeData[];
 }) {
   // Find if current time falls within the trip's time range
   const now = new Date();

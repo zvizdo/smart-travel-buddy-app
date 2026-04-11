@@ -418,28 +418,30 @@ export default function TripSettingsPage() {
                   {/* Remove / Leave button — admin only */}
                   {isAdmin && online && (
                     isSelf ? (
-                      {isSoleAdmin && (
-                        <div className="text-xs text-error font-semibold">
-                          You&apos;re the only admin. Assign another admin before you leave.
-                        </div>
-                      )}
-                      {!isSoleAdmin && (
-                        <button
-                          onClick={() => handleRemoveParticipant(uid)}
-                          disabled={isRemoving}
-                          className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
-                            removeConfirm === uid
-                              ? "bg-error text-on-error"
-                              : "bg-error/10 text-error"
-                          }`}
-                        >
-                          {isRemoving
-                            ? "..."
-                            : removeConfirm === uid
-                              ? "Confirm"
-                              : "Leave"}
-                        </button>
-                      )}
+                      <>
+                        {isSoleAdmin && (
+                          <div className="text-xs text-error font-semibold">
+                            You&apos;re the only admin. Assign another admin before you leave.
+                          </div>
+                        )}
+                        {!isSoleAdmin && (
+                          <button
+                            onClick={() => handleRemoveParticipant(uid)}
+                            disabled={isRemoving}
+                            className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
+                              removeConfirm === uid
+                                ? "bg-error text-on-error"
+                                : "bg-error/10 text-error"
+                            }`}
+                          >
+                            {isRemoving
+                              ? "..."
+                              : removeConfirm === uid
+                                ? "Confirm"
+                                : "Leave"}
+                          </button>
+                        )}
+                      </>
                     ) : (
                       <button
                         onClick={() => handleRemoveParticipant(uid)}

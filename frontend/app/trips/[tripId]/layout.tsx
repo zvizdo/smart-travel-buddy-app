@@ -16,10 +16,17 @@ export interface PlanData {
   created_at: string;
 }
 
+interface NoDriveWindow {
+  start_hour: number;
+  end_hour: number;
+}
+
 interface TripSettings {
   datetime_format?: "12h" | "24h";
   date_format?: "us" | "eu" | "iso" | "short";
   distance_unit?: "km" | "mi";
+  no_drive_window?: NoDriveWindow | null;
+  max_drive_hours_per_day?: number | null;
 }
 
 interface TripData {

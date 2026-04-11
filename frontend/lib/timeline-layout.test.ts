@@ -393,3 +393,225 @@ describe("timeline layout: edge cases", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Commit 4: zoom levels, day dividers, enrichment flag propagation.
+// ---------------------------------------------------------------------------
+
+describe("timeline layout: zoom levels", () => {
+  // Two-node trip spanning 5 hours (below the 8h gap threshold so
+  // compression doesn't interfere). Node A has a 5h duration so its
+  // own height scales linearly with pxPerHour too, giving zoom a
+  // double effect: span + node height.
+  function fiveHourTrip() {
+    const nodes = [
+      node("A", { arrival_time: "2026-01-01T10:00:00Z", departure_time: "2026-01-01T15:00:00Z" }),
+      node("B", { arrival_time: "2026-01-01T16:00:00Z", departure_time: "2026-01-01T18:00:00Z" }),
+    ];
+    const edges = [edge("A", "B")];
+    const pathResult = computeParticipantPaths(nodes, edges, ["u1"]);
+    return { nodes, edges, pathResult };
+  }
+
+  it("zoom 0 (2 px/h) produces the most compact layout", () => {
+    const { nodes, edges, pathResult } = fiveHourTrip();
+    const layout = computeTimelineLayout(
+      nodes, edges, pathResult, "all", "u1", 0, "eu",
+    );
+    // At 2px/h, minimum clamps dominate. Stay well under 400px.
+    expect(layout.totalHeightPx).toBeLessThan(400);
+  });
+
+  it("zoom 6 (120 px/h) produces the most expanded layout", () => {
+    const { nodes, edges, pathResult } = fiveHourTrip();
+    const layout = computeTimelineLayout(
+      nodes, edges, pathResult, "all", "u1", 6, "eu",
+    );
+    // At 120px/h: A height = 5h × 120 = 600px, plus connector, plus B
+    // height (2h × 120 = 240px), plus padding. Total easily > 900.
+    expect(layout.totalHeightPx).toBeGreaterThan(900);
+  });
+
+  it("higher zoom level produces taller layout than lower zoom level", () => {
+    const { nodes, edges, pathResult } = fiveHourTrip();
+    const heights = [0, 1, 2, 3, 4, 5, 6].map((z) =>
+      computeTimelineLayout(
+        nodes, edges, pathResult, "all", "u1", z as 0 | 1 | 2 | 3 | 4 | 5 | 6, "eu",
+      ).totalHeightPx,
+    );
+    // Monotonically non-decreasing — each zoom level should be at least
+    // as tall as the previous one. Strict inequality would be ideal but
+    // min clamps absorb very small spans at the lowest zooms.
+    for (let i = 1; i < heights.length; i++) {
+      expect(heights[i]).toBeGreaterThanOrEqual(heights[i - 1]);
+    }
+    // And the extremes should differ materially — zoom 6 is 60× zoom 0.
+    expect(heights[6]).toBeGreaterThan(heights[0] + 500);
+  });
+});
+
+describe("timeline layout: date markers", () => {
+  it("emits a marker per calendar day across a multi-day trip", () => {
+    // Three nodes, each on a distinct UTC day.
+    const nodes = [
+      node("A", { arrival_time: "2026-04-01T10:00:00Z", departure_time: "2026-04-01T11:00:00Z" }),
+      node("B", { arrival_time: "2026-04-02T10:00:00Z", departure_time: "2026-04-02T11:00:00Z" }),
+      node("C", { arrival_time: "2026-04-03T10:00:00Z" }),
+    ];
+    const edges = [edge("A", "B"), edge("B", "C")];
+    const pathResult = computeParticipantPaths(nodes, edges, ["u1"]);
+
+    const layout = computeTimelineLayout(
+      nodes, edges, pathResult, "all", "u1", 2, "eu",
+    );
+
+    // Day dividers are rendered by the view at marker.yOffsetPx; the
+    // layout should expose one marker per distinct calendar day. The
+    // browser's local timezone may shift dates, but we should always
+    // have at least as many markers as there are distinct days touched.
+    expect(layout.dateMarkers.length).toBeGreaterThanOrEqual(2);
+    // Markers must be sorted by Y offset so the view can draw them
+    // without additional sorting.
+    for (let i = 1; i < layout.dateMarkers.length; i++) {
+      expect(layout.dateMarkers[i].yOffsetPx).toBeGreaterThanOrEqual(
+        layout.dateMarkers[i - 1].yOffsetPx,
+      );
+    }
+  });
+
+  it("single-day trip produces exactly one date marker", () => {
+    const nodes = [
+      node("A", { arrival_time: "2026-04-01T10:00:00Z", departure_time: "2026-04-01T11:00:00Z" }),
+      node("B", { arrival_time: "2026-04-01T15:00:00Z" }),
+    ];
+    const edges = [edge("A", "B")];
+    const pathResult = computeParticipantPaths(nodes, edges, ["u1"]);
+
+    const layout = computeTimelineLayout(
+      nodes, edges, pathResult, "all", "u1", 2, "eu",
+    );
+
+    expect(layout.dateMarkers).toHaveLength(1);
+  });
+});
+
+describe("timeline layout: enrichment flag propagation", () => {
+  // These fields are normally populated upstream by `enrichDagTimes`.
+  // The timeline layout must forward them to PositionedNode verbatim so
+  // the renderer can show dashed borders, overnight chips, etc.
+
+  it("forwards arrivalEstimated/departureEstimated flags", () => {
+    const nodes = [
+      {
+        ...node("A", { arrival_time: "2026-04-01T10:00:00Z", departure_time: "2026-04-01T11:00:00Z" }),
+        arrival_time_estimated: true,
+        departure_time_estimated: false,
+      },
+      {
+        ...node("B", { arrival_time: "2026-04-01T13:00:00Z" }),
+        arrival_time_estimated: false,
+        departure_time_estimated: true,
+      },
+    ];
+    const edges = [edge("A", "B")];
+    const pathResult = computeParticipantPaths(nodes, edges, ["u1"]);
+
+    const layout = computeTimelineLayout(
+      nodes, edges, pathResult, "all", "u1", 2, "eu",
+    );
+
+    const posA = layout.lanes[0].positionedNodes.get("A")!;
+    const posB = layout.lanes[0].positionedNodes.get("B")!;
+    expect(posA.arrivalEstimated).toBe(true);
+    expect(posA.departureEstimated).toBe(false);
+    expect(posB.arrivalEstimated).toBe(false);
+    expect(posB.departureEstimated).toBe(true);
+  });
+
+  it("forwards overnightHold + holdReason", () => {
+    const nodes = [
+      {
+        ...node("A", { arrival_time: "2026-04-01T10:00:00Z", departure_time: "2026-04-02T06:00:00Z" }),
+        overnight_hold: true,
+        hold_reason: "night_drive" as const,
+      },
+    ];
+    const pathResult = computeParticipantPaths(nodes, [], ["u1"]);
+
+    const layout = computeTimelineLayout(
+      nodes, [], pathResult, "all", "u1", 2, "eu",
+    );
+
+    const posA = layout.lanes[0].positionedNodes.get("A")!;
+    expect(posA.overnightHold).toBe(true);
+    expect(posA.holdReason).toBe("night_drive");
+  });
+
+  it("forwards timingConflict", () => {
+    const nodes = [
+      {
+        ...node("A", { arrival_time: "2026-04-01T10:00:00Z" }),
+        timing_conflict: "Propagated arrival 15:20 > user arrival 14:00",
+      },
+    ];
+    const pathResult = computeParticipantPaths(nodes, [], ["u1"]);
+
+    const layout = computeTimelineLayout(
+      nodes, [], pathResult, "all", "u1", 2, "eu",
+    );
+
+    const posA = layout.lanes[0].positionedNodes.get("A")!;
+    expect(posA.timingConflict).toBe("Propagated arrival 15:20 > user arrival 14:00");
+  });
+
+  it("computes spansDays=0 for same-day stays", () => {
+    const nodes = [
+      node("A", { arrival_time: "2026-04-01T09:00:00Z", departure_time: "2026-04-01T18:00:00Z" }),
+    ];
+    const pathResult = computeParticipantPaths(nodes, [], ["u1"]);
+
+    const layout = computeTimelineLayout(
+      nodes, [], pathResult, "all", "u1", 2, "eu",
+    );
+
+    const posA = layout.lanes[0].positionedNodes.get("A")!;
+    expect(posA.spansDays).toBe(0);
+  });
+
+  it("computes spansDays>=1 for overnight stays", () => {
+    // In UTC (the default browser TZ in vitest), arriving 10:00 on the
+    // 1st and departing 08:00 on the 3rd crosses 2 day boundaries.
+    const nodes = [
+      node("A", { arrival_time: "2026-04-01T10:00:00Z", departure_time: "2026-04-03T08:00:00Z" }),
+    ];
+    const pathResult = computeParticipantPaths(nodes, [], ["u1"]);
+
+    const layout = computeTimelineLayout(
+      nodes, [], pathResult, "all", "u1", 2, "eu",
+    );
+
+    const posA = layout.lanes[0].positionedNodes.get("A")!;
+    expect(posA.spansDays).toBeGreaterThanOrEqual(1);
+  });
+
+  it("missing enrichment flags default to false/null/0 (back-compat)", () => {
+    // A raw Firestore node with no enrichment metadata — the layout
+    // should not crash and should fill with safe defaults.
+    const nodes = [
+      node("A", { arrival_time: "2026-04-01T10:00:00Z", departure_time: "2026-04-01T12:00:00Z" }),
+    ];
+    const pathResult = computeParticipantPaths(nodes, [], ["u1"]);
+
+    const layout = computeTimelineLayout(
+      nodes, [], pathResult, "all", "u1", 2, "eu",
+    );
+
+    const posA = layout.lanes[0].positionedNodes.get("A")!;
+    expect(posA.arrivalEstimated).toBe(false);
+    expect(posA.departureEstimated).toBe(false);
+    expect(posA.overnightHold).toBe(false);
+    expect(posA.holdReason).toBe(null);
+    expect(posA.timingConflict).toBe(null);
+    expect(posA.spansDays).toBe(0);
+  });
+});

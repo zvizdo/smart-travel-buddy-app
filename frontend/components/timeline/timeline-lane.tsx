@@ -18,7 +18,6 @@ interface TimelineLaneProps {
   distanceUnit: "km" | "mi";
   nodeBlockRefs: React.MutableRefObject<Map<string, HTMLElement>>;
   dimmedNodeIds?: Set<string> | null;
-  timingConflictEdgeIds?: Set<string>;
   nodes: Array<{ id: string; name: string; type: string; arrival_time: string | null; departure_time: string | null; timezone?: string | null; [key: string]: unknown }>;
   edges: Array<{ id: string; from_node_id: string; to_node_id: string; travel_mode: string; travel_time_hours: number; distance_km: number | null; [key: string]: unknown }>;
 }
@@ -36,7 +35,6 @@ export const TimelineLane = memo(function TimelineLane({
   distanceUnit,
   nodeBlockRefs,
   dimmedNodeIds,
-  timingConflictEdgeIds,
   nodes,
   edges,
 }: TimelineLaneProps) {
@@ -93,12 +91,14 @@ export const TimelineLane = memo(function TimelineLane({
     edgeLookup.set(`${e.from_node_id}->${e.to_node_id}`, e);
   }
 
-  // Separate timed and untimed nodes
+  // Separate timed and untimed nodes. After upstream enrichment, a node with
+  // a null `resolvedArrival` really has no derivable time and belongs in the
+  // untimed bucket — there is no interpolation flag to distinguish.
   const timedNodeIds: string[] = [];
   const untimedNodeIds: string[] = [];
   for (const nodeId of lane.nodeSequence) {
     const pos = lane.positionedNodes.get(nodeId);
-    if (pos && pos.resolvedArrival === null && !pos.isInterpolated) {
+    if (pos && pos.resolvedArrival === null) {
       untimedNodeIds.push(nodeId);
     } else {
       timedNodeIds.push(nodeId);
@@ -179,7 +179,12 @@ export const TimelineLane = memo(function TimelineLane({
                 timezone={node.timezone ?? undefined}
                 heightPx={pos.heightPx}
                 hasMissingTime={pos.hasMissingTime}
-                isInterpolated={pos.isInterpolated}
+                arrivalEstimated={pos.arrivalEstimated}
+                departureEstimated={pos.departureEstimated}
+                overnightHold={pos.overnightHold}
+                holdReason={pos.holdReason}
+                timingConflict={pos.timingConflict}
+                spansDays={pos.spansDays}
                 selected={selectedNodeId === nodeId}
                 dimmed={isDimmed}
                 isShared={pos.isShared}
@@ -313,7 +318,6 @@ export const TimelineLane = memo(function TimelineLane({
   prev.selectedNodeId === next.selectedNodeId &&
   prev.selectedEdgeId === next.selectedEdgeId &&
   prev.dimmedNodeIds === next.dimmedNodeIds &&
-  prev.timingConflictEdgeIds === next.timingConflictEdgeIds &&
   prev.nodes === next.nodes &&
   prev.edges === next.edges
 );

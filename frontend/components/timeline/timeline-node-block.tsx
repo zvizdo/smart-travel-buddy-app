@@ -2,7 +2,6 @@
 
 import { memo, useCallback } from "react";
 import { TYPE_TOKENS, FALLBACK_TOKEN } from "@/components/map/node-marker";
-import { formatDateTimeWithPreference } from "@/lib/dates";
 
 interface TimelineNodeBlockProps {
   nodeId: string;
@@ -13,7 +12,12 @@ interface TimelineNodeBlockProps {
   timezone?: string;
   heightPx: number;
   hasMissingTime: boolean;
-  isInterpolated?: boolean;
+  arrivalEstimated?: boolean;
+  departureEstimated?: boolean;
+  overnightHold?: boolean;
+  holdReason?: "night_drive" | "max_drive_hours" | null;
+  timingConflict?: string | null;
+  spansDays?: number;
   selected: boolean;
   dimmed: boolean;
   hasTimingConflict?: boolean;
@@ -95,6 +99,10 @@ function formatTimeOnly(iso: string | null, datetimeFormat: "12h" | "24h", timez
   }).format(new Date(iso));
 }
 
+const HOLD_LABELS: Record<"night_drive" | "max_drive_hours", string> = {
+  night_drive: "Stay overnight — resume 6 AM",
+  max_drive_hours: "Rest — daily drive limit reached",
+};
 
 export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   nodeId,
@@ -105,13 +113,16 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   timezone,
   heightPx,
   hasMissingTime,
-  isInterpolated,
+  arrivalEstimated,
+  departureEstimated,
+  overnightHold,
+  holdReason,
+  timingConflict,
+  spansDays,
   selected,
   dimmed,
-  hasTimingConflict,
   isShared,
   datetimeFormat,
-  dateFormat,
   onSelect,
   blockRef,
 }: TimelineNodeBlockProps) {
@@ -131,6 +142,12 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
 
   const arrivalDisplay = formatTimeOnly(arrivalTime, datetimeFormat, timezone ?? undefined);
   const departureDisplay = formatTimeOnly(departureTime, datetimeFormat, timezone ?? undefined);
+  const arrivalPrefix = arrivalEstimated ? "~" : "";
+  const departurePrefix = departureEstimated ? "~" : "";
+  const anyEstimated = arrivalEstimated || departureEstimated;
+  const showConflict = !!timingConflict;
+  const showOvernight = !!overnightHold;
+  const showSpanChip = (spansDays ?? 0) > 0;
 
   return (
     <div
@@ -146,6 +163,7 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
           ? "bg-surface-lowest shadow-float ring-1 ring-primary/20"
           : "bg-surface-lowest/80 shadow-soft"
         }
+        ${anyEstimated ? "border border-dashed border-on-surface-variant/40" : ""}
         ${dimmed ? "opacity-45 pointer-events-none" : "cursor-pointer active:scale-[0.98]"}
       `}
       style={{
@@ -156,10 +174,31 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
       }}
     >
       <div className="flex flex-col justify-center h-full px-3 py-2 overflow-hidden">
-        {/* Line 1: Icon + Name */}
+        {/* Line 1: Icon + Name + status pills */}
         <div className="flex items-center gap-1.5 min-w-0">
           <NodeTypeIcon type={type} size={14} />
           <span className="text-sm font-semibold text-on-surface truncate">{name}</span>
+          {showSpanChip && (
+            <span
+              className="shrink-0 text-[9px] font-semibold rounded-full px-1.5 py-px"
+              style={{ background: "rgba(0,100,121,0.12)", color: "#006479" }}
+              title={`Spans ${spansDays} calendar day${spansDays! > 1 ? "s" : ""}`}
+            >
+              +{spansDays}d
+            </span>
+          )}
+          {showConflict && (
+            <span
+              className="shrink-0 inline-flex items-center"
+              title={timingConflict ?? "Timing conflict"}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#b31b25" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            </span>
+          )}
         </div>
 
         {/* Line 2: Times */}
@@ -174,13 +213,22 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
               <span className="text-[10px] font-medium" style={{ color: "#6d5a00" }}>No time set</span>
             </div>
           ) : (
-            <span className={`text-xs text-on-surface-variant ${isInterpolated ? "border-b border-dashed border-on-surface-variant/40" : ""}`}>
-              {arrivalDisplay}
-              {departureTime ? ` - ${departureDisplay}` : ""}
+            <span className="text-xs text-on-surface-variant">
+              {arrivalPrefix}{arrivalDisplay}
+              {departureTime ? ` - ${departurePrefix}${departureDisplay}` : ""}
             </span>
           )}
         </div>
 
+        {/* Line 3: Overnight hold label */}
+        {showOvernight && (
+          <div className="flex items-center gap-1 mt-0.5">
+            <span aria-hidden className="text-[11px]">🛌</span>
+            <span className="text-[10px] font-medium text-on-surface-variant truncate">
+              {holdReason ? HOLD_LABELS[holdReason] : "Overnight hold"}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Shared node badge */}
@@ -207,7 +255,12 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   prev.arrivalTime === next.arrivalTime &&
   prev.departureTime === next.departureTime &&
   prev.hasMissingTime === next.hasMissingTime &&
-  prev.isInterpolated === next.isInterpolated &&
+  prev.arrivalEstimated === next.arrivalEstimated &&
+  prev.departureEstimated === next.departureEstimated &&
+  prev.overnightHold === next.overnightHold &&
+  prev.holdReason === next.holdReason &&
+  prev.timingConflict === next.timingConflict &&
+  prev.spansDays === next.spansDays &&
   prev.hasTimingConflict === next.hasTimingConflict &&
   prev.isShared === next.isShared &&
   prev.datetimeFormat === next.datetimeFormat &&
