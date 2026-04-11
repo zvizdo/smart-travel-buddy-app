@@ -83,7 +83,7 @@ export default function ImportPage() {
       setNotes(data.notes);
       setReadyToBuild(data.ready_to_build);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send message");
+      setError(err instanceof Error ? err.message : "Couldn't send your message — please try again.");
     } finally {
       setSending(false);
     }
@@ -133,7 +133,7 @@ export default function ImportPage() {
       refetch();
       router.push(`/trips/${tripId}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to build trip");
+      setError(err instanceof Error ? err.message : "Couldn't build the trip — please try again.");
       setBuilding(false);
     }
   }
@@ -159,7 +159,7 @@ export default function ImportPage() {
       setNotes(data.notes);
       setReadyToBuild(data.ready_to_build);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send message");
+      setError(err instanceof Error ? err.message : "Couldn't send — please try again.");
     } finally {
       setSending(false);
     }
@@ -179,7 +179,7 @@ export default function ImportPage() {
         <header className="flex items-center gap-3 px-5 py-4 bg-surface-lowest">
           <div>
             <h1 className="text-base font-bold text-on-surface">
-              Building Trip
+              Building your trip...
             </h1>
             <p className="text-xs text-on-surface-variant">{trip?.name}</p>
           </div>
@@ -242,12 +242,12 @@ export default function ImportPage() {
               </svg>
             </div>
             <h2 className="text-xl font-bold text-on-surface mb-2">
-              Import your plans
+              Tell us about your trip
             </h2>
             <p className="text-sm text-on-surface-variant leading-relaxed">
-              Paste your travel itinerary, notes, or ideas below.
+              Paste your group chat, travel notes, or just describe the trip.
               <br />
-              AI will extract destinations, dates, and activities.
+              The AI will turn it into a full itinerary.
             </p>
           </div>
         ) : (

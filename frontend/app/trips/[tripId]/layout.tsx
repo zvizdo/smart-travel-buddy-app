@@ -245,7 +245,7 @@ export default function TripLayout({ children }: { children: ReactNode }) {
       <TripContext.Provider value={{ tripId, trip, loading, error, refetch: fetchTrip, mapCamera: savedCamera, setMapCamera, viewedPlanId, setViewedPlanId, plans, plansLoading, setPlans }}>
         {enrichmentFailed && (
           <div className="flex items-center justify-between gap-2 bg-error-container/80 px-3 py-1.5 text-xs text-on-error-container">
-            <span>Couldn&apos;t load participant names.</span>
+            <span>Couldn&apos;t load trip members.</span>
             <button
               type="button"
               onClick={retryParticipantEnrichment}

@@ -119,10 +119,10 @@ export default function HomePage() {
                 </svg>
               </div>
               <p className="text-on-surface-variant font-medium mb-2">
-                No trips yet
+                No trips yet — let's fix that
               </p>
               <p className="text-sm text-outline">
-                Create your first trip to get started
+                Start by creating your first trip.
               </p>
             </div>
           ) : (

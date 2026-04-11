@@ -230,7 +230,7 @@ export function NodeDetailSheet({
               onClick={onProposeChanges}
               className="rounded-full px-3 py-1.5 text-xs font-semibold text-on-surface-variant bg-surface-high border border-outline-variant transition-all active:scale-95"
             >
-              Propose changes
+              Ask AI to edit
             </button>
           )}
           {mode === "view" && !plannerReadOnly && canEdit && onEdit && (
@@ -246,7 +246,7 @@ export function NodeDetailSheet({
               onClick={() => setMode("branch")}
               className="rounded-full px-3 py-1.5 text-xs font-semibold text-on-surface-variant bg-surface-high transition-all active:scale-95"
             >
-              Branch
+              Side trip
             </button>
           )}
           {mode === "view" && !plannerReadOnly && canEdit && onDelete && (

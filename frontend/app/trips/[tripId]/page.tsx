@@ -260,7 +260,7 @@ export default function TripMapPage() {
             : `${deficitMin} min`;
         return {
           hasWarning: true,
-          message: `Arrival at ${to?.name || "destination"} is ${deficitStr} earlier than the estimated travel time allows`,
+          message: `Arrival is ${deficitStr} too early for the estimated travel time`,
         };
       }
     }
@@ -689,7 +689,7 @@ export default function TripMapPage() {
     } catch (err: unknown) {
       const error = err as { error?: { code?: string; message?: string } };
       if (error?.error?.code === "CYCLE_DETECTED") {
-        setToastMessage("This connection would create a loop in your route");
+        setToastMessage("This connection would create a loop — routes can't circle back.");
       }
     }
   }
@@ -732,7 +732,7 @@ export default function TripMapPage() {
               </svg>
             </div>
             <p className="text-on-surface-variant font-medium mb-4">
-              No plan yet
+              No itinerary yet
             </p>
             <Link
               href={`/trips/${tripId}/import`}

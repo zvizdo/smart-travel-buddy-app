@@ -85,7 +85,7 @@ export function AddActionForm({
           className="w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-primary/30 bg-primary/5 py-2.5 px-3 text-xs font-semibold text-primary transition-all active:scale-[0.99] active:bg-primary/10 disabled:opacity-50"
         >
           <PlusIcon />
-          Add note, todo, or place
+          Add note, to-do, or place
         </button>
       </div>
     );

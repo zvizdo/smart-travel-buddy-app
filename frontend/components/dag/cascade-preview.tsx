@@ -46,12 +46,12 @@ export function CascadePreview({
       <div className="w-full max-w-lg bg-surface-lowest rounded-t-3xl sm:rounded-3xl shadow-float max-h-[80vh] flex flex-col animate-slide-up">
         <div className="px-5 pt-5 pb-3">
           <h2 className="text-lg font-bold text-on-surface">
-            Update following stops?
+            Update scheduled times for later stops?
           </h2>
           <p className="text-xs text-on-surface-variant mt-1">
             Your change was saved. {affected_nodes.length === 1
-              ? "This stop may need a new arrival time."
-              : `These ${affected_nodes.length} stops may need new arrival times.`}
+              ? "The stop after this may need its arrival time updated."
+              : `${affected_nodes.length} stops after this may need their arrival times updated.`}
           </p>
         </div>
 
@@ -59,7 +59,7 @@ export function CascadePreview({
           {conflicts.length > 0 && (
             <div className="rounded-2xl bg-error/10 p-4 mb-2">
               <p className="text-sm font-semibold text-error">
-                Some stops have scheduling conflicts
+                Some stops have timing conflicts
               </p>
               {conflicts.map((c) => (
                 <p key={c.id} className="text-xs text-error/80 mt-1">
@@ -100,7 +100,7 @@ export function CascadePreview({
 
         <div className="px-5 pt-3 pb-1">
           <p className="text-xs text-on-surface-variant text-center">
-            Your edit is already saved — this just updates the times for stops after it.
+            Your edit is already saved. This only adjusts the scheduled times for stops that follow.
           </p>
         </div>
         <div className="flex gap-3 p-5 pt-3">
@@ -109,7 +109,7 @@ export function CascadePreview({
             disabled={loading}
             className="flex-1 rounded-2xl bg-surface-high py-3 text-sm font-semibold text-on-surface transition-all active:scale-[0.98] disabled:opacity-40"
           >
-            Skip for now
+            Skip
           </button>
           <button
             onClick={onConfirm}

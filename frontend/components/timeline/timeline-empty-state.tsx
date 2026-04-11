@@ -20,7 +20,7 @@ export function TimelineEmptyState({ tripId }: TimelineEmptyStateProps) {
         </div>
         <h3 className="text-base font-bold text-on-surface mb-1">No stops yet</h3>
         <p className="text-sm text-on-surface-variant mb-4">
-          Add your first stop to start building your timeline.
+          Add a stop to start building your timeline.
         </p>
         <Link
           href={`/trips/${tripId}/import`}

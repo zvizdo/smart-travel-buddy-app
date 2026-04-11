@@ -157,7 +157,7 @@ function NodePicker({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search nodes..."
+              placeholder="Search stops..."
               autoFocus
               className="w-full rounded-lg bg-surface-lowest ring-2 ring-primary/30 px-2.5 py-1.5 text-xs focus:outline-none"
               onBlur={() => setTimeout(() => setOpen(false), 200)}
@@ -197,7 +197,7 @@ function NodePicker({
 
       {selectedIds.length === 0 && !open && (
         <p className="text-[10px] italic text-on-surface-variant px-3 py-1">
-          No {direction} — standalone {direction === "incoming" ? "start" : "end"}
+          No {direction} — {direction === "incoming" ? "first stop" : "last stop"}
         </p>
       )}
     </div>

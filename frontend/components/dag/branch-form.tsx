@@ -129,7 +129,7 @@ export function BranchForm({
         diffMin >= 60
           ? `${Math.round(diffMin / 6) / 10}h`
           : `${diffMin} min`;
-      return `Arrival is ${diffStr} earlier than the estimated travel time allows`;
+      return `Arrival is ${diffStr} too early for the estimated travel time`;
     }
     return null;
   }, [earliestArrival, arrivalTime]);
@@ -192,7 +192,7 @@ export function BranchForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-3 px-4 pb-4">
       <p className="text-xs text-on-surface-variant">
-        Branch from <span className="font-semibold">{sourceNode.name}</span>
+        New side trip from <span className="font-semibold">{sourceNode.name}</span>
       </p>
 
       {/* Row 1: Name + Type */}

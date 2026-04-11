@@ -257,7 +257,7 @@ export function DivergenceResolver({
           {myUnresolved.length > 0 && (
             <div className="px-5 pt-4 pb-2">
               <h3 className="text-sm font-bold text-on-surface">
-                Choose Your Path
+                Choose your route
               </h3>
             </div>
           )}
@@ -382,7 +382,7 @@ export function DivergenceResolver({
         className="mx-auto rounded-t-2xl bg-surface-lowest/95 backdrop-blur-sm px-5 py-2 text-xs font-semibold text-primary shadow-float transition-colors active:bg-surface-low"
       >
         {collapsed
-          ? `${totalIssues > 0 ? `${totalIssues} path${totalIssues !== 1 ? "s" : ""} to resolve` : "Path choices"}`
+          ? `${totalIssues > 0 ? `${totalIssues} unresolved route${totalIssues !== 1 ? "s" : ""}` : "Path choices"}`
           : "Collapse"}
       </button>
     </div>

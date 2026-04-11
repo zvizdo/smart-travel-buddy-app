@@ -352,7 +352,7 @@ export default function ProfilePage() {
             </h3>
             <div className="rounded-2xl bg-surface-lowest p-5 shadow-soft space-y-4">
               <p className="text-xs text-on-surface-variant">
-                Let your AI assistant (Claude, OpenClaw, or others) view and
+                Let your AI assistant (Claude, ChatGPT, or others) view and
                 edit your trips directly.
               </p>
 

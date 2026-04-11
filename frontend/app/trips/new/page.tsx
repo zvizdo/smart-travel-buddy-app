@@ -28,7 +28,7 @@ export default function NewTripPage() {
       const trip = await api.post<{ id: string }>("/trips", { name: trimmed });
       router.push(`/trips/${trip.id}/import`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create trip");
+      setError(err instanceof Error ? err.message : "Couldn't create trip — please try again.");
     } finally {
       setSubmitting(false);
     }

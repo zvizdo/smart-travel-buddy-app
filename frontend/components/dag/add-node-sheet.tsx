@@ -221,7 +221,7 @@ export function AddNodeSheet({
         diffMin >= 60
           ? `${Math.round(diffMin / 6) / 10}h`
           : `${diffMin} min`;
-      return `Arrival is ${diffStr} earlier than the estimated travel time allows`;
+      return `Arrival is ${diffStr} too early for the estimated travel time`;
     }
     return null;
   }, [earliestArrival, arrivalTime]);
@@ -348,7 +348,7 @@ export function AddNodeSheet({
       <div className="flex items-center justify-between px-4 pt-2 pb-2 shrink-0">
         <div>
           <h2 className="text-base font-semibold text-on-surface">
-            {insertBetween ? "Insert Stop" : "Add Node"}
+            {insertBetween ? "Insert Stop" : "Add Stop"}
           </h2>
           {insertBetween ? (
             <p className="text-xs text-on-surface-variant">
@@ -665,7 +665,7 @@ export function AddNodeSheet({
             }
             className="flex-1 rounded-xl gradient-primary px-4 py-2.5 text-sm font-semibold text-on-primary shadow-soft transition-all active:scale-[0.98] disabled:opacity-50"
           >
-            {insertBetween ? "Insert Stop" : "Add Node"}
+            {insertBetween ? "Insert Stop" : "Add Stop"}
           </button>
           <button
             type="button"

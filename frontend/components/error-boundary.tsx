@@ -44,7 +44,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           </div>
           <div>
             <p className="text-base font-semibold text-on-surface">Something went wrong</p>
-            <p className="mt-1 text-sm text-on-surface-variant">{this.state.error.message || "An unexpected error occurred while loading this trip."}</p>
+            <p className="mt-1 text-sm text-on-surface-variant">{this.state.error.message || "We hit an unexpected error loading this trip."}</p>
           </div>
           <button
             type="button"

@@ -114,7 +114,7 @@ export function NodeEditForm({
     return (
       <div className="px-4 py-3 mx-4 mb-4 bg-tertiary-container/15 rounded-xl space-y-3">
         <p className="text-sm text-on-surface-variant">
-          This is the live plan. To make changes, work in a draft version.
+          This is the active plan. Switch to a draft to make edits.
         </p>
         {onProposeChanges && (
           <button
@@ -133,8 +133,7 @@ export function NodeEditForm({
     return (
       <div className="px-4 py-3 bg-tertiary-container/15 rounded-xl">
         <p className="text-sm text-on-surface-variant">
-          You don&apos;t have permission to edit nodes. Only Admins and Planners
-          can make changes.
+          Only Admins and Planners can edit stops. Ask a trip admin for access.
         </p>
       </div>
     );

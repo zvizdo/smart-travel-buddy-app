@@ -125,7 +125,7 @@ export function AgentOverlay({
       setMessages((prev) => [...prev, assistantEntry]);
       setIsNewSession(data.is_new_session);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send message");
+      setError(err instanceof Error ? err.message : "Couldn't send — please try again.");
     } finally {
       setSending(false);
     }
