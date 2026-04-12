@@ -15,6 +15,12 @@ import {
 import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { DurationInput } from "@/components/ui/duration-input";
 import {
+  TimingFieldsSection,
+  type TimingFieldsValue,
+  type TimingMode,
+  type FlexAnchor,
+} from "@/components/dag/timing-fields-section";
+import {
   enrichDagTimes,
   type EnrichedNode,
   type RawEdge,
@@ -23,7 +29,6 @@ import {
 } from "@/lib/time-inference";
 
 type EditMode = "fixed" | "flexible";
-type FlexAnchor = "none" | "arrival" | "departure";
 
 interface NodeEditFormProps {
   node: {
@@ -36,6 +41,8 @@ interface NodeEditFormProps {
     arrival_time_estimated?: boolean;
     departure_time_estimated?: boolean;
     duration_estimated?: boolean;
+    is_start?: boolean;
+    is_end?: boolean;
     lat_lng?: { lat: number; lng: number } | null;
     [key: string]: unknown;
   };
@@ -98,7 +105,7 @@ function inferInitialMode(node: NodeEditFormProps["node"]): EditMode {
   const hasUserDeparture =
     node.departure_time != null && !node.departure_time_estimated;
   if (hasUserArrival && hasUserDeparture) return "fixed";
-  return "fixed";
+  return "flexible";
 }
 
 function inferInitialAnchor(node: NodeEditFormProps["node"]): FlexAnchor {
@@ -106,8 +113,8 @@ function inferInitialAnchor(node: NodeEditFormProps["node"]): FlexAnchor {
     node.arrival_time != null && !node.arrival_time_estimated;
   const hasUserDeparture =
     node.departure_time != null && !node.departure_time_estimated;
-  if (hasUserArrival) return "arrival";
-  if (hasUserDeparture) return "departure";
+  if (hasUserArrival && !node.is_start) return "arrival";
+  if (hasUserDeparture && !node.is_end) return "departure";
   return "none";
 }
 
@@ -241,12 +248,9 @@ export function NodeEditForm({
   const [type, setType] = useState(node.type);
   const [mode, setMode] = useState<EditMode>(() => inferInitialMode(node));
   const [anchor, setAnchor] = useState<FlexAnchor>(() => inferInitialAnchor(node));
-  const [durationMinutes, setDurationMinutes] = useState<number | null>(() => {
-    if (node.duration_minutes != null && !node.duration_estimated) {
-      return node.duration_minutes;
-    }
-    return node.duration_minutes ?? null;
-  });
+  const [durationMinutes, setDurationMinutes] = useState<number | null>(() =>
+    node.duration_estimated ? null : (node.duration_minutes ?? null),
+  );
   const [arrivalTime, setArrivalTime] = useState(() =>
     !node.arrival_time_estimated ? utcToLocalInput(node.arrival_time, tz) : "",
   );
@@ -296,6 +300,10 @@ export function NodeEditForm({
     if (name.trim() && name !== node.name) updates.name = name.trim();
     if (type !== node.type) updates.type = type;
 
+    const durationBaseline = node.duration_estimated
+      ? null
+      : (node.duration_minutes ?? null);
+
     if (mode === "fixed") {
       const newArrival = arrivalTime ? localInputToUtc(arrivalTime, tz) : null;
       const newDeparture = departureTime
@@ -310,22 +318,19 @@ export function NodeEditForm({
       }
     } else {
       // flexible
-      if (durationMinutes !== (node.duration_minutes ?? null)) {
+      if (durationMinutes !== durationBaseline) {
         updates.duration_minutes = durationMinutes;
       }
       if (anchor === "none") {
-        if (node.arrival_time && !node.arrival_time_estimated) {
-          updates.arrival_time = null;
-        }
-        if (node.departure_time && !node.departure_time_estimated) {
-          updates.departure_time = null;
-        }
+        // In no-anchor flex mode both times must be absent from Firestore.
+        // Writing null when the field is already null is a safe no-op.
+        updates.arrival_time = null;
+        updates.departure_time = null;
       } else if (anchor === "arrival") {
         const newArrival = arrivalTime ? localInputToUtc(arrivalTime, tz) : null;
         if (newArrival !== node.arrival_time) updates.arrival_time = newArrival;
-        if (node.departure_time && !node.departure_time_estimated) {
-          updates.departure_time = null;
-        }
+        // Departure must always be null in arrival-anchor flex mode.
+        updates.departure_time = null;
       } else {
         const newDeparture = departureTime
           ? localInputToUtc(departureTime, tz)
@@ -333,11 +338,16 @@ export function NodeEditForm({
         if (newDeparture !== node.departure_time) {
           updates.departure_time = newDeparture;
         }
-        if (node.arrival_time && !node.arrival_time_estimated) {
-          updates.arrival_time = null;
-        }
+        // Arrival must always be null in departure-anchor flex mode.
+        updates.arrival_time = null;
       }
     }
+
+    // Start nodes never carry a user-set arrival; end nodes never carry a
+    // user-set departure. The hidden-picker UI already keeps these empty on
+    // fresh edits, but force-clear any legacy non-null value on save.
+    if (node.is_start && node.arrival_time != null) updates.arrival_time = null;
+    if (node.is_end && node.departure_time != null) updates.departure_time = null;
 
     if (locationUpdate) {
       updates.lat = locationUpdate.lat;
@@ -519,6 +529,7 @@ export function NodeEditForm({
   function handlePlaceSelect(place: PlaceResult) {
     setLocationUpdate(place);
     setLocationState("chip");
+    setName(place.name);
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -667,106 +678,23 @@ export function NodeEditForm({
         )}
       </div>
 
-      {/* Row 3: Timing mode toggle */}
-      <div>
-        <div className="flex rounded-xl bg-surface-high p-0.5 gap-0.5">
-          {(["fixed", "flexible"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMode(m)}
-              className={`flex-1 rounded-[10px] px-3 py-1.5 text-xs font-semibold transition-all ${
-                mode === m
-                  ? "bg-surface-lowest text-on-surface shadow-soft"
-                  : "text-on-surface-variant"
-              }`}
-            >
-              {m === "fixed" ? "Fixed time" : "Flexible duration"}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Timing inputs */}
-      {mode === "fixed" ? (
-        <div className="grid grid-cols-2 gap-2">
-          <DateTimePicker
-            label="Arrival"
-            value={arrivalTime}
-            onChange={(newArrival) => {
-              setArrivalTime(newArrival);
-              if (newArrival && departureTime && newArrival >= departureTime) {
-                const d = new Date(newArrival);
-                d.setDate(d.getDate() + 1);
-                const yyyy = d.getFullYear();
-                const mm = String(d.getMonth() + 1).padStart(2, "0");
-                const dd = String(d.getDate()).padStart(2, "0");
-                const hh = String(d.getHours()).padStart(2, "0");
-                const min = String(d.getMinutes()).padStart(2, "0");
-                setDepartureTime(`${yyyy}-${mm}-${dd}T${hh}:${min}`);
-              }
-            }}
-            datetimeFormat={datetimeFormat}
-            dateFormat={dateFormat}
-            timezone={tz}
-            icon="arrival"
-          />
-          <DateTimePicker
-            label="Departure"
-            value={departureTime}
-            onChange={setDepartureTime}
-            datetimeFormat={datetimeFormat}
-            dateFormat={dateFormat}
-            timezone={tz}
-            icon="departure"
-            error={departureBeforeArrival}
-            errorMessage="Departure must be after arrival"
-          />
-        </div>
-      ) : (
-        <>
-          <DurationInput
-            value={durationMinutes}
-            onChange={setDurationMinutes}
-          />
-          <div>
-            <label className="block text-[11px] font-medium text-on-surface-variant mb-1.5 uppercase tracking-wide">
-              Anchor
-            </label>
-            <select
-              value={anchor}
-              onChange={(e) => setAnchor(e.target.value as FlexAnchor)}
-              className="w-full rounded-xl bg-surface-high px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
-            >
-              <option value="none">No anchor — estimate from upstream</option>
-              <option value="arrival">Anchor arrival time</option>
-              <option value="departure">Anchor departure time</option>
-            </select>
-          </div>
-          {anchor === "arrival" && (
-            <DateTimePicker
-              label="Anchored arrival"
-              value={arrivalTime}
-              onChange={setArrivalTime}
-              datetimeFormat={datetimeFormat}
-              dateFormat={dateFormat}
-              timezone={tz}
-              icon="arrival"
-            />
-          )}
-          {anchor === "departure" && (
-            <DateTimePicker
-              label="Anchored departure"
-              value={departureTime}
-              onChange={setDepartureTime}
-              datetimeFormat={datetimeFormat}
-              dateFormat={dateFormat}
-              timezone={tz}
-              icon="departure"
-            />
-          )}
-        </>
-      )}
+      {/* Row 3: Timing */}
+      <TimingFieldsSection
+        value={{ mode, anchor, arrivalTime, departureTime, durationMinutes }}
+        onChange={(next) => {
+          setMode(next.mode);
+          setAnchor(next.anchor);
+          setArrivalTime(next.arrivalTime);
+          setDepartureTime(next.departureTime);
+          setDurationMinutes(next.durationMinutes);
+        }}
+        isStartNode={node.is_start}
+        isEndNode={node.is_end}
+        datetimeFormat={datetimeFormat}
+        dateFormat={dateFormat}
+        showValidation
+        timezone={tz}
+      />
 
       {/* Live impact panel */}
       <div aria-live="polite" aria-atomic="true">

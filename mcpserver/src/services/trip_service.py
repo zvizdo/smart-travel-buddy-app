@@ -158,7 +158,6 @@ class TripService:
                 "arrival_time": n.get("arrival_time"),
                 "departure_time": n.get("departure_time"),
                 "duration_hours": n.get("duration_hours"),
-                "order_index": n.get("order_index", 0),
                 "timezone": n.get("timezone"),
                 "participant_ids": n.get("participant_ids"),
                 "actions": [
@@ -256,7 +255,6 @@ class TripService:
                     "name": n.get("name", "Unknown"),
                     "lat": lat_lng["lat"],
                     "lng": lat_lng["lng"],
-                    "order": n.get("order_index", 0),
                 })
 
         result = []

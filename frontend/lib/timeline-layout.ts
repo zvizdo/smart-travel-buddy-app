@@ -38,6 +38,7 @@ export interface PositionedNode {
   durationEstimated: boolean;
   overnightHold: boolean;
   holdReason: "night_drive" | "max_drive_hours" | null;
+  driveCap: boolean;
   timingConflict: string | null;
   spansDays: number;
   isShared?: boolean;
@@ -93,7 +94,6 @@ interface NodeData {
   arrival_time: string | null;
   departure_time: string | null;
   duration_minutes?: number | null;
-  order_index: number;
   participant_ids?: string[] | null;
   timezone?: string | null;
   // Enrichment flags populated by `enrichDagTimes`. Optional for callers
@@ -105,6 +105,7 @@ interface NodeData {
   timing_conflict?: string | null;
   overnight_hold?: boolean;
   hold_reason?: "night_drive" | "max_drive_hours" | null;
+  drive_cap_warning?: boolean;
   is_start?: boolean;
   is_end?: boolean;
   [key: string]: unknown;
@@ -134,6 +135,7 @@ interface ResolvedTime {
   timingConflict: string | null;
   overnightHold: boolean;
   holdReason: "night_drive" | "max_drive_hours" | null;
+  driveCap: boolean;
 }
 
 const MIN_NODE_HEIGHT_PX = 56;
@@ -356,6 +358,7 @@ export function computeTimelineLayout(
       timingConflict: node.timing_conflict ?? null,
       overnightHold: node.overnight_hold ?? false,
       holdReason: node.hold_reason ?? null,
+      driveCap: node.drive_cap_warning ?? false,
     });
   }
 
@@ -476,6 +479,7 @@ export function computeTimelineLayout(
       durationEstimated: resolved.durationEstimated,
       overnightHold: resolved.overnightHold,
       holdReason: resolved.holdReason,
+      driveCap: resolved.driveCap,
       timingConflict: resolved.timingConflict,
       spansDays,
     };

@@ -12,9 +12,13 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
         "description": (
             "Add a new stop to the trip itinerary. Returns the created node "
             "with its ID. Use add_edge separately to connect it to other stops. "
-            "Stops can be time-bound (arrival_time and/or departure_time set) "
-            "or flexible (only duration_minutes set — times are then derived "
-            "on read from upstream anchors)."
+            "Every stop has one of four timing shapes: Float (duration_minutes "
+            "only — for viewpoints and short along-route stops), Know when I "
+            "leave (departure_time only — preferred default for intermediate "
+            "stops), Know when I arrive (arrival_time only), or Fixed time "
+            "(both arrival_time and departure_time). Downstream Float and Know "
+            "when I leave stops derive their times automatically from the "
+            "upstream cascade."
         ),
         "parameters": {
             "type": "object",
@@ -45,9 +49,10 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
                 "duration_minutes": {
                     "type": "integer",
                     "description": (
-                        "Approximate duration of the stop in minutes, for "
-                        "flexible stops without a firm schedule (e.g. '~2h at "
-                        "the chateau' = 120)."
+                        "Stay length in minutes. Only set for Float or Know "
+                        "when I arrive shapes where the stay length is a "
+                        "meaningful commitment (e.g. '30 min at the lookout' "
+                        "= 30, '~2h at the chateau' = 120)."
                     ),
                 },
             },
@@ -60,9 +65,10 @@ DAG_TOOL_DEFINITIONS: list[dict] = [
         "description": (
             "Update an existing stop. Only provide the fields you want to change. "
             "Updates only this stop — does NOT cascade schedule changes to "
-            "downstream nodes. Downstream flex stops re-derive their times "
-            "automatically on read; downstream time-bound stops must be "
-            "updated explicitly if you want them to shift."
+            "downstream nodes. Downstream Float and Know when I leave stops "
+            "re-derive their times automatically on read; downstream Fixed "
+            "time and Know when I arrive stops must be updated explicitly if "
+            "you want them to shift."
         ),
         "parameters": {
             "type": "object",

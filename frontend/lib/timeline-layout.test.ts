@@ -18,7 +18,6 @@ function node(
     lat_lng: null,
     arrival_time: opts?.arrival_time ?? null,
     departure_time: opts?.departure_time ?? null,
-    order_index: 0,
     participant_ids: opts?.participant_ids ?? null,
   };
 }

@@ -186,9 +186,19 @@ export function EdgeDetail({
         {edge.travel_time_hours > 0 && (
           <div className="flex justify-between text-sm">
             <span className="text-on-surface-variant">Duration</span>
-            <span className="font-medium text-on-surface">
-              {formatTravelTime(edge.travel_time_hours)}
+            <span className={edge.travel_time_estimated ? "text-on-surface-variant italic" : "font-medium text-on-surface"}>
+              {edge.travel_time_estimated ? `~${formatTravelTime(edge.travel_time_hours)}` : formatTravelTime(edge.travel_time_hours)}
             </span>
+          </div>
+        )}
+        {!edge.travel_time_hours && edge.distance_km == null && (
+          <div className="flex items-start gap-2 rounded-xl bg-[#fef3c7] p-3 text-xs text-[#92400e]">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mt-px shrink-0">
+              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span>Duration unavailable — route data not fetched</span>
           </div>
         )}
         {edge.distance_km != null && (

@@ -29,7 +29,6 @@ def _make_node(
         arrival_time=datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
         departure_time=datetime(2026, 6, 2, 10, 0, tzinfo=UTC),
         participant_ids=None,
-        order_index=0,
         place_id=None,
         created_by="user_1",
         created_at=datetime(2026, 1, 1, tzinfo=UTC),

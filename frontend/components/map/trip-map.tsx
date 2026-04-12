@@ -13,7 +13,7 @@ import { EdgePolyline } from "@/components/map/edge-polyline";
 import { FanOutTether } from "@/components/map/fan-out-tether";
 import { PulseAvatars } from "@/components/map/pulse-avatars";
 import { type PlaceResult } from "@/components/map/places-autocomplete";
-import { setsEqual } from "@/lib/set-utils";
+
 
 interface TripMapProps {
   nodes: DocumentData[];
@@ -31,6 +31,9 @@ interface TripMapProps {
   planId?: string | null;
   /** Hold off the initial fit until the parent has resolved any pre-fit state (e.g. path mode). Defaults to true. */
   readyForInitialFit?: boolean;
+  /** Context-aware focal point for initial camera. When set, the map shows a
+   *  wide overview first then animates to this point. Null = fitBounds only. */
+  initialFocalPoint?: { lat: number; lng: number; zoom: number } | null;
   savedCamera?: { center: { lat: number; lng: number }; zoom: number } | null;
   onCameraChange?: (camera: { center: { lat: number; lng: number }; zoom: number }) => void;
   pulseLocations?: DocumentData[];
@@ -91,6 +94,7 @@ export function TripMap({
   selectedEdgeId,
   planId,
   readyForInitialFit = true,
+  initialFocalPoint,
   savedCamera,
   onCameraChange,
   pulseLocations,
@@ -102,10 +106,8 @@ export function TripMap({
   const defaultCenter = useMemo(() => {
     if (savedCamera) return savedCamera.center;
     if (nodes.length === 0) return { lat: 30, lng: 10 };
-    const sorted = [...nodes]
-      .filter((n) => n.lat_lng)
-      .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
-    const root = sorted[0];
+    const start = nodes.find((n) => n.is_start && n.lat_lng);
+    const root = start ?? nodes.find((n) => n.lat_lng);
     if (!root?.lat_lng) return { lat: 30, lng: 10 };
     return { lat: root.lat_lng.lat, lng: root.lat_lng.lng };
   }, [nodes, savedCamera]);
@@ -124,6 +126,12 @@ export function TripMap({
   const rootNodeIds = useMemo(() => {
     const hasParent = new Set(edges.map((e) => e.to_node_id));
     return new Set(nodes.filter((n) => !hasParent.has(n.id)).map((n) => n.id));
+  }, [nodes, edges]);
+
+  // Leaf nodes (out-degree 0) — these are ending points of the trip
+  const leafNodeIds = useMemo(() => {
+    const hasChild = new Set(edges.map((e) => e.from_node_id));
+    return new Set(nodes.filter((n) => !hasChild.has(n.id)).map((n) => n.id));
   }, [nodes, edges]);
 
   const map = useMap();
@@ -207,32 +215,50 @@ export function TripMap({
 
   // The fit effect runs on every Firestore update but the hasFittedRef guard
   // makes it a cheap noop after the initial fit, so the camera stays put.
+  const flyInTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!map || hasFittedRef.current) return;
-    // A restored camera (sessionStorage on remount) is the user's last viewport — honor it.
     if (savedCamera) {
       hasFittedRef.current = true;
       return;
     }
     if (!readyForInitialFit) return;
     if (initialFitNodes.length === 0) return;
-    fitToNodes(map, initialFitNodes, false);
-    hasFittedRef.current = true;
-  }, [map, initialFitNodes, savedCamera, readyForInitialFit, fitToNodes]);
 
-  // Re-fit bounds (animated) when the user toggles the path filter or when their
-  // resolved path materially changes (e.g. after resolving a divergence). The set
-  // identity churns on every Firestore snapshot, so compare by content instead.
-  const prevMyNodeIdsRef = useRef<Set<string> | null | undefined>(undefined);
+    if (initialFocalPoint) {
+      // Two-phase fly-in: instant overview then animated zoom to focal point
+      fitToNodes(map, initialFitNodes, false);
+      flyInTimerRef.current = setTimeout(() => {
+        map.panTo({ lat: initialFocalPoint.lat, lng: initialFocalPoint.lng });
+        map.setZoom(initialFocalPoint.zoom);
+        flyInTimerRef.current = null;
+      }, 500);
+    } else {
+      fitToNodes(map, initialFitNodes, false);
+    }
+    hasFittedRef.current = true;
+  }, [map, initialFitNodes, savedCamera, readyForInitialFit, fitToNodes, initialFocalPoint]);
+
   useEffect(() => {
-    const prev = prevMyNodeIdsRef.current;
-    // Skip the very first render (initial fit handles it).
+    return () => {
+      if (flyInTimerRef.current) clearTimeout(flyInTimerRef.current);
+    };
+  }, []);
+
+  // Re-fit bounds (animated) only when the user toggles the path filter mode
+  // (all ↔ mine). Content-level changes within the same mode (e.g. node
+  // add/delete changing which IDs are in the set) should NOT refit — the user
+  // expects the camera to stay where they left it after mutations.
+  const prevFilterModeRef = useRef<"all" | "mine" | undefined>(undefined);
+  useEffect(() => {
+    const currentMode = myNodeIds != null ? "mine" : "all";
+    const prev = prevFilterModeRef.current;
     if (prev === undefined) {
-      prevMyNodeIdsRef.current = myNodeIds;
+      prevFilterModeRef.current = currentMode;
       return;
     }
-    prevMyNodeIdsRef.current = myNodeIds;
-    if (setsEqual(prev, myNodeIds)) return;
+    if (prev === currentMode) return;
+    prevFilterModeRef.current = currentMode;
 
     if (!map) return;
     const targetNodes = myNodeIds && myNodeIds.size > 0
@@ -713,6 +739,7 @@ export function TripMap({
             selected={selectedNodeId === node.id}
             isMergeNode={mergeNodeIds?.has(node.id)}
             isStartNode={rootNodeIds.has(node.id)}
+            isEndNode={leafNodeIds.has(node.id)}
             dimmed={dimmed}
             proximityScale={nodeProximityScales.get(node.id) ?? 1}
             fannedOut={nodeFanOutPositions.has(node.id)}

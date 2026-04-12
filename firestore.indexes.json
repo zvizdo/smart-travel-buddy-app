@@ -1,14 +1,6 @@
 {
   "indexes": [
     {
-      "collectionGroup": "nodes",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "participant_ids", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "order_index", "order": "ASCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "edges",
       "queryScope": "COLLECTION",
       "fields": [

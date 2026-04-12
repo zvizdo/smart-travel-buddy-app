@@ -187,8 +187,8 @@ class TestDriveHoursCounter:
         # because hotel reset the counter to 0, and 7 <= 10.
         hotel = _find(enriched, "hotel")
         end = _find(enriched, "end")
-        assert hotel["overnight_hold"] is False
-        assert end["overnight_hold"] is False
+        assert hotel["drive_cap_warning"] is False
+        assert end["drive_cap_warning"] is False
 
     def test_long_duration_node_resets_counter(self):
         nodes = [
@@ -222,11 +222,11 @@ class TestDriveHoursCounter:
         enriched = enrich_dag_times(nodes, edges, settings)
         # Without the reset, accumulated would be 10 after rest leg, then 15 > 10 → hold.
         # With the reset (duration 480 >= 360), counter goes to 0 at rest.
-        assert _find(enriched, "end")["overnight_hold"] is False
+        assert _find(enriched, "end")["drive_cap_warning"] is False
 
 
 class TestMaxDriveHoursCap:
-    def test_cap_triggers_overnight_hold(self):
+    def test_cap_triggers_passive_warning(self):
         nodes = [
             {
                 "id": "start",
@@ -257,9 +257,12 @@ class TestMaxDriveHoursCap:
         settings = {"no_drive_window": None, "max_drive_hours_per_day": 10.0}
         enriched = enrich_dag_times(nodes, edges, settings)
         mid = _find(enriched, "mid")
-        # mid accumulates 6h from start leg; its outgoing 6h would push to 12 > 10 → overnight hold.
-        assert mid["overnight_hold"] is True
-        assert mid["hold_reason"] == "max_drive_hours"
+        end = _find(enriched, "end")
+        # mid accumulates 6h from start leg; its outgoing 6h would push to 12 > 10 → passive warning on end.
+        assert mid["drive_cap_warning"] is False
+        assert end["overnight_hold"] is False
+        assert end.get("drive_cap_warning") is True
+        assert end["hold_reason"] == "max_drive_hours"
 
 
 class TestCycleFallback:

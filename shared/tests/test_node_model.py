@@ -14,7 +14,6 @@ def _base_kwargs(**overrides) -> dict:
         "name": "Test",
         "type": NodeType.CITY,
         "lat_lng": LatLng(lat=0.0, lng=0.0),
-        "order_index": 0,
         "created_by": "u_test",
     }
     kwargs.update(overrides)

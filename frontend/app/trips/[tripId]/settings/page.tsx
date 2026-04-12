@@ -321,9 +321,10 @@ export default function TripSettingsPage() {
 
       {/* Header */}
       <header className="flex items-center gap-3 px-5 py-4 bg-surface-lowest">
-        <Link
-          href={`/trips/${tripId}`}
+        <button
+          onClick={() => router.back()}
           className="h-10 w-10 rounded-full bg-surface-low flex items-center justify-center text-on-surface-variant transition-colors active:bg-surface-container"
+          aria-label="Go back"
         >
           <svg
             className="h-5 w-5"
@@ -338,7 +339,7 @@ export default function TripSettingsPage() {
               d="M15.75 19.5 8.25 12l7.5-7.5"
             />
           </svg>
-        </Link>
+        </button>
         <h1 className="text-lg font-bold text-on-surface">Trip Settings</h1>
       </header>
 

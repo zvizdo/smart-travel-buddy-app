@@ -2,7 +2,10 @@
   {
     "name": "linear_all_time_bound_no_changes",
     "description": "Every node has both arrival and departure set. Enrichment only fills flags.",
-    "trip_settings": {"no_drive_window": null, "max_drive_hours_per_day": null},
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
     "nodes": [
       {
         "id": "n_a",
@@ -22,7 +25,12 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_a", "to_node_id": "n_b", "travel_mode": "drive", "travel_time_hours": 4}
+      {
+        "from_node_id": "n_a",
+        "to_node_id": "n_b",
+        "travel_mode": "drive",
+        "travel_time_hours": 4
+      }
     ],
     "expected": [
       {
@@ -58,7 +66,10 @@
   {
     "name": "linear_all_flexible_with_start_departure",
     "description": "Start has only departure, rest is duration-bound. Everything is estimated.",
-    "trip_settings": {"no_drive_window": null, "max_drive_hours_per_day": null},
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
     "nodes": [
       {
         "id": "n_start",
@@ -83,8 +94,18 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_start", "to_node_id": "n_mid", "travel_mode": "drive", "travel_time_hours": 2},
-      {"from_node_id": "n_mid", "to_node_id": "n_end", "travel_mode": "drive", "travel_time_hours": 1}
+      {
+        "from_node_id": "n_start",
+        "to_node_id": "n_mid",
+        "travel_mode": "drive",
+        "travel_time_hours": 2
+      },
+      {
+        "from_node_id": "n_mid",
+        "to_node_id": "n_end",
+        "travel_mode": "drive",
+        "travel_time_hours": 1
+      }
     ],
     "expected": [
       {
@@ -126,7 +147,10 @@
   {
     "name": "mixed_bound_arrival_plus_duration",
     "description": "Node has user arrival plus duration; departure is derived.",
-    "trip_settings": {"no_drive_window": null, "max_drive_hours_per_day": null},
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
     "nodes": [
       {
         "id": "n_start",
@@ -145,7 +169,12 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_start", "to_node_id": "n_mid", "travel_mode": "drive", "travel_time_hours": 2}
+      {
+        "from_node_id": "n_start",
+        "to_node_id": "n_mid",
+        "travel_mode": "drive",
+        "travel_time_hours": 2
+      }
     ],
     "expected": [
       {
@@ -169,7 +198,10 @@
   {
     "name": "default_duration_when_missing",
     "description": "Flex node with no duration defaults to 30 minutes.",
-    "trip_settings": {"no_drive_window": null, "max_drive_hours_per_day": null},
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
     "nodes": [
       {
         "id": "n_start",
@@ -186,7 +218,12 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_start", "to_node_id": "n_mid", "travel_mode": "drive", "travel_time_hours": 1}
+      {
+        "from_node_id": "n_start",
+        "to_node_id": "n_mid",
+        "travel_mode": "drive",
+        "travel_time_hours": 1
+      }
     ],
     "expected": [
       {
@@ -201,7 +238,10 @@
   {
     "name": "branching_merge_uses_max_parent",
     "description": "Diamond DAG: merge node arrival is max of both parent departures + travel.",
-    "trip_settings": {"no_drive_window": null, "max_drive_hours_per_day": null},
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
     "nodes": [
       {
         "id": "n_root",
@@ -233,10 +273,30 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_root", "to_node_id": "n_left", "travel_mode": "drive", "travel_time_hours": 1},
-      {"from_node_id": "n_root", "to_node_id": "n_right", "travel_mode": "drive", "travel_time_hours": 1},
-      {"from_node_id": "n_left", "to_node_id": "n_merge", "travel_mode": "drive", "travel_time_hours": 1},
-      {"from_node_id": "n_right", "to_node_id": "n_merge", "travel_mode": "drive", "travel_time_hours": 1}
+      {
+        "from_node_id": "n_root",
+        "to_node_id": "n_left",
+        "travel_mode": "drive",
+        "travel_time_hours": 1
+      },
+      {
+        "from_node_id": "n_root",
+        "to_node_id": "n_right",
+        "travel_mode": "drive",
+        "travel_time_hours": 1
+      },
+      {
+        "from_node_id": "n_left",
+        "to_node_id": "n_merge",
+        "travel_mode": "drive",
+        "travel_time_hours": 1
+      },
+      {
+        "from_node_id": "n_right",
+        "to_node_id": "n_merge",
+        "travel_mode": "drive",
+        "travel_time_hours": 1
+      }
     ],
     "expected": [
       {
@@ -260,7 +320,10 @@
     "name": "night_rule_pads_overnight_drive",
     "description": "Evening start + long drive triggers overnight hold at the predecessor.",
     "trip_settings": {
-      "no_drive_window": {"start_hour": 22, "end_hour": 6},
+      "no_drive_window": {
+        "start_hour": 22,
+        "end_hour": 6
+      },
       "max_drive_hours_per_day": null
     },
     "nodes": [
@@ -280,19 +343,25 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_a", "to_node_id": "n_b", "travel_mode": "drive", "travel_time_hours": 8}
+      {
+        "from_node_id": "n_a",
+        "to_node_id": "n_b",
+        "travel_mode": "drive",
+        "travel_time_hours": 8
+      }
     ],
     "expected": [
       {
         "id": "n_a",
-        "overnight_hold": true,
-        "hold_reason": "night_drive",
-        "departure_time": "2026-05-02T04:00:00+00:00"
+        "overnight_hold": false,
+        "departure_time": "2026-05-01T17:00:00+00:00"
       },
       {
         "id": "n_b",
-        "arrival_time": "2026-05-02T12:00:00+00:00",
-        "overnight_hold": false
+        "arrival_time": "2026-05-02T01:00:00+00:00",
+        "overnight_hold": false,
+        "drive_cap_warning": true,
+        "hold_reason": "night_drive"
       }
     ]
   },
@@ -300,7 +369,10 @@
     "name": "night_rule_skipped_without_timezone",
     "description": "Nodes without timezone skip the night rule silently.",
     "trip_settings": {
-      "no_drive_window": {"start_hour": 22, "end_hour": 6},
+      "no_drive_window": {
+        "start_hour": 22,
+        "end_hour": 6
+      },
       "max_drive_hours_per_day": null
     },
     "nodes": [
@@ -318,7 +390,12 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_a", "to_node_id": "n_b", "travel_mode": "drive", "travel_time_hours": 5}
+      {
+        "from_node_id": "n_a",
+        "to_node_id": "n_b",
+        "travel_mode": "drive",
+        "travel_time_hours": 5
+      }
     ],
     "expected": [
       {
@@ -364,8 +441,18 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_a", "to_node_id": "n_b", "travel_mode": "drive", "travel_time_hours": 8},
-      {"from_node_id": "n_b", "to_node_id": "n_c", "travel_mode": "drive", "travel_time_hours": 6}
+      {
+        "from_node_id": "n_a",
+        "to_node_id": "n_b",
+        "travel_mode": "drive",
+        "travel_time_hours": 8
+      },
+      {
+        "from_node_id": "n_b",
+        "to_node_id": "n_c",
+        "travel_mode": "drive",
+        "travel_time_hours": 6
+      }
     ],
     "expected": [
       {
@@ -384,7 +471,10 @@
   {
     "name": "time_bound_downstream_conflict",
     "description": "User-set downstream time conflicts with upstream-driven propagation.",
-    "trip_settings": {"no_drive_window": null, "max_drive_hours_per_day": null},
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
     "nodes": [
       {
         "id": "n_a",
@@ -403,7 +493,12 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_a", "to_node_id": "n_b", "travel_mode": "drive", "travel_time_hours": 4}
+      {
+        "from_node_id": "n_a",
+        "to_node_id": "n_b",
+        "travel_mode": "drive",
+        "travel_time_hours": 4
+      }
     ],
     "expected": [
       {
@@ -419,7 +514,10 @@
   {
     "name": "cycle_returns_raw_with_defaults",
     "description": "Graph with a cycle short-circuits: nothing estimated, duration defaulted.",
-    "trip_settings": {"no_drive_window": null, "max_drive_hours_per_day": null},
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
     "nodes": [
       {
         "id": "n_a",
@@ -436,8 +534,18 @@
       }
     ],
     "edges": [
-      {"from_node_id": "n_a", "to_node_id": "n_b", "travel_mode": "drive", "travel_time_hours": 1},
-      {"from_node_id": "n_b", "to_node_id": "n_a", "travel_mode": "drive", "travel_time_hours": 1}
+      {
+        "from_node_id": "n_a",
+        "to_node_id": "n_b",
+        "travel_mode": "drive",
+        "travel_time_hours": 1
+      },
+      {
+        "from_node_id": "n_b",
+        "to_node_id": "n_a",
+        "travel_mode": "drive",
+        "travel_time_hours": 1
+      }
     ],
     "expected": [
       {
@@ -451,6 +559,53 @@
         "id": "n_b",
         "duration_minutes": 30,
         "duration_estimated": true
+      }
+    ]
+  },
+  {
+    "name": "max_drive_hours_sets_warning_on_flex_node",
+    "description": "Flex node exceeds max drive cap and should surface passive warning without mangling limits.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": 5.0
+    },
+    "nodes": [
+      {
+        "id": "n_start",
+        "name": "Day 1",
+        "type": "place",
+        "timezone": "Europe/Vienna",
+        "departure_time": "2026-05-01T08:00:00+00:00"
+      },
+      {
+        "id": "n_mid",
+        "name": "Coffee",
+        "type": "restaurant",
+        "timezone": "Europe/Vienna",
+        "duration_minutes": 60
+      }
+    ],
+    "edges": [
+      {
+        "from_node_id": "n_start",
+        "to_node_id": "n_mid",
+        "travel_mode": "drive",
+        "travel_time_hours": 6
+      }
+    ],
+    "expected": [
+      {
+        "id": "n_start",
+        "departure_time": "2026-05-01T08:00:00+00:00",
+        "overnight_hold": false
+      },
+      {
+        "id": "n_mid",
+        "arrival_time": "2026-05-01T14:00:00+00:00",
+        "departure_time": "2026-05-01T15:00:00+00:00",
+        "drive_cap_warning": true,
+        "hold_reason": "max_drive_hours",
+        "overnight_hold": false
       }
     ]
   }

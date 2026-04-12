@@ -1,4 +1,5 @@
-"""Tests for DAGService: impact previews and node operations.
+"""Tests for DAGService: impact previews, node operations, and departure-time
+fallback for the Routes API.
 
 The old cascade engine (``compute_cascade``, ``confirm_cascade``,
 ``update_node_with_cascade_preview``) has been replaced by read-time
@@ -8,12 +9,15 @@ These tests cover that new surface and the unchanged ``delete_node``
 reconnection behavior.
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from shared.dag._internals import parse_dt as _parse_dt
-from shared.services.dag_service import DAGService
+from shared.models.edge import Edge, TravelMode
+from shared.models.node import LatLng, Node
+from shared.services.dag_service import DAGService, _build_departure_map
 
 
 # ── _parse_dt helper ──────────────────────────────────────────────
@@ -37,12 +41,32 @@ class TestParseDt:
 
 
 def _make_service():
-    """Create a DAGService with mocked repositories."""
+    """Create a DAGService with mocked repositories.
+
+    Sets up the Firestore batch mock so mutation methods (``create_node``,
+    ``create_branch``, ``delete_node``) that commit all mutations in a
+    single atomic batch can ``await batch.commit()``.
+    """
     trip_repo = MagicMock()
     plan_repo = MagicMock()
     node_repo = MagicMock()
     edge_repo = MagicMock()
-    return DAGService(trip_repo, plan_repo, node_repo, edge_repo)
+
+    # Wire up a shared batch mock reachable via node_repo._db.batch().
+    batch = MagicMock()
+    batch.commit = AsyncMock()
+    node_repo._db = MagicMock()
+    node_repo._db.batch = MagicMock(return_value=batch)
+
+    # Wire up _collection mocks for batch.set/batch.delete document refs.
+    collection = MagicMock()
+    collection.document = MagicMock(return_value=MagicMock())
+    node_repo._collection = MagicMock(return_value=collection)
+    edge_repo._collection = MagicMock(return_value=collection)
+
+    svc = DAGService(trip_repo, plan_repo, node_repo, edge_repo)
+    svc._test_batch = batch  # expose for assertions
+    return svc
 
 
 def _make_node_dict(
@@ -65,7 +89,6 @@ def _make_node_dict(
         "departure_time": departure,
         "duration_minutes": duration_minutes,
         "participant_ids": None,
-        "order_index": 0,
         "place_id": None,
         "timezone": None,
         "created_by": "user_1",
@@ -274,6 +297,11 @@ class TestDeleteNodeLinear:
     @pytest.mark.asyncio
     async def test_delete_middle_reconnects_edges(self):
         """Deleting B from A->B->C should create edge A->C."""
+        nodes = [
+            _make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
+            _make_node_dict("B", "Lyon", arrival="2026-06-02T10:00:00+00:00"),
+            _make_node_dict("C", "Nice", arrival="2026-06-03T10:00:00+00:00"),
+        ]
         edges = [
             _make_edge_dict("A", "B", 2),
             _make_edge_dict("B", "C", 3),
@@ -283,7 +311,7 @@ class TestDeleteNodeLinear:
         svc._edge_repo.delete_edge = AsyncMock()
         svc._edge_repo.create_edge = AsyncMock()
         svc._node_repo.delete_node = AsyncMock()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=[])
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
         svc._node_repo.update_node = AsyncMock()
 
         result = await svc.delete_node("trip1", "plan1", "B")
@@ -296,8 +324,10 @@ class TestDeleteNodeLinear:
         # Travel time should be sum of both original edges
         assert result["reconnected_edge"]["travel_time_hours"] == 5
 
-        svc._node_repo.delete_node.assert_awaited_once_with("trip1", "plan1", "B")
-        svc._edge_repo.create_edge.assert_awaited_once()
+        svc._test_batch.commit.assert_awaited()
+        # Batch should contain: 2 edge deletes + 1 edge create + 1 node delete = 4 ops
+        assert svc._test_batch.delete.call_count >= 3  # 2 edges + 1 node
+        assert svc._test_batch.set.call_count == 1  # 1 reconnected edge
 
     @pytest.mark.asyncio
     async def test_delete_leaf_no_reconnect(self):
@@ -319,7 +349,7 @@ class TestDeleteNodeLinear:
         assert result["deleted_node_id"] == "C"
         assert result["deleted_edge_count"] == 1
         assert result["reconnected_edge"] is None
-        svc._edge_repo.create_edge.assert_not_awaited()
+        svc._test_batch.set.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_root_no_reconnect(self):
@@ -415,6 +445,12 @@ class TestDeleteNodeDivergent:
 
         DAG: A -> B -> D, A -> C -> D. Delete B => reconnect A -> D.
         """
+        nodes = [
+            _make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
+            _make_node_dict("B", "Lyon", arrival="2026-06-02T10:00:00+00:00"),
+            _make_node_dict("C", "Nice", arrival="2026-06-02T10:00:00+00:00"),
+            _make_node_dict("D", "Rome", arrival="2026-06-03T10:00:00+00:00"),
+        ]
         edges = [
             _make_edge_dict("A", "B", 1),
             _make_edge_dict("B", "D", 2),
@@ -426,7 +462,7 @@ class TestDeleteNodeDivergent:
         svc._edge_repo.delete_edge = AsyncMock()
         svc._edge_repo.create_edge = AsyncMock()
         svc._node_repo.delete_node = AsyncMock()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=[])
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
         svc._node_repo.update_node = AsyncMock()
 
         result = await svc.delete_node("trip1", "plan1", "B")
@@ -436,3 +472,745 @@ class TestDeleteNodeDivergent:
         assert result["reconnected_edge"]["from_node_id"] == "A"
         assert result["reconnected_edge"]["to_node_id"] == "D"
         assert result["reconnected_edge"]["travel_time_hours"] == 3
+
+    @pytest.mark.asyncio
+    async def test_delete_merge_node_reconnects_all_predecessors(self):
+        """Deleting a merge node with N incoming, 1 outgoing reconnects all.
+
+        DAG: A -> D, B -> D, C -> D, D -> E. Delete D =>
+        reconnect A->E, B->E, C->E.
+        """
+        nodes = [
+            _make_node_dict("A", "Paris"),
+            _make_node_dict("B", "Lyon"),
+            _make_node_dict("C", "Nice"),
+            _make_node_dict("D", "Milan"),
+            _make_node_dict("E", "Rome"),
+        ]
+        edges = [
+            _make_edge_dict("A", "D", 2),
+            _make_edge_dict("B", "D", 3),
+            _make_edge_dict("C", "D", 1),
+            _make_edge_dict("D", "E", 4),
+        ]
+        svc = _make_service()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.delete_edge = AsyncMock()
+        svc._edge_repo.create_edge = AsyncMock()
+        svc._node_repo.delete_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._node_repo.update_node = AsyncMock()
+
+        result = await svc.delete_node("trip1", "plan1", "D")
+
+        assert result["deleted_edge_count"] == 4
+        assert len(result["reconnected_edges"]) == 3
+        reconnected_pairs = {
+            (e["from_node_id"], e["to_node_id"])
+            for e in result["reconnected_edges"]
+        }
+        assert reconnected_pairs == {("A", "E"), ("B", "E"), ("C", "E")}
+        # Backward compat: reconnected_edge is the first one
+        assert result["reconnected_edge"] is not None
+
+    @pytest.mark.asyncio
+    async def test_delete_divergence_node_reconnects_all_successors(self):
+        """Deleting a divergence node with 1 incoming, N outgoing reconnects all.
+
+        DAG: A -> D, D -> B, D -> C. Delete D =>
+        reconnect A->B, A->C.
+        """
+        nodes = [
+            _make_node_dict("A", "Paris"),
+            _make_node_dict("B", "Lyon"),
+            _make_node_dict("C", "Nice"),
+            _make_node_dict("D", "Milan"),
+        ]
+        edges = [
+            _make_edge_dict("A", "D", 2),
+            _make_edge_dict("D", "B", 3),
+            _make_edge_dict("D", "C", 1),
+        ]
+        svc = _make_service()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.delete_edge = AsyncMock()
+        svc._edge_repo.create_edge = AsyncMock()
+        svc._node_repo.delete_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._node_repo.update_node = AsyncMock()
+
+        result = await svc.delete_node("trip1", "plan1", "D")
+
+        assert result["deleted_edge_count"] == 3
+        assert len(result["reconnected_edges"]) == 2
+        reconnected_pairs = {
+            (e["from_node_id"], e["to_node_id"])
+            for e in result["reconnected_edges"]
+        }
+        assert reconnected_pairs == {("A", "B"), ("A", "C")}
+        assert result["reconnected_edge"] is not None
+
+    @pytest.mark.asyncio
+    async def test_delete_multi_in_multi_out_no_reconnect(self):
+        """Deleting a node with N incoming and M outgoing (N>1, M>1) is ambiguous.
+
+        DAG: A -> D, B -> D, D -> E, D -> F. Delete D => no reconnect.
+        """
+        edges = [
+            _make_edge_dict("A", "D", 2),
+            _make_edge_dict("B", "D", 3),
+            _make_edge_dict("D", "E", 1),
+            _make_edge_dict("D", "F", 4),
+        ]
+        svc = _make_service()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.delete_edge = AsyncMock()
+        svc._edge_repo.create_edge = AsyncMock()
+        svc._node_repo.delete_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=[])
+        svc._node_repo.update_node = AsyncMock()
+
+        result = await svc.delete_node("trip1", "plan1", "D")
+
+        assert result["deleted_edge_count"] == 4
+        assert result["reconnected_edge"] is None
+        assert result["reconnected_edges"] == []
+
+
+# ── Delete node: route data on reconnect ──────────────────────────
+class TestDeleteNodeRouteData:
+    """Verify that delete_node passes coordinates and departure time when
+    reconnecting edges, so the Routes API returns a real polyline instead
+    of a flat line.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reconnect_passes_from_to_latlng(self):
+        """Deleting B from A->B->C: the reconnected A->C edge must receive
+        both nodes' lat_lng so the route service can fetch a real polyline."""
+        import asyncio
+
+        nodes = [
+            {**_make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon", arrival="2026-06-02T10:00:00+00:00"),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+            {**_make_node_dict("C", "Nice", arrival="2026-06-03T10:00:00+00:00"),
+             "lat_lng": {"lat": 43.71, "lng": 7.26}},
+        ]
+        edges = [
+            _make_edge_dict("A", "B", 4),
+            _make_edge_dict("B", "C", 5),
+        ]
+
+        mock_route_service = AsyncMock()
+        mock_route_service.fetch_and_patch_polyline = AsyncMock()
+
+        svc = _make_service()
+        svc._route_service = mock_route_service
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.delete_edge = AsyncMock()
+        svc._edge_repo.create_edge = AsyncMock()
+        svc._node_repo.delete_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._node_repo.update_node = AsyncMock()
+
+        result = await svc.delete_node("trip1", "plan1", "B")
+        await asyncio.sleep(0)  # let background task run
+
+        assert result["reconnected_edge"] is not None
+        assert result["reconnected_edge"]["from_node_id"] == "A"
+        assert result["reconnected_edge"]["to_node_id"] == "C"
+
+        mock_route_service.fetch_and_patch_polyline.assert_awaited_once()
+        call_kwargs = mock_route_service.fetch_and_patch_polyline.call_args
+        assert call_kwargs.kwargs["from_latlng"] == {"lat": 48.86, "lng": 2.35}
+        assert call_kwargs.kwargs["to_latlng"] == {"lat": 43.71, "lng": 7.26}
+
+    @pytest.mark.asyncio
+    async def test_reconnect_passes_departure_time(self):
+        """The reconnected edge should receive the from-node's departure time
+        for traffic-aware routing."""
+        import asyncio
+
+        nodes = [
+            {**_make_node_dict("A", "Paris",
+                               arrival="2026-06-01T10:00:00+00:00",
+                               departure="2026-06-02T08:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon", arrival="2026-06-02T12:00:00+00:00"),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+            {**_make_node_dict("C", "Nice", arrival="2026-06-03T10:00:00+00:00"),
+             "lat_lng": {"lat": 43.71, "lng": 7.26}},
+        ]
+        edges = [
+            _make_edge_dict("A", "B", 4),
+            _make_edge_dict("B", "C", 5),
+        ]
+
+        mock_route_service = AsyncMock()
+        mock_route_service.fetch_and_patch_polyline = AsyncMock()
+
+        svc = _make_service()
+        svc._route_service = mock_route_service
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.delete_edge = AsyncMock()
+        svc._edge_repo.create_edge = AsyncMock()
+        svc._node_repo.delete_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._node_repo.update_node = AsyncMock()
+
+        await svc.delete_node("trip1", "plan1", "B")
+        await asyncio.sleep(0)
+
+        call_kwargs = mock_route_service.fetch_and_patch_polyline.call_args
+        assert call_kwargs.kwargs["departure_time"] == "2026-06-02T08:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_reconnect_no_route_fetch_without_route_service(self):
+        """When no route service is configured, reconnection still works
+        (edge created without polyline, no error)."""
+        nodes = [
+            {**_make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon", arrival="2026-06-02T10:00:00+00:00"),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+            {**_make_node_dict("C", "Nice", arrival="2026-06-03T10:00:00+00:00"),
+             "lat_lng": {"lat": 43.71, "lng": 7.26}},
+        ]
+        edges = [
+            _make_edge_dict("A", "B", 4),
+            _make_edge_dict("B", "C", 5),
+        ]
+
+        svc = _make_service()
+        assert svc._route_service is None
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.delete_edge = AsyncMock()
+        svc._edge_repo.create_edge = AsyncMock()
+        svc._node_repo.delete_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._node_repo.update_node = AsyncMock()
+
+        result = await svc.delete_node("trip1", "plan1", "B")
+
+        assert result["reconnected_edge"] is not None
+        svc._test_batch.set.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_uses_arrival_as_departure_fallback(self):
+        """When the from-node has no departure_time, fall back to arrival_time
+        for the route request."""
+        import asyncio
+
+        nodes = [
+            {**_make_node_dict("A", "Paris", duration_minutes=480),
+             "lat_lng": {"lat": 48.86, "lng": 2.35},
+             "arrival_time": "2026-06-01T10:00:00+00:00",
+             "departure_time": None},
+            {**_make_node_dict("B", "Lyon", duration_minutes=120),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+            {**_make_node_dict("C", "Nice", duration_minutes=120),
+             "lat_lng": {"lat": 43.71, "lng": 7.26}},
+        ]
+        edges = [
+            _make_edge_dict("A", "B", 4),
+            _make_edge_dict("B", "C", 5),
+        ]
+
+        mock_route_service = AsyncMock()
+        mock_route_service.fetch_and_patch_polyline = AsyncMock()
+
+        svc = _make_service()
+        svc._route_service = mock_route_service
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.delete_edge = AsyncMock()
+        svc._edge_repo.create_edge = AsyncMock()
+        svc._node_repo.delete_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._node_repo.update_node = AsyncMock()
+
+        await svc.delete_node("trip1", "plan1", "B")
+        await asyncio.sleep(0)
+
+        call_kwargs = mock_route_service.fetch_and_patch_polyline.call_args
+        assert call_kwargs.kwargs["departure_time"] == "2026-06-01T10:00:00+00:00"
+
+
+# ── Cleanup stale participant_ids ──────────────────────────────────
+class TestCleanupStaleParticipantIds:
+    """Test cleanup_stale_participant_ids multi-root handling."""
+
+    @pytest.mark.asyncio
+    async def test_preserves_participant_ids_on_multi_root_dag(self):
+        """Multi-root DAG (R1, R2 → tail): cleanup must NOT fire."""
+        nodes = [
+            {**_make_node_dict("R1", "Rome"), "participant_ids": ["user_a"]},
+            {**_make_node_dict("R2", "Milan"), "participant_ids": ["user_b"]},
+            _make_node_dict("T", "Tail"),
+        ]
+        edges = [
+            _make_edge_dict("R1", "T", 2),
+            _make_edge_dict("R2", "T", 3),
+        ]
+        svc = _make_service()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+
+        cleaned = await svc.cleanup_stale_participant_ids("trip1", "plan1")
+
+        assert cleaned == 0
+        svc._node_repo.list_by_plan.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cleans_participant_ids_on_linear_single_root_dag(self):
+        """Single-root linear DAG with stale IDs: cleanup should fire."""
+        nodes = [
+            {**_make_node_dict("A", "Paris"), "participant_ids": ["user_a"]},
+            _make_node_dict("B", "Lyon"),
+        ]
+        edges = [_make_edge_dict("A", "B", 2)]
+        svc = _make_service()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+
+        mock_col = MagicMock()
+        svc._node_repo._collection = MagicMock(return_value=mock_col)
+        mock_batch = MagicMock()
+        mock_batch.commit = AsyncMock()
+        svc._node_repo._db = MagicMock()
+        svc._node_repo._db.batch = MagicMock(return_value=mock_batch)
+
+        cleaned = await svc.cleanup_stale_participant_ids("trip1", "plan1")
+
+        assert cleaned == 1
+        mock_batch.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_cleanup_on_out_degree_divergence(self):
+        """DAG with out-degree>1: cleanup must NOT fire."""
+        nodes = [
+            {**_make_node_dict("A", "Paris"), "participant_ids": ["user_a"]},
+            _make_node_dict("B", "Lyon"),
+            _make_node_dict("C", "Nice"),
+        ]
+        edges = [
+            _make_edge_dict("A", "B", 2),
+            _make_edge_dict("A", "C", 3),
+        ]
+        svc = _make_service()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+
+        cleaned = await svc.cleanup_stale_participant_ids("trip1", "plan1")
+
+        assert cleaned == 0
+
+
+# ── _build_departure_map ─────────────────────────────────────────
+class TestBuildDepartureMap:
+    """Verify the fallback chain: departure → arrival → trip root departure."""
+
+    def test_flex_node_inherits_trip_root_departure(self):
+        """A duration-only node with no arrival/departure should get the
+        trip root's departure_time from the map."""
+        nodes = [
+            _make_node_dict(
+                "root", "Denver",
+                arrival="2026-07-25T10:00:00+00:00",
+                departure="2026-07-25T18:00:00+00:00",
+            ),
+            _make_node_dict("flex", "Old Faithful", duration_minutes=120),
+        ]
+        edges = [_make_edge_dict("root", "flex")]
+
+        result = _build_departure_map(nodes, edges)
+
+        assert result["root"] == "2026-07-25T18:00:00+00:00"
+        assert result["flex"] == "2026-07-25T18:00:00+00:00"
+
+    def test_node_with_arrival_uses_arrival(self):
+        nodes = [
+            _make_node_dict("A", "A",
+                            arrival="2026-07-25T10:00:00+00:00",
+                            departure="2026-07-25T18:00:00+00:00"),
+            _make_node_dict("B", "B", duration_minutes=120),
+        ]
+        nodes[1]["arrival_time"] = "2026-07-26T12:00:00+00:00"
+        edges = [_make_edge_dict("A", "B")]
+
+        result = _build_departure_map(nodes, edges)
+
+        assert result["B"] == "2026-07-26T12:00:00+00:00"
+
+    def test_all_flex_nodes_returns_empty(self):
+        """When no node has any time at all, map should be empty."""
+        nodes = [
+            _make_node_dict("A", "A", duration_minutes=120),
+            _make_node_dict("B", "B", duration_minutes=60),
+        ]
+        edges = [_make_edge_dict("A", "B")]
+
+        result = _build_departure_map(nodes, edges)
+
+        assert result == {}
+
+
+# ── Departure-time fallback for Routes API ───────────────────────
+
+TRIP_ROOT_DEPARTURE = "2026-07-25T18:00:00+00:00"
+
+
+def _make_node_model(
+    id: str, name: str, lat: float = 0, lng: float = 0,
+    arrival_time: datetime | None = None,
+    departure_time: datetime | None = None,
+    duration_minutes: int | None = None,
+) -> Node:
+    return Node(
+        id=id, name=name, type="city",
+        lat_lng=LatLng(lat=lat, lng=lng),
+        arrival_time=arrival_time,
+        departure_time=departure_time,
+        duration_minutes=duration_minutes,
+        created_by="user_1",
+    )
+
+
+def _flex_dag_nodes_and_edges():
+    """A->B->C where A has explicit times but B and C are flex (duration-only).
+
+    Simulates a trip departing Denver on Jul 25, driving through Yellowstone
+    flex stops. The departure map should resolve B and C to A's departure.
+    """
+    nodes = [
+        {**_make_node_dict("A", "Denver",
+                           arrival="2026-07-25T10:00:00+00:00",
+                           departure=TRIP_ROOT_DEPARTURE),
+         "lat_lng": {"lat": 39.74, "lng": -104.99}},
+        {**_make_node_dict("B", "Old Faithful", duration_minutes=120),
+         "lat_lng": {"lat": 44.46, "lng": -110.83}},
+        {**_make_node_dict("C", "Moran", duration_minutes=60),
+         "lat_lng": {"lat": 43.85, "lng": -110.60}},
+    ]
+    edges = [
+        _make_edge_dict("A", "B", 6),
+        _make_edge_dict("B", "C", 2),
+    ]
+    return nodes, edges
+
+
+def _setup_route_service(svc):
+    """Attach a mock route service and return it for assertions."""
+    mock_rs = AsyncMock()
+    mock_rs.fetch_and_patch_polyline = AsyncMock()
+    mock_rs.get_route_data = AsyncMock(return_value=None)
+    svc._route_service = mock_rs
+    return mock_rs
+
+
+class TestDepartureTimeFallbackCreateNode:
+    """create_node should fall back to trip root departure when the source
+    node (connect_after) or new node (connect_before) is flex."""
+
+    @pytest.mark.asyncio
+    async def test_connect_after_flex_source_uses_trip_root_departure(self):
+        nodes, edges = _flex_dag_nodes_and_edges()
+        # Source is B (flex -- no departure_time, no arrival_time)
+        source_model = _make_node_model(
+            "B", "Old Faithful", lat=44.46, lng=-110.83,
+            duration_minutes=120,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=source_model)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo._collection = MagicMock(return_value=MagicMock())
+        svc._edge_repo._collection = MagicMock(return_value=MagicMock())
+
+        await svc.create_node(
+            trip_id="trip1", plan_id="plan1",
+            name="Moran", node_type="city", lat=43.85, lng=-110.60,
+            travel_mode="drive", travel_time_hours=2, distance_km=80,
+            created_by="user_1",
+            connect_after_node_id="B",
+        )
+        await asyncio.sleep(0)
+
+        call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
+        assert call_kwargs.kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+
+    @pytest.mark.asyncio
+    async def test_connect_before_flex_new_node_uses_trip_root_departure(self):
+        nodes, edges = _flex_dag_nodes_and_edges()
+        # before_node is C (flex)
+        before_model = _make_node_model(
+            "C", "Moran", lat=43.85, lng=-110.60,
+            duration_minutes=60,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=before_model)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo._collection = MagicMock(return_value=MagicMock())
+        svc._edge_repo._collection = MagicMock(return_value=MagicMock())
+
+        await svc.create_node(
+            trip_id="trip1", plan_id="plan1",
+            name="West Thumb", node_type="place", lat=44.42, lng=-110.57,
+            connect_after_node_id=None,
+            travel_mode="drive", travel_time_hours=1, distance_km=30,
+            created_by="user_1",
+            connect_before_node_id="C",
+        )
+        await asyncio.sleep(0)
+
+        call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
+        assert call_kwargs.kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+
+    @pytest.mark.asyncio
+    async def test_connect_after_timed_source_uses_direct_departure(self):
+        """When the source node HAS a departure_time, use it directly
+        (no extra list_by_plan call needed)."""
+        dep_dt = datetime(2026, 7, 28, 8, 0, tzinfo=UTC)
+        source_model = _make_node_model(
+            "A", "Denver", lat=39.74, lng=-104.99,
+            arrival_time=datetime(2026, 7, 25, 10, 0, tzinfo=UTC),
+            departure_time=dep_dt,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=source_model)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
+        svc._node_repo._collection = MagicMock(return_value=MagicMock())
+        svc._edge_repo._collection = MagicMock(return_value=MagicMock())
+
+        await svc.create_node(
+            trip_id="trip1", plan_id="plan1",
+            name="Old Faithful", node_type="city", lat=44.46, lng=-110.83,
+            travel_mode="drive", travel_time_hours=6, distance_km=500,
+            created_by="user_1",
+            connect_after_node_id="A",
+        )
+        await asyncio.sleep(0)
+
+        call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
+        assert call_kwargs.kwargs["departure_time"] == dep_dt
+
+
+class TestDepartureTimeFallbackCreateBranch:
+    """create_branch should fall back to trip root departure when the
+    source node is flex."""
+
+    @pytest.mark.asyncio
+    async def test_flex_source_uses_trip_root_departure(self):
+        nodes, edges = _flex_dag_nodes_and_edges()
+        source_model = _make_node_model(
+            "B", "Old Faithful", lat=44.46, lng=-110.83,
+            duration_minutes=120,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=source_model)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo._collection = MagicMock(return_value=MagicMock())
+        svc._edge_repo._collection = MagicMock(return_value=MagicMock())
+
+        await svc.create_branch(
+            trip_id="trip1", plan_id="plan1",
+            from_node_id="B",
+            name="Canyon Village", node_type="place",
+            lat=44.73, lng=-110.50,
+            travel_mode="drive", travel_time_hours=1.5, distance_km=60,
+            connect_to_node_id=None, created_by="user_1",
+        )
+        await asyncio.sleep(0)
+
+        call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
+        assert call_kwargs.kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+
+    @pytest.mark.asyncio
+    async def test_flex_merge_edge_uses_trip_root_departure(self):
+        """When branching with a merge-back edge, and both source and new node
+        are flex, the merge edge should also get the trip root departure."""
+        nodes, edges = _flex_dag_nodes_and_edges()
+        source_model = _make_node_model(
+            "B", "Old Faithful", lat=44.46, lng=-110.83,
+            duration_minutes=120,
+        )
+        merge_target = _make_node_model(
+            "C", "Moran", lat=43.85, lng=-110.60,
+            duration_minutes=60,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        svc._node_repo.get_node_or_raise = AsyncMock(
+            side_effect=lambda _t, _p, nid: source_model if nid == "B" else merge_target
+        )
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo._collection = MagicMock(return_value=MagicMock())
+        svc._edge_repo._collection = MagicMock(return_value=MagicMock())
+
+        await svc.create_branch(
+            trip_id="trip1", plan_id="plan1",
+            from_node_id="B",
+            name="Canyon Village", node_type="place",
+            lat=44.73, lng=-110.50,
+            travel_mode="drive", travel_time_hours=1.5, distance_km=60,
+            connect_to_node_id="C", created_by="user_1",
+        )
+        await asyncio.sleep(0)
+
+        # Both branch and merge edges should get trip root departure
+        calls = mock_rs.fetch_and_patch_polyline.call_args_list
+        assert len(calls) == 2
+        assert calls[0].kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+        assert calls[1].kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+
+
+class TestDepartureTimeFallbackCreateStandaloneEdge:
+    """create_standalone_edge should fall back to trip root departure for
+    both the synchronous get_route_data call and the _create_edge_if_new
+    background retry."""
+
+    @pytest.mark.asyncio
+    async def test_flex_from_node_sync_fetch_uses_trip_root_departure(self):
+        """The synchronous get_route_data call should receive the trip root's
+        departure, not None, when the from_node is flex."""
+        nodes, edges = _flex_dag_nodes_and_edges()
+        from_model = _make_node_model(
+            "B", "Old Faithful", lat=44.46, lng=-110.83,
+            duration_minutes=120,
+        )
+        to_model = _make_node_model(
+            "C", "Moran", lat=43.85, lng=-110.60,
+            duration_minutes=60,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        svc._node_repo.get_node_or_raise = AsyncMock(
+            side_effect=lambda _t, _p, nid: from_model if nid == "B" else to_model
+        )
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.create_edge = AsyncMock()
+
+        await svc.create_standalone_edge(
+            trip_id="trip1", plan_id="plan1",
+            from_node_id="B", to_node_id="C",
+            travel_mode="drive",
+        )
+
+        # The sync get_route_data call should have received the trip root departure
+        call_kwargs = mock_rs.get_route_data.call_args
+        assert call_kwargs[0][3] == TRIP_ROOT_DEPARTURE
+
+    @pytest.mark.asyncio
+    async def test_flex_from_node_background_retry_uses_trip_root_departure(self):
+        """When the sync fetch returns None (no route found), the background
+        retry via _create_edge_if_new should also use the trip root departure."""
+        # Use A->B only (no B->C edge), so creating B->C is new
+        nodes = [
+            {**_make_node_dict("A", "Denver",
+                               arrival="2026-07-25T10:00:00+00:00",
+                               departure=TRIP_ROOT_DEPARTURE),
+             "lat_lng": {"lat": 39.74, "lng": -104.99}},
+            {**_make_node_dict("B", "Old Faithful", duration_minutes=120),
+             "lat_lng": {"lat": 44.46, "lng": -110.83}},
+            {**_make_node_dict("C", "Moran", duration_minutes=60),
+             "lat_lng": {"lat": 43.85, "lng": -110.60}},
+        ]
+        edges = [_make_edge_dict("A", "B", 6)]  # no B->C edge
+
+        from_model = _make_node_model(
+            "B", "Old Faithful", lat=44.46, lng=-110.83,
+            duration_minutes=120,
+        )
+        to_model = _make_node_model(
+            "C", "Moran", lat=43.85, lng=-110.60,
+            duration_minutes=60,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        # Sync fetch returns None -> edge created without polyline ->
+        # _create_edge_if_new fires background fetch_and_patch_polyline
+        mock_rs.get_route_data = AsyncMock(return_value=None)
+        svc._node_repo.get_node_or_raise = AsyncMock(
+            side_effect=lambda _t, _p, nid: from_model if nid == "B" else to_model
+        )
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._edge_repo.create_edge = AsyncMock()
+
+        await svc.create_standalone_edge(
+            trip_id="trip1", plan_id="plan1",
+            from_node_id="B", to_node_id="C",
+            travel_mode="drive",
+        )
+        await asyncio.sleep(0)
+
+        call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
+        assert call_kwargs.kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+
+
+class TestDepartureTimeFallbackSplitEdge:
+    """split_edge should fall back to trip root departure when the from_node
+    of the original edge is flex."""
+
+    @pytest.mark.asyncio
+    async def test_flex_from_node_uses_trip_root_departure(self):
+        nodes, edges = _flex_dag_nodes_and_edges()
+        # Splitting the B->C edge by inserting a new node between them
+        from_model = _make_node_model(
+            "B", "Old Faithful", lat=44.46, lng=-110.83,
+            duration_minutes=120,
+        )
+        to_model = _make_node_model(
+            "C", "Moran", lat=43.85, lng=-110.60,
+            duration_minutes=60,
+        )
+        original_edge = Edge(
+            id="e_B_C", from_node_id="B", to_node_id="C",
+            travel_mode=TravelMode.DRIVE,
+            travel_time_hours=2, distance_km=80,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        svc._edge_repo.get_edge = AsyncMock(return_value=original_edge)
+        svc._node_repo.get_node_or_raise = AsyncMock(
+            side_effect=lambda _t, _p, nid: from_model if nid == "B" else to_model
+        )
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        # _collection mocks for the batch write
+        svc._edge_repo._collection = MagicMock(return_value=MagicMock())
+        svc._node_repo._collection = MagicMock(return_value=MagicMock())
+
+        await svc.split_edge(
+            trip_id="trip1", plan_id="plan1",
+            split_edge_id="e_B_C",
+            name="West Thumb", node_type="place",
+            lat=44.42, lng=-110.57, created_by="user_1",
+        )
+        await asyncio.sleep(0)
+
+        # Both edge_a (B->new) and edge_b (new->C) should have departure times
+        calls = mock_rs.fetch_and_patch_polyline.call_args_list
+        assert len(calls) == 2
+        dep_a = calls[0].kwargs.get("departure_time")
+        dep_b = calls[1].kwargs.get("departure_time")
+        assert dep_a == TRIP_ROOT_DEPARTURE
+        # dep_b falls back to dep_a when new node has no times
+        assert dep_b == TRIP_ROOT_DEPARTURE

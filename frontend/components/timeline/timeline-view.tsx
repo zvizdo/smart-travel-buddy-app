@@ -16,7 +16,6 @@ interface NodeData {
   lat_lng: { lat: number; lng: number } | null;
   arrival_time: string | null;
   departure_time: string | null;
-  order_index: number;
   participant_ids?: string[] | null;
   timezone?: string | null;
   [key: string]: unknown;

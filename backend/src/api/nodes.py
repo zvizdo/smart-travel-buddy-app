@@ -250,11 +250,8 @@ async def update_node(
     require_plan_editable(trip, Plan(**plan_data), user["uid"])
 
     client_updated_at = body.client_updated_at
-    raw = body.model_dump()
-    updates: dict = {}
-    for k, v in raw.items():
-        if v is not None and k != "client_updated_at":
-            updates[k] = v
+    updates: dict = body.model_dump(exclude_unset=True)
+    updates.pop("client_updated_at", None)
 
     if "lat" in updates or "lng" in updates:
         updates["lat_lng"] = {

@@ -31,7 +31,6 @@ class Node(BaseModel):
     duration_minutes: int | None = Field(default=None, ge=1, le=_DURATION_MAX_MINUTES)
     timezone: str | None = None  # IANA timezone, e.g., "Europe/Paris"
     participant_ids: list[str] | None = None
-    order_index: int
     place_id: str | None = None
     created_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

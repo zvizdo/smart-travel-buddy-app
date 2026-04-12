@@ -12,6 +12,7 @@ estimated times the user's map does) and then calls the low-level
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from shared.dag._internals import build_adjacency, toposort
 from shared.dag.time_inference import enrich_dag_times
 
 
@@ -142,7 +143,13 @@ def format_trip_context(
         for uid, p in participants.items():
             lines.append(f"- {p.get('display_name', uid)} (user_id: {uid}, role: {p.get('role', 'viewer')})")
 
-    sorted_nodes = sorted(nodes, key=lambda n: n.get("order_index", 0))
+    forward_adj, reverse_adj = build_adjacency(edges)
+    topo_order = toposort(nodes, forward_adj, reverse_adj)
+    if topo_order is not None:
+        id_to_node = {n["id"]: n for n in nodes}
+        sorted_nodes = [id_to_node[nid] for nid in topo_order if nid in id_to_node]
+    else:
+        sorted_nodes = list(nodes)
     lines.append(f"\n## Stops ({len(sorted_nodes)} nodes)")
     for n in sorted_nodes:
         tz = n.get("timezone")
@@ -161,9 +168,8 @@ def format_trip_context(
             suffix = " (est.)" if n.get("departure_time_estimated") else ""
             time_segments.append(f"departs: {prefix}{departure}{suffix}")
         duration = n.get("duration_minutes")
-        if duration is not None:
-            suffix = " (duration est.)" if n.get("duration_estimated") else ""
-            time_segments.append(f"duration: {duration}m{suffix}")
+        if duration is not None and not n.get("duration_estimated"):
+            time_segments.append(f"duration: {duration}m")
 
         time_info = ""
         if time_segments:
@@ -190,6 +196,9 @@ def format_trip_context(
         if n.get("overnight_hold"):
             reason = n.get("hold_reason") or "overnight_hold"
             lines.append(f"  - 🛌 overnight hold: {reason}")
+        if n.get("drive_cap_warning"):
+            reason = n.get("hold_reason") or "max_drive_hours"
+            lines.append(f"  - ⚠ warning: drive limit exceeded ({reason})")
 
         for a in n.get("actions", []):
             action_id_str = f"id: {a['id']}, " if a.get("id") else ""

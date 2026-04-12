@@ -11,6 +11,7 @@ interface NodeMarkerProps {
   selected?: boolean;
   isMergeNode?: boolean;
   isStartNode?: boolean;
+  isEndNode?: boolean;
   dimmed?: boolean;
   /** Scale factor (0-1) for when nodes are too close together. Defaults to 1. */
   proximityScale?: number;
@@ -88,6 +89,7 @@ export function NodeMarker({
   selected,
   isMergeNode,
   isStartNode,
+  isEndNode,
   dimmed,
   proximityScale = 1,
   fannedOut,
@@ -119,10 +121,11 @@ export function NodeMarker({
             ? "Activity"
             : "Place";
 
-  // Whether the label/tail/merge dot/start pip should be visible
+  // Whether the label/tail/merge dot/start pip/end pip should be visible
   const labelVisible = !dimmed && !isCompact && !fannedOut;
   const mergeVisible = isMergeNode && !dimmed && !isCompact;
   const startVisible = isStartNode && !dimmed && !isCompact;
+  const endVisible = isEndNode && !dimmed && !isCompact;
 
   return (
     <AdvancedMarker position={{ lat, lng }} zIndex={selected ? 110 : 100} onClick={dimmed ? undefined : () => onClick?.(id)}>
@@ -139,7 +142,7 @@ export function NodeMarker({
         }}
         role="button"
         tabIndex={dimmed ? -1 : 0}
-        aria-label={`${name}, ${typeLabel}${isStartNode ? ", starting point" : ""}${isMergeNode ? ", junction point" : ""}`}
+        aria-label={`${name}, ${typeLabel}${isStartNode ? ", starting point" : ""}${isEndNode ? ", ending point" : ""}${isMergeNode ? ", junction point" : ""}`}
         onKeyDown={(e) => {
           if (dimmed) return;
           if (e.key === "Enter" || e.key === " ") {
@@ -256,6 +259,31 @@ export function NodeMarker({
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
+            </svg>
+          </div>
+
+          {/* End indicator pip — bottom-right badge (red stop square).
+              Always rendered; opacity transition drives show/hide. */}
+          <div
+            style={{
+              position: "absolute",
+              bottom: -4,
+              right: -4,
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              background: "#b31b25",
+              border: "2px solid #fff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              opacity: endVisible ? 1 : 0,
+              transition: "opacity 0.35s ease",
+              pointerEvents: "none",
+            }}
+          >
+            <svg width="7" height="7" viewBox="0 0 8 8" fill="none">
+              <rect x="1.5" y="1.5" width="5" height="5" rx="0.75" fill="white" />
             </svg>
           </div>
         </div>

@@ -5,6 +5,8 @@ import type { DocumentData } from "firebase/firestore";
 import { useTripNodes, useTripEdges } from "@/lib/firestore-hooks";
 import {
   enrichDagTimes,
+  enrichEdges,
+  type EnrichedEdge,
   type EnrichedNode,
   type RawEdge,
   type RawNode,
@@ -13,7 +15,7 @@ import {
 
 interface UseEnrichedNodesResult {
   nodes: EnrichedNode[];
-  edges: DocumentData[];
+  edges: EnrichedEdge[];
   loading: boolean;
   error: Error | null;
 }
@@ -44,7 +46,7 @@ export function useEnrichedNodes(
     planId,
   );
 
-  const enriched = useMemo(
+  const enrichedNodes = useMemo(
     () =>
       enrichDagTimes(
         rawNodes as unknown as RawNode[],
@@ -54,9 +56,14 @@ export function useEnrichedNodes(
     [rawNodes, rawEdges, tripSettings],
   );
 
+  const enrichedEdges = useMemo(
+    () => enrichEdges(rawEdges as unknown as RawEdge[]),
+    [rawEdges],
+  );
+
   return {
-    nodes: enriched,
-    edges: rawEdges,
+    nodes: enrichedNodes,
+    edges: enrichedEdges,
     loading: nodesLoading || edgesLoading,
     error: nodesError ?? edgesError,
   };

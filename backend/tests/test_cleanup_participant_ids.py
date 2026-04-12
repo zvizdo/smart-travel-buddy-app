@@ -23,6 +23,7 @@ def _make_service():
     collection = MagicMock()
     collection.document = MagicMock(return_value=MagicMock())
     node_repo._collection = MagicMock(return_value=collection)
+    edge_repo._collection = MagicMock(return_value=collection)
 
     svc = DAGService(trip_repo, plan_repo, node_repo, edge_repo)
     svc._test_batch = batch  # expose for assertions
@@ -93,20 +94,22 @@ class TestCleanupStaleParticipantIds:
         assert cleaned == 0
 
 
-class TestDeleteNodeCleansParticipantIds:
-    """Verify that delete_node triggers cleanup_stale_participant_ids."""
+class TestDeleteNodePreservesParticipantIds:
+    """Verify that delete_node does NOT wipe participant_ids.
+
+    Stale participant_ids in a linear graph are harmless — path computation
+    only checks them at divergence points (out-degree > 1). Eagerly wiping
+    them causes user-visible data loss when a branch is re-added later.
+    """
 
     @pytest.mark.asyncio
-    async def test_delete_triggers_cleanup(self):
+    async def test_delete_does_not_trigger_cleanup(self):
         svc = _make_service()
         # DAG: A -> B -> C (linear after B is deleted: A -> C)
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[
             {"id": "e1", "from_node_id": "A", "to_node_id": "B", "travel_mode": "drive", "travel_time_hours": 2},
             {"id": "e2", "from_node_id": "B", "to_node_id": "C", "travel_mode": "drive", "travel_time_hours": 2},
         ])
-        svc._edge_repo.delete_edge = AsyncMock()
-        svc._edge_repo.create_edge = AsyncMock()
-        svc._node_repo.delete_node = AsyncMock()
         svc._node_repo.list_by_plan = AsyncMock(return_value=[
             {"id": "A", "participant_ids": ["user_1"]},
             {"id": "C", "participant_ids": ["user_2"]},
@@ -114,4 +117,4 @@ class TestDeleteNodeCleansParticipantIds:
 
         result = await svc.delete_node("trip1", "plan1", "B")
 
-        assert result["participant_ids_cleaned"] == 2
+        assert result["participant_ids_cleaned"] == 0

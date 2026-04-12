@@ -16,6 +16,7 @@ interface TimelineNodeBlockProps {
   departureEstimated?: boolean;
   overnightHold?: boolean;
   holdReason?: "night_drive" | "max_drive_hours" | null;
+  driveCap?: boolean;
   timingConflict?: string | null;
   spansDays?: number;
   selected: boolean;
@@ -99,9 +100,9 @@ function formatTimeOnly(iso: string | null, datetimeFormat: "12h" | "24h", timez
   }).format(new Date(iso));
 }
 
-const HOLD_LABELS: Record<"night_drive" | "max_drive_hours", string> = {
-  night_drive: "Stay overnight — resume 6 AM",
-  max_drive_hours: "Rest — daily drive limit reached",
+const WARNING_LABELS: Record<"night_drive" | "max_drive_hours", { tooltip: string; label: string }> = {
+  night_drive: { tooltip: "Night drive — consider adding a rest stop", label: "Night drive — add rest stop" },
+  max_drive_hours: { tooltip: "Daily drive limit reached — consider adding a rest stop", label: "Drive cap — add rest stop" },
 };
 
 export const TimelineNodeBlock = memo(function TimelineNodeBlock({
@@ -117,6 +118,7 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   departureEstimated,
   overnightHold,
   holdReason,
+  driveCap,
   timingConflict,
   spansDays,
   selected,
@@ -146,8 +148,11 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   const departurePrefix = departureEstimated ? "~" : "";
   const anyEstimated = arrivalEstimated || departureEstimated;
   const showConflict = !!timingConflict;
-  const showOvernight = !!overnightHold;
+  const showDriveCap = !!driveCap;
   const showSpanChip = (spansDays ?? 0) > 0;
+  
+  const driveLabel = holdReason ? WARNING_LABELS[holdReason].label : "Drive cap — add rest stop";
+  const driveTooltip = holdReason ? WARNING_LABELS[holdReason].tooltip : "Drive limit reached — consider a rest stop";
 
   return (
     <div
@@ -199,6 +204,18 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
               </svg>
             </span>
           )}
+          {showDriveCap && !showConflict && (
+            <span
+              className="shrink-0 inline-flex items-center"
+              title={driveTooltip}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#92400e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            </span>
+          )}
         </div>
 
         {/* Line 2: Times */}
@@ -220,12 +237,16 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
           )}
         </div>
 
-        {/* Line 3: Overnight hold label */}
-        {showOvernight && (
+        {/* Line 3: Drive-cap advisory */}
+        {showDriveCap && (
           <div className="flex items-center gap-1 mt-0.5">
-            <span aria-hidden className="text-[11px]">🛌</span>
-            <span className="text-[10px] font-medium text-on-surface-variant truncate">
-              {holdReason ? HOLD_LABELS[holdReason] : "Overnight hold"}
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#92400e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span className="text-[10px] font-medium truncate" style={{ color: "#92400e" }}>
+              {driveLabel}
             </span>
           </div>
         )}
@@ -259,6 +280,7 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   prev.departureEstimated === next.departureEstimated &&
   prev.overnightHold === next.overnightHold &&
   prev.holdReason === next.holdReason &&
+  prev.driveCap === next.driveCap &&
   prev.timingConflict === next.timingConflict &&
   prev.spansDays === next.spansDays &&
   prev.hasTimingConflict === next.hasTimingConflict &&

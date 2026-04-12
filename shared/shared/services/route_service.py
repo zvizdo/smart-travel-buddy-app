@@ -12,8 +12,10 @@ logger = logging.getLogger(__name__)
 
 _ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 _FIELD_MASK = (
-    "routes.polyline.encodedPolyline,routes.duration,routes.distanceMeters,"
-    "routes.warnings,routes.legs.steps.navigationInstruction.instructions"
+    "routes.polyline.encodedPolyline,"
+    "routes.duration,"
+    "routes.distanceMeters,"
+    "routes.legs.steps.navigationInstruction"
 )
 
 _TRAVEL_MODE_MAP = {
@@ -54,30 +56,28 @@ class RouteData:
 class RouteService:
     def __init__(self, http_client: httpx.AsyncClient):
         self._http = http_client
+        self._credentials: google.auth.credentials.Credentials | None = None
+        self._auth_req = google.auth.transport.requests.Request()
 
     async def get_route_data(
         self,
         from_latlng: dict | None,
         to_latlng: dict | None,
         travel_mode: str,
+        departure_time: str | None = None,
+        from_name: str | None = None,
+        to_name: str | None = None,
+        from_place_id: str | None = None,
+        to_place_id: str | None = None,
     ) -> RouteData | None:
         """Fetch polyline, duration, and distance for a route.
 
         Returns RouteData on success, None on failure or for flights.
+        Attempts to find a route by iterating through available location types
+        in order of preference: Place IDs > Lat/Lng > Address names.
         Logs warnings on API failure; never raises.
         """
         if travel_mode in ("flight", "ferry"):
-            return None
-
-        if not from_latlng or not to_latlng:
-            return None
-
-        from_lat = from_latlng.get("lat")
-        from_lng = from_latlng.get("lng")
-        to_lat = to_latlng.get("lat")
-        to_lng = to_latlng.get("lng")
-
-        if from_lat is None or from_lng is None or to_lat is None or to_lng is None:
             return None
 
         api_mode = _TRAVEL_MODE_MAP.get(travel_mode)
@@ -85,28 +85,95 @@ class RouteService:
             logger.warning("Unknown travel mode %r — skipping route fetch", travel_mode)
             return None
 
-        try:
-            credentials, _ = google.auth.default(
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-            auth_req = google.auth.transport.requests.Request()
-            credentials.refresh(auth_req)
-            token = credentials.token
+        from_lat = from_latlng.get("lat") if from_latlng else None
+        from_lng = from_latlng.get("lng") if from_latlng else None
+        to_lat = to_latlng.get("lat") if to_latlng else None
+        to_lng = to_latlng.get("lng") if to_latlng else None
 
-            body = {
-                "origin": {
-                    "location": {
-                        "latLng": {"latitude": from_lat, "longitude": from_lng}
-                    }
-                },
-                "destination": {
-                    "location": {
-                        "latLng": {"latitude": to_lat, "longitude": to_lng}
-                    }
-                },
-                "travelMode": api_mode,
-                "routingPreference": "TRAFFIC_UNAWARE",
+        configs = []
+
+        # 1. Place ID preferred. If missing, this falls through to coordinate, then address.
+        orig1 = self._build_waypoint(from_place_id, from_lat, from_lng, from_name)
+        dest1 = self._build_waypoint(to_place_id, to_lat, to_lng, to_name)
+        if orig1 and dest1:
+            configs.append((orig1, dest1))
+
+        # 2. Coordinate fallback
+        orig2 = self._build_waypoint(None, from_lat, from_lng, from_name)
+        dest2 = self._build_waypoint(None, to_lat, to_lng, to_name)
+        if orig2 and dest2 and (orig2, dest2) not in configs:
+            configs.append((orig2, dest2))
+
+        # 3. Address fallback as a last resort
+        orig3 = self._build_waypoint(None, None, None, from_name)
+        dest3 = self._build_waypoint(None, None, None, to_name)
+        if orig3 and dest3 and (orig3, dest3) not in configs:
+            configs.append((orig3, dest3))
+
+        for orig, dest in configs:
+            result = await self._call_routes_api(
+                orig, dest, api_mode, departure_time
+            )
+            if result is not None:
+                return result
+
+            logger.info("Retrying route with next fallback: %r -> %r", orig, dest)
+
+        return None
+
+    @staticmethod
+    def _build_waypoint(
+        place_id: str | None,
+        lat: float | None,
+        lng: float | None,
+        name: str | None,
+    ) -> dict | None:
+        """Build a waypoint using the best available data according to constraints.
+
+        Routes API v2 'Waypoint' uses a oneOf for location, so we can only send
+        exactly one: Place ID, LatLng, or Address.
+        """
+        if place_id:
+            return {"placeId": place_id}
+        if lat is not None and lng is not None:
+            return {
+                "location": {
+                    "latLng": {"latitude": lat, "longitude": lng}
+                }
             }
+        if name:
+            return {"address": name}
+        return None
+
+    async def _call_routes_api(
+        self,
+        origin: dict,
+        destination: dict,
+        api_mode: str,
+        departure_time: str | None,
+    ) -> RouteData | None:
+        """Low-level Routes API call. Returns RouteData or None."""
+        try:
+            if self._credentials is None:
+                self._credentials, _ = google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+            if not self._credentials.valid:
+                self._credentials.refresh(self._auth_req)
+            token = self._credentials.token
+
+            body: dict = {
+                "origin": origin,
+                "destination": destination,
+                "travelMode": api_mode,
+                "languageCode": "en",
+            }
+            if api_mode in ("DRIVE", "TRANSIT"):
+                if departure_time:
+                    body["routingPreference"] = "TRAFFIC_AWARE_OPTIMAL"
+                    body["departureTime"] = departure_time
+                else:
+                    body["routingPreference"] = "TRAFFIC_UNAWARE"
             headers = {
                 "Authorization": f"Bearer {token}",
                 "X-Goog-FieldMask": _FIELD_MASK,
@@ -120,16 +187,10 @@ class RouteService:
                 timeout=5.0,
             )
         except httpx.TimeoutException:
-            logger.warning(
-                "Routes API timed out for %r -> %r (mode=%r)",
-                from_latlng, to_latlng, travel_mode,
-            )
+            logger.warning("Routes API timed out for %r -> %r", origin, destination)
             return None
         except httpx.HTTPError as exc:
-            logger.warning(
-                "Routes API transport error for %r -> %r (mode=%r): %s",
-                from_latlng, to_latlng, travel_mode, exc,
-            )
+            logger.warning("Routes API transport error: %s", exc)
             return None
 
         if response.status_code != 200:
@@ -148,7 +209,10 @@ class RouteService:
 
         routes = data.get("routes")
         if not routes:
-            logger.warning("Routes API returned no routes for %r -> %r", from_latlng, to_latlng)
+            logger.debug(
+                "Routes API returned no routes for %r -> %r (mode=%s)",
+                origin, destination, api_mode,
+            )
             return None
 
         route = routes[0]
@@ -200,13 +264,22 @@ class RouteService:
         to_latlng: dict | None,
         travel_mode: str,
         edge_repo,
+        departure_time: str | None = None,
+        from_name: str | None = None,
+        to_name: str | None = None,
+        from_place_id: str | None = None,
+        to_place_id: str | None = None,
     ) -> None:
         """Fetch route data and patch the edge document.
 
         Intended to be run as a background task. Swallows all exceptions.
         """
         try:
-            route_data = await self.get_route_data(from_latlng, to_latlng, travel_mode)
+            route_data = await self.get_route_data(
+                from_latlng, to_latlng, travel_mode, departure_time,
+                from_name=from_name, to_name=to_name,
+                from_place_id=from_place_id, to_place_id=to_place_id,
+            )
             if route_data:
                 updates: dict = {}
                 if route_data.polyline:
@@ -238,8 +311,15 @@ class RouteService:
         to_latlng: dict | None,
         travel_mode: str,
         edge_repo,
+        departure_time: str | None = None,
+        from_name: str | None = None,
+        to_name: str | None = None,
+        from_place_id: str | None = None,
+        to_place_id: str | None = None,
     ) -> None:
         """Backward-compatible alias for fetch_and_patch_route_data."""
         await self.fetch_and_patch_route_data(
-            trip_id, plan_id, edge_id, from_latlng, to_latlng, travel_mode, edge_repo
+            trip_id, plan_id, edge_id, from_latlng, to_latlng, travel_mode, edge_repo,
+            departure_time, from_name=from_name, to_name=to_name,
+            from_place_id=from_place_id, to_place_id=to_place_id,
         )

@@ -134,27 +134,44 @@ def enrich_dag_times(
             draft["arrival_time"] = eff_departure.isoformat()
             draft["arrival_time_estimated"] = True
 
-        # (c) Apply night / max-drive-hours rules to outgoing drive edges.
-        outgoing = forward_adj.get(node_id, [])
-        eff_departure = _apply_drive_rules(
-            draft,
-            outgoing,
-            acc_drive_hours[node_id],
-            rules,
-        )
+        if _is_rest_node(draft):
+            acc_drive_hours[node_id] = 0.0
 
-        # (d) Propagate drive-hours to each child. Rest nodes reset.
+        # (c) Apply night / max-drive-hours rules to outgoing drive edges and propagate
+        outgoing = forward_adj.get(node_id, [])
+        tz_name = draft.get("timezone") or rules.default_tz
+        tz = _resolve_zone(tz_name)
+        departure = parse_dt(draft.get("departure_time"))
+
         for edge in outgoing:
             child_id = edge["to_node_id"]
             child = drafts.get(child_id)
             if child is None:
                 continue
+
             mode = edge.get("travel_mode")
-            travel_hours = float(edge.get("travel_time_hours") or 0)
+            travel_hours = _effective_travel_hours(edge)
+
+            hold_reason = None
+            if mode in _DRIVE_MODES:
+                if (
+                    rules.max_drive_hours_per_day is not None
+                    and acc_drive_hours[node_id] + travel_hours > rules.max_drive_hours_per_day
+                ):
+                    hold_reason = hold_reason or "max_drive_hours"
+                
+                if tz is not None and rules.no_drive_window is not None and departure is not None:
+                    projected_arrival = departure + timedelta(hours=travel_hours)
+                    if _overlaps_window(departure, projected_arrival, rules.no_drive_window, tz):
+                        hold_reason = "night_drive"
+
+            if hold_reason is not None:
+                child["drive_cap_warning"] = True
+                child["hold_reason"] = hold_reason
+
+            # (d) Propagate drive-hours to each child.
             carry = acc_drive_hours[node_id]
             new_acc = carry + travel_hours if mode in _DRIVE_MODES else carry
-            if _is_rest_node(child):
-                new_acc = 0.0
             acc_drive_hours[child_id] = max(acc_drive_hours[child_id], new_acc)
 
     return [drafts[n["id"]] for n in nodes]
@@ -201,6 +218,7 @@ def _draft_node(
     draft["timing_conflict"] = None
     draft["overnight_hold"] = False
     draft["hold_reason"] = None
+    draft["drive_cap_warning"] = False
     return draft
 
 
@@ -267,59 +285,26 @@ def _format_delta(seconds: float) -> str:
     return f"{hours}h{rem:02d}m"
 
 
-def _apply_drive_rules(
-    draft: dict,
-    outgoing: list[dict],
-    accumulated_hours: float,
-    rules: _TripRules,
-) -> datetime | None:
-    departure = parse_dt(draft.get("departure_time"))
-    if departure is None or not outgoing:
-        return departure
+_MODE_SPEEDS_KMH: dict[str, float] = {
+    "drive": 80.0,
+    "walk": 5.0,
+    "transit": 30.0,
+    "ferry": 40.0,
+    "flight": 800.0,
+}
 
-    longest_drive = 0.0
-    for edge in outgoing:
-        if edge.get("travel_mode") not in _DRIVE_MODES:
-            continue
-        travel_hours = float(edge.get("travel_time_hours") or 0)
-        if travel_hours > longest_drive:
-            longest_drive = travel_hours
 
-    if longest_drive <= 0:
-        return departure
-
-    tz_name = draft.get("timezone") or rules.default_tz
-    tz = _resolve_zone(tz_name)
-    if tz is None:
-        # Timezone unresolved → skip rule; conservative behaviour.
-        return departure
-
-    hold_reason: str | None = None
-
-    if rules.no_drive_window is not None:
-        projected_arrival = departure + timedelta(hours=longest_drive)
-        if _overlaps_window(departure, projected_arrival, rules.no_drive_window, tz):
-            departure = _shift_to_window_end(departure, rules.no_drive_window, tz)
-            hold_reason = "night_drive"
-
-    if (
-        rules.max_drive_hours_per_day is not None
-        and accumulated_hours + longest_drive > rules.max_drive_hours_per_day
-    ):
-        departure = _shift_to_window_end(
-            departure,
-            rules.no_drive_window or _NoDriveWindow(start_hour=22, end_hour=6),
-            tz,
-        )
-        hold_reason = hold_reason or "max_drive_hours"
-
-    if hold_reason is not None:
-        draft["departure_time"] = departure.isoformat()
-        draft["departure_time_estimated"] = True
-        draft["overnight_hold"] = True
-        draft["hold_reason"] = hold_reason
-
-    return departure
+def _effective_travel_hours(edge: dict) -> float:
+    """Return travel_time_hours, estimating from distance when the value is 0/missing."""
+    hours = float(edge.get("travel_time_hours") or 0)
+    if hours > 0:
+        return hours
+    distance_km = edge.get("distance_km")
+    if distance_km is None:
+        return 0.0
+    mode = edge.get("travel_mode", "drive")
+    speed = _MODE_SPEEDS_KMH.get(mode, 80.0)
+    return float(distance_km) / speed
 
 
 def _resolve_zone(tz_name: str | None) -> ZoneInfo | None:
@@ -345,7 +330,7 @@ def _overlaps_window(
     """
     local_start = start.astimezone(tz)
     local_end = end.astimezone(tz)
-    day = local_start.date()
+    day = local_start.date() - timedelta(days=1)
     end_day = local_end.date()
     while day <= end_day + timedelta(days=1):
         for interval_start, interval_end in _window_intervals(day, window, tz):
@@ -391,5 +376,18 @@ def _is_rest_node(draft: dict) -> bool:
     node_type = draft.get("type")
     if node_type in _REST_NODE_TYPES:
         return True
+        
+    arr = parse_dt(draft.get("arrival_time"))
+    dep = parse_dt(draft.get("departure_time"))
+    if arr is not None and dep is not None:
+        tz = _resolve_zone(draft.get("timezone") or "UTC")
+        if tz is not None:
+            if arr.astimezone(tz).date() != dep.astimezone(tz).date():
+                return True
+                
+        effective_minutes = (dep - arr).total_seconds() / 60.0
+        if effective_minutes >= _REST_DURATION_MINUTES:
+            return True
+
     duration = draft.get("duration_minutes") or 0
     return int(duration) >= _REST_DURATION_MINUTES

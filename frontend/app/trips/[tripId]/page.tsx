@@ -14,7 +14,7 @@ import { NodeDetailSheet } from "@/components/dag/node-detail-sheet";
 import { EdgeDetail } from "@/components/dag/edge-detail";
 import { NotificationBell } from "@/components/ui/notification-bell";
 import { PathFilter } from "@/components/map/path-filter";
-import { AddNodeSheet } from "@/components/dag/add-node-sheet";
+import { CreateNodeForm, type CreateContext } from "@/components/dag/create-node-form";
 import { type PlaceResult } from "@/components/map/places-autocomplete";
 import { DivergenceResolver } from "@/components/dag/divergence-resolver";
 import {
@@ -42,7 +42,6 @@ interface NodeData {
   arrival_time: string | null;
   departure_time: string | null;
   duration_minutes?: number | null;
-  order_index: number;
   participant_ids?: string[] | null;
   timezone?: string | null;
   // Enrichment flags appended by `useEnrichedNodes` / `enrichDagTimes`.
@@ -178,6 +177,122 @@ export default function TripMapPage() {
     () => nodeActions.filter((a) => !deletedActionIds.has(a.id)),
     [nodeActions, deletedActionIds],
   );
+
+  // Context-aware initial map focal point: prioritizes user's location if
+  // near a stop, then next upcoming stop, then trip start, then fitBounds.
+  const initialFocalPoint = useMemo<{
+    lat: number;
+    lng: number;
+    zoom: number;
+  } | null>(() => {
+    if (nodes.length === 0 || nodes.length > 15) return null;
+
+    const now = Date.now();
+    const nodesWithCoords = nodes.filter((n) => n.lat_lng);
+    if (nodesWithCoords.length === 0) return null;
+
+    const allTimes = nodes
+      .flatMap((n) => [n.arrival_time, n.departure_time])
+      .filter(Boolean)
+      .map((t) => new Date(t!).getTime());
+    const tripStart = allTimes.length > 0 ? Math.min(...allTimes) : null;
+    const tripEnd = allTimes.length > 0 ? Math.max(...allTimes) : null;
+
+    const tripInProgress =
+      tripStart != null && tripEnd != null && now >= tripStart && now <= tripEnd;
+    const tripOver = tripEnd != null && now > tripEnd;
+
+    function haversineKm(
+      a: { lat: number; lng: number },
+      b: { lat: number; lng: number },
+    ) {
+      const R = 6371;
+      const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+      const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+      const sinLat = Math.sin(dLat / 2);
+      const sinLng = Math.sin(dLng / 2);
+      const h =
+        sinLat * sinLat +
+        Math.cos((a.lat * Math.PI) / 180) *
+          Math.cos((b.lat * Math.PI) / 180) *
+          sinLng *
+          sinLng;
+      return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+    }
+
+    // Priority 1: Trip in progress + user near a stop (<50km)
+    if (tripInProgress && liveLocations.length > 0) {
+      const myLoc = liveLocations.find((l) => l.user_id === user?.uid);
+      const coords = myLoc?.coords as
+        | { lat: number; lng: number }
+        | undefined;
+      if (coords?.lat && coords?.lng) {
+        let nearest: NodeData | null = null;
+        let nearestDist = Infinity;
+        for (const n of nodesWithCoords) {
+          const d = haversineKm(coords, n.lat_lng!);
+          if (d < nearestDist) {
+            nearestDist = d;
+            nearest = n;
+          }
+        }
+        if (nearest && nearestDist < 50) {
+          return { lat: nearest.lat_lng!.lat, lng: nearest.lat_lng!.lng, zoom: 12 };
+        }
+      }
+    }
+
+    // Priority 2: Trip in progress → next upcoming stop
+    if (tripInProgress) {
+      const upcoming = nodesWithCoords
+        .filter((n) => {
+          const t = n.arrival_time
+            ? new Date(n.arrival_time).getTime()
+            : n.departure_time
+              ? new Date(n.departure_time).getTime()
+              : null;
+          return t != null && t > now;
+        })
+        .sort((a, b) => {
+          const ta = new Date(
+            (a.arrival_time ?? a.departure_time)!,
+          ).getTime();
+          const tb = new Date(
+            (b.arrival_time ?? b.departure_time)!,
+          ).getTime();
+          return ta - tb;
+        });
+      if (upcoming.length > 0) {
+        return {
+          lat: upcoming[0].lat_lng!.lat,
+          lng: upcoming[0].lat_lng!.lng,
+          zoom: 11,
+        };
+      }
+    }
+
+    // Priority 3: Trip hasn't started (or no timing) → first stop (root node)
+    if (!tripOver) {
+      const childIds = new Set(edges.map((e) => e.to_node_id));
+      const roots = nodesWithCoords
+        .filter((n) => !childIds.has(n.id))
+        .sort((a, b) => {
+          const ta = a.departure_time
+            ? new Date(a.departure_time).getTime()
+            : Infinity;
+          const tb = b.departure_time
+            ? new Date(b.departure_time).getTime()
+            : Infinity;
+          return ta - tb;
+        });
+      if (roots.length > 0) {
+        return { lat: roots[0].lat_lng!.lat, lng: roots[0].lat_lng!.lng, zoom: 11 };
+      }
+    }
+
+    // Priority 4: Trip is over → null (fitBounds for review)
+    return null;
+  }, [nodes, edges, liveLocations, user?.uid]);
 
   const [pathMode, setPathMode] = useState<"all" | "mine">("all");
   const pathModeInitialized = useRef(false);
@@ -455,7 +570,7 @@ export default function TripMapPage() {
     setSelectedEdgeId(null);
     setDisambiguationEdges(null);
     setAddNodePlace(place);
-    // Keep insertEdgeId if in insert mode — the AddNodeSheet will use it
+    // Keep insertEdgeId if in insert mode — the CreateNodeForm will use it
   }
 
   async function handleNodeEdit(
@@ -606,6 +721,7 @@ export default function TripMapPage() {
       place_id: string | null;
       arrival_time: string | null;
       departure_time: string | null;
+      duration_minutes: number | null;
       travel_mode: string;
       travel_time_hours: number;
       distance_km: number | null;
@@ -668,7 +784,7 @@ export default function TripMapPage() {
     if (!canEdit) return;
     setInsertEdgeId(edgeId);
     setSelectedEdgeId(null);
-    // In timeline mode, open AddNodeSheet in search-first mode (no map tap needed)
+    // In timeline mode, open CreateNodeForm in search-first mode (no map tap needed)
     setAddNodePlace({ name: "", placeId: "", lat: 0, lng: 0, types: [] } as PlaceResult);
   }
 
@@ -855,6 +971,7 @@ export default function TripMapPage() {
                 selectedEdgeId={selectedEdgeId}
                 planId={displayPlanId}
                 readyForInitialFit={pathModeReady}
+                initialFocalPoint={initialFocalPoint}
                 savedCamera={mapCamera}
                 onCameraChange={setMapCamera}
                 pulseLocations={liveLocations}
@@ -943,13 +1060,17 @@ export default function TripMapPage() {
       )}
 
       {addNodePlace && (
-        <AddNodeSheet
+        <CreateNodeForm
+          context={
+            insertBetween
+              ? { type: "insert", edgeId: insertBetween.edgeId, fromNode: insertBetween.fromNode, toNode: insertBetween.toNode }
+              : { type: "standalone" }
+          }
           initialPlace={addNodePlace}
           allNodes={nodes}
           allEdges={edges}
           datetimeFormat={datetimeFormat}
           dateFormat={dateFormat}
-          insertBetween={insertBetween}
           onSubmit={handleAddNode}
           onSplitEdge={handleSplitEdge}
           onSubmitConnected={handleSubmitConnected}

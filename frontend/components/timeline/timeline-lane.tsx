@@ -19,7 +19,7 @@ interface TimelineLaneProps {
   nodeBlockRefs: React.MutableRefObject<Map<string, HTMLElement>>;
   dimmedNodeIds?: Set<string> | null;
   nodes: Array<{ id: string; name: string; type: string; arrival_time: string | null; departure_time: string | null; timezone?: string | null; [key: string]: unknown }>;
-  edges: Array<{ id: string; from_node_id: string; to_node_id: string; travel_mode: string; travel_time_hours: number; distance_km: number | null; [key: string]: unknown }>;
+  edges: Array<{ id: string; from_node_id: string; to_node_id: string; travel_mode: string; travel_time_hours: number; travel_time_estimated?: boolean; distance_km: number | null; [key: string]: unknown }>;
 }
 
 export const TimelineLane = memo(function TimelineLane({
@@ -183,6 +183,7 @@ export const TimelineLane = memo(function TimelineLane({
                 departureEstimated={pos.departureEstimated}
                 overnightHold={pos.overnightHold}
                 holdReason={pos.holdReason}
+                driveCap={pos.driveCap}
                 timingConflict={pos.timingConflict}
                 spansDays={pos.spansDays}
                 selected={selectedNodeId === nodeId}
@@ -243,6 +244,7 @@ export const TimelineLane = memo(function TimelineLane({
                   edgeId={edgeToNext.edgeId}
                   travelMode={rawEdge.travel_mode}
                   travelTimeHours={rawEdge.travel_time_hours}
+                  travelTimeEstimated={rawEdge.travel_time_estimated}
                   distanceKm={rawEdge.distance_km}
                   distanceUnit={distanceUnit}
                   connectorHeightPx={Math.max(40, edgeToNext.connectorHeightPx - gapHeight)}

@@ -31,9 +31,20 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
         Use the returned node ID in subsequent add_edge calls to connect stops.
         NEVER use placeholder strings — only use real IDs from the trip context or from previous tool results.
 
-        Stops can be time-bound (both arrival_time and departure_time set), flexible
-        (only duration_minutes set), or mixed. For a rough stop without a firm schedule,
-        provide only duration_minutes and let downstream enrichment derive the times.
+        Every stop has one of four timing shapes — pick fields matching the one
+        that fits what the user told you:
+        - **Float**: only `duration_minutes`. For short along-route stops
+          (viewpoints, coffee breaks) where the user knows the stay length but
+          not when. "30 minutes at the lookout" is a Float.
+        - **Know when I leave**: only `departure_time`. **Preferred default for
+          intermediate stops where the user gave a departure time but no firm
+          arrival.** Downstream arrivals derive automatically from the upstream
+          cascade — do not invent an arrival time.
+        - **Know when I arrive**: only `arrival_time` (optionally plus
+          `duration_minutes`). For firm arrivals (flight landings, hotel
+          check-ins) with a flexible stay length.
+        - **Fixed time**: both `arrival_time` and `departure_time`. Only when
+          both sides are hard commitments (ticketed events, scheduled transport).
 
         Args:
             name: Name of the stop (e.g., "Hotel Lumiere, Lyon").
@@ -42,10 +53,12 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
             lng: Longitude of the stop.
             place_id: Google Places ID if known.
             arrival_time: ISO 8601 arrival datetime (e.g., 2026-04-10T14:00:00Z).
-            departure_time: ISO 8601 departure datetime.
-            duration_minutes: Approximate duration of the stop in minutes. Use this
-                for flexible stops when the user doesn't have a firm schedule
-                (e.g. "~2 hours at the chateau" = 120).
+                Only set for `Know when I arrive` or `Fixed time` shapes.
+            departure_time: ISO 8601 departure datetime. Only set for
+                `Know when I leave` or `Fixed time` shapes.
+            duration_minutes: Stay length in minutes. Only set for `Float` or
+                `Know when I arrive` shapes where the stay length is a
+                meaningful commitment.
         """
         return await executor.execute("add_node", {
             "name": name,
@@ -68,7 +81,16 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
         departure_time: str | None = None,
         duration_minutes: int | None = None,
     ) -> dict:
-        """Update an existing stop. Only provide the fields you want to change. Updates only this node — no downstream cascade.
+        """Update an existing stop. Only provide the fields you want to change.
+
+        Updates only this node. Downstream **Float** and **Know when I leave**
+        stops re-derive their times automatically on the next read. Downstream
+        **Fixed time** and **Know when I arrive** stops do NOT shift — update
+        each of them explicitly if you want them to move.
+
+        See `add_node` for the four timing shapes. When changing a stop's
+        shape, pass the new field(s); the old shape's fields will be ignored
+        going forward.
 
         Args:
             node_id: ID of the node to update.
@@ -76,9 +98,12 @@ def _define_all_tools(executor: ToolExecutor) -> dict:
             type: New type - one of: city, hotel, restaurant, place, activity.
             lat: New latitude.
             lng: New longitude.
-            arrival_time: New ISO 8601 arrival datetime.
-            departure_time: New ISO 8601 departure datetime.
-            duration_minutes: New approximate duration in minutes for flexible stops.
+            arrival_time: New ISO 8601 arrival datetime. Only for
+                `Know when I arrive` or `Fixed time` shapes.
+            departure_time: New ISO 8601 departure datetime. Only for
+                `Know when I leave` or `Fixed time` shapes.
+            duration_minutes: New stay length in minutes. Only for `Float` or
+                `Know when I arrive` shapes.
         """
         return await executor.execute("update_node", {
             "node_id": node_id,

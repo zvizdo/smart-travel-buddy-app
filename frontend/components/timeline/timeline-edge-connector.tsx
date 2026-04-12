@@ -19,6 +19,7 @@ interface TimelineEdgeConnectorProps {
   connectorHeightPx: number;
   hasTimingWarning: boolean;
   hasNote: boolean;
+  travelTimeEstimated?: boolean;
   selected: boolean;
   dimmed: boolean;
   canEdit: boolean;
@@ -44,6 +45,7 @@ export const TimelineEdgeConnector = memo(function TimelineEdgeConnector({
   connectorHeightPx,
   hasTimingWarning,
   hasNote,
+  travelTimeEstimated,
   selected,
   dimmed,
   canEdit,
@@ -91,14 +93,16 @@ export const TimelineEdgeConnector = memo(function TimelineEdgeConnector({
             ? "bg-primary/10 border-primary/20"
             : hasTimingWarning
               ? "bg-error/10 border-error/20"
-              : "bg-surface-low border-outline-variant/30 shadow-soft"
+              : travelTimeEstimated
+                ? "bg-tertiary-container/20 border-outline-variant/20 shadow-soft"
+                : "bg-surface-low border-outline-variant/30 shadow-soft"
           }
         `}
           style={hasTimingWarning ? { boxShadow: "0 0 0 2px rgba(179,27,37,0.12)" } : undefined}
         >
           <TravelModeIcon mode={travelMode} size={13} />
-          <span className={`text-[11px] font-medium whitespace-nowrap ${hasTimingWarning ? "text-error" : "text-on-surface-variant"}`}>
-            {formatTravelTime(travelTimeHours)}
+          <span className={`text-[11px] font-medium whitespace-nowrap ${hasTimingWarning ? "text-error" : travelTimeEstimated ? "text-on-surface-variant/70" : "text-on-surface-variant"}`}>
+            {travelTimeEstimated ? `~${formatTravelTime(travelTimeHours)}` : formatTravelTime(travelTimeHours)}
           </span>
           {formattedDistance && (
             <span className="text-[10px] text-on-surface-variant/60 whitespace-nowrap">· {formattedDistance}</span>
@@ -155,5 +159,6 @@ export const TimelineEdgeConnector = memo(function TimelineEdgeConnector({
   prev.dimmed === next.dimmed &&
   prev.connectorHeightPx === next.connectorHeightPx &&
   prev.hasTimingWarning === next.hasTimingWarning &&
-  prev.hasNote === next.hasNote
+  prev.hasNote === next.hasNote &&
+  prev.travelTimeEstimated === next.travelTimeEstimated
 );

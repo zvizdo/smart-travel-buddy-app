@@ -22,10 +22,24 @@ async def add_node(
 ) -> dict:
     """Add a new stop to the trip itinerary. Use add_edge separately to connect it.
 
-    Stops can be time-bound (arrival_time and/or departure_time set) or flexible
-    (only duration_minutes set — times are then derived on read from upstream
-    anchors). Returns the created node (including its ID). Requires Admin or
-    Planner role.
+    Every stop has one of four timing shapes — pass fields matching the one that
+    fits what the user actually told you:
+
+    - **Float**: only `duration_minutes`. Use for short along-route stops where
+      the user knows the stay length but not when — viewpoints, coffee breaks,
+      scenic overlooks. "30 minutes at the lookout" is a Float.
+    - **Know when I leave**: only `departure_time`. **Prefer this default for
+      intermediate stops where the user mentioned a departure time but no firm
+      arrival.** Downstream arrivals derive automatically from the upstream
+      cascade — do not invent an arrival time.
+    - **Know when I arrive**: only `arrival_time` (optionally with
+      `duration_minutes`). Use for firm arrivals like flight landings and hotel
+      check-ins.
+    - **Fixed time**: both `arrival_time` and `departure_time`. Use only when
+      the user gave firm clock times on both sides (ticketed events, scheduled
+      transport).
+
+    Returns the created node (including its ID). Requires Admin or Planner role.
 
     Args:
         trip_id: The trip identifier.
@@ -36,10 +50,12 @@ async def add_node(
         plan_id: Optional plan version to modify. Defaults to active plan.
         place_id: Google Places ID if known.
         arrival_time: ISO 8601 arrival datetime (e.g., 2026-04-10T14:00:00Z).
-        departure_time: ISO 8601 departure datetime.
-        duration_minutes: Approximate duration of the stop in minutes. Use this
-            for flexible stops when the user doesn't have a firm schedule
-            (e.g. "~2 hours at the chateau" = 120).
+            Only set for `Know when I arrive` or `Fixed time` shapes.
+        departure_time: ISO 8601 departure datetime. Only set for
+            `Know when I leave` or `Fixed time` shapes.
+        duration_minutes: Stay length in minutes. Only set for `Float` or
+            `Know when I arrive` shapes where the stay length is a meaningful
+            commitment. Do NOT set for `Know when I leave` or `Fixed time`.
     """
     user_id, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context
@@ -81,10 +97,17 @@ async def update_node(
 ) -> dict:
     """Update an existing stop. Only provide the fields you want to change.
 
-    Updates only this node. Downstream flex stops (duration_minutes set, no
-    fixed times) re-derive their times automatically on the next read.
-    Downstream time-bound stops do NOT shift — update each of them explicitly
-    if you want them to move.
+    Updates only this node. Downstream **Float** and **Know when I leave** stops
+    re-derive their times automatically on the next read. Downstream **Fixed
+    time** and **Know when I arrive** stops do NOT shift — update each of them
+    explicitly if you want them to move.
+
+    Every stop has one of four timing shapes (see `add_node` docs): **Float**
+    (only duration), **Know when I leave** (only departure_time — preferred
+    default for intermediate stops), **Know when I arrive** (only arrival_time),
+    **Fixed time** (both). When changing a stop's shape, pass the new field(s)
+    and the fields from the old shape will be ignored going forward.
+
     Role required: Admin or Planner.
 
     Args:
@@ -96,8 +119,11 @@ async def update_node(
         lat: New latitude.
         lng: New longitude.
         arrival_time: New ISO 8601 arrival datetime, e.g. "2026-04-10T14:00:00Z".
-        departure_time: New ISO 8601 departure datetime.
-        duration_minutes: New approximate duration in minutes for flexible stops.
+            Only set for `Know when I arrive` or `Fixed time` shapes.
+        departure_time: New ISO 8601 departure datetime. Only set for
+            `Know when I leave` or `Fixed time` shapes.
+        duration_minutes: New stay length in minutes. Only set for `Float` or
+            `Know when I arrive` shapes.
     """
     _, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context

@@ -12,12 +12,32 @@ from shared.models import Node
 
 
 def _make_service():
-    """Create a DAGService with mocked repositories."""
+    """Create a DAGService with mocked repositories.
+
+    Sets up the Firestore batch mock so mutation methods (``create_node``,
+    ``create_branch``, ``delete_node``) that commit all mutations in a
+    single atomic batch can ``await batch.commit()``.
+    """
     trip_repo = MagicMock()
     plan_repo = MagicMock()
     node_repo = MagicMock()
     edge_repo = MagicMock()
-    return DAGService(trip_repo, plan_repo, node_repo, edge_repo)
+
+    # Wire up batch mock for atomic batch paths.
+    batch = MagicMock()
+    batch.commit = AsyncMock()
+    node_repo._db = MagicMock()
+    node_repo._db.batch = MagicMock(return_value=batch)
+
+    # Wire up _collection mocks for batch.set/batch.delete document refs.
+    collection = MagicMock()
+    collection.document = MagicMock(return_value=MagicMock())
+    node_repo._collection = MagicMock(return_value=collection)
+    edge_repo._collection = MagicMock(return_value=collection)
+
+    svc = DAGService(trip_repo, plan_repo, node_repo, edge_repo)
+    svc._test_batch = batch
+    return svc
 
 
 def _make_node_dict(
@@ -38,7 +58,6 @@ def _make_node_dict(
         "arrival_time": arrival,
         "departure_time": departure,
         "participant_ids": None,
-        "order_index": 0,
         "place_id": None,
         "timezone": "America/Denver",
         "created_by": "user_1",
@@ -206,8 +225,7 @@ class TestCreateNodeDuplicateEdge:
 
     @pytest.mark.asyncio
     async def test_no_duplicate_edge_on_connect_after(self):
-        """If edge A->new already exists, don't create another."""
-        existing_edge = _make_edge_dict("A", "placeholder", 3, edge_id="existing_e")
+        """connect_after creates edge via atomic batch when no duplicate exists."""
         svc = _make_service()
         svc._node_repo.list_by_plan = AsyncMock(return_value=[
             _make_node_dict("A", "Denver", "2026-06-01T10:00:00+00:00"),
@@ -215,15 +233,9 @@ class TestCreateNodeDuplicateEdge:
         svc._node_repo.get_node_or_raise = AsyncMock(
             return_value=Node(**_make_node_dict("A", "Denver", "2026-06-01T10:00:00+00:00"))
         )
-        svc._node_repo.create_node = AsyncMock()
 
-        # Mock edge list — we'll check after the node is created
-        # The edge_repo.list_by_plan will be called by _create_edge_if_new
-        # We need to return an edge with the from_node_id matching connect_after
-        # and to_node_id matching the new node. Since new node ID is random,
-        # we can't predict it, so we test the non-duplicate case instead.
+        # No existing edges — edge should be created
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
-        svc._edge_repo.create_edge = AsyncMock()
 
         result = await svc.create_node(
             trip_id="trip1",
@@ -240,15 +252,14 @@ class TestCreateNodeDuplicateEdge:
         )
 
         assert result["edge"] is not None
-        svc._edge_repo.create_edge.assert_awaited_once()
+        # Node + edge written via batch — 2 set calls
+        assert svc._test_batch.set.call_count == 2
+        svc._test_batch.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_no_edge_without_connect_after(self):
-        """Without connect_after_node_id, no edge should be created."""
+        """Without connect_after_node_id, only the node is batch-written."""
         svc = _make_service()
-        svc._node_repo.list_by_plan = AsyncMock(return_value=[])
-        svc._node_repo.create_node = AsyncMock()
-        svc._edge_repo.create_edge = AsyncMock()
 
         result = await svc.create_node(
             trip_id="trip1",
@@ -265,7 +276,9 @@ class TestCreateNodeDuplicateEdge:
         )
 
         assert result["edge"] is None
-        svc._edge_repo.create_edge.assert_not_awaited()
+        # Only node written — 1 set call
+        assert svc._test_batch.set.call_count == 1
+        svc._test_batch.commit.assert_awaited_once()
 
 
 # ── delete_node reconnection ────────────────────────────────────
@@ -284,11 +297,7 @@ class TestDeleteNodeDuplicateEdge:
         ]
         svc = _make_service()
         svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
-        svc._edge_repo.delete_edge = AsyncMock()
-        svc._edge_repo.create_edge = AsyncMock()
-        svc._node_repo.delete_node = AsyncMock()
         svc._node_repo.list_by_plan = AsyncMock(return_value=[])
-        svc._node_repo.update_node = AsyncMock()
 
         result = await svc.delete_node("trip1", "plan1", "B")
 
@@ -296,7 +305,8 @@ class TestDeleteNodeDuplicateEdge:
         assert result["reconnected_edge"] is not None
         # Should return the existing edge, not create a new one
         assert result["reconnected_edge"]["id"] == "existing_ac"
-        svc._edge_repo.create_edge.assert_not_awaited()
+        # No batch.set for edges — duplicate was detected
+        svc._test_batch.set.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reconnect_creates_when_no_existing(self):
@@ -306,18 +316,8 @@ class TestDeleteNodeDuplicateEdge:
             _make_edge_dict("B", "C", 3),
         ]
         svc = _make_service()
-        # First call returns edges for delete_node, subsequent calls for _create_edge_if_new,
-        # then for cleanup_stale_participant_ids
-        svc._edge_repo.list_by_plan = AsyncMock(side_effect=[
-            edges,  # delete_node: list all edges
-            [],     # _create_edge_if_new: check for duplicates (edges already deleted)
-            [_make_edge_dict("A", "C", 5)],  # cleanup_stale_participant_ids: check DAG linearity
-        ])
-        svc._edge_repo.delete_edge = AsyncMock()
-        svc._edge_repo.create_edge = AsyncMock()
-        svc._node_repo.delete_node = AsyncMock()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
         svc._node_repo.list_by_plan = AsyncMock(return_value=[])
-        svc._node_repo.update_node = AsyncMock()
 
         result = await svc.delete_node("trip1", "plan1", "B")
 
@@ -325,7 +325,8 @@ class TestDeleteNodeDuplicateEdge:
         assert result["reconnected_edge"]["from_node_id"] == "A"
         assert result["reconnected_edge"]["to_node_id"] == "C"
         assert result["reconnected_edge"]["travel_time_hours"] == 5
-        svc._edge_repo.create_edge.assert_awaited_once()
+        # Edge created via batch.set (atomic write)
+        svc._test_batch.set.assert_called_once()
 
 
 # ── create_branch ────────────────────────────────────────────────
@@ -336,16 +337,14 @@ class TestCreateBranchDuplicateEdge:
 
     @pytest.mark.asyncio
     async def test_branch_edge_created_normally(self):
-        """Normal branch creation should create the branch edge."""
+        """Normal branch creation should create the branch edge via atomic batch."""
         source_node = _make_node_dict("A", "Denver", "2026-06-01T10:00:00+00:00")
         svc = _make_service()
         svc._node_repo.get_node_or_raise = AsyncMock(
             return_value=Node(**source_node)
         )
         svc._node_repo.list_by_plan = AsyncMock(return_value=[source_node])
-        svc._node_repo.create_node = AsyncMock()
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
-        svc._edge_repo.create_edge = AsyncMock()
 
         result = await svc.create_branch(
             trip_id="trip1",
@@ -364,21 +363,25 @@ class TestCreateBranchDuplicateEdge:
 
         assert result["edge"] is not None
         assert result["merge_edge"] is None
-        svc._edge_repo.create_edge.assert_awaited_once()
+        # Node + branch edge via batch — 2 set calls
+        assert svc._test_batch.set.call_count == 2
+        svc._test_batch.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_branch_with_merge_creates_two_edges(self):
-        """Branch with connect_to should create both branch and merge edges."""
+        """Branch with connect_to should create node + both edges atomically."""
         source_node = _make_node_dict("A", "Denver", "2026-06-01T10:00:00+00:00")
         merge_target = _make_node_dict("C", "SLC", "2026-06-05T10:00:00+00:00")
         svc = _make_service()
-        svc._node_repo.get_node_or_raise = AsyncMock(
-            return_value=Node(**source_node)
-        )
+
+        async def _get_node(tid, pid, nid):
+            if nid == "A":
+                return Node(**source_node)
+            return Node(**merge_target)
+
+        svc._node_repo.get_node_or_raise = AsyncMock(side_effect=_get_node)
         svc._node_repo.list_by_plan = AsyncMock(return_value=[source_node, merge_target])
-        svc._node_repo.create_node = AsyncMock()
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
-        svc._edge_repo.create_edge = AsyncMock()
 
         result = await svc.create_branch(
             trip_id="trip1",
@@ -397,25 +400,20 @@ class TestCreateBranchDuplicateEdge:
 
         assert result["edge"] is not None
         assert result["merge_edge"] is not None
-        # Two calls: one for branch edge, one for merge edge
-        assert svc._edge_repo.create_edge.await_count == 2
+        # Node + branch edge + merge edge via batch — 3 set calls
+        assert svc._test_batch.set.call_count == 3
+        svc._test_batch.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_branch_merge_skips_if_edge_exists(self):
-        """If merge edge already exists, don't create a duplicate."""
+        """If no pre-existing duplicates, both edges are created via batch."""
         source_node = _make_node_dict("A", "Denver", "2026-06-01T10:00:00+00:00")
         svc = _make_service()
         svc._node_repo.get_node_or_raise = AsyncMock(
             return_value=Node(**source_node)
         )
         svc._node_repo.list_by_plan = AsyncMock(return_value=[source_node])
-        svc._node_repo.create_node = AsyncMock()
-        # First call: no existing edges (branch edge ok)
-        # Second call: return an edge from new_node to C (merge already exists)
-        # Since we don't know the new node ID, we'll simulate by returning
-        # an edge list that will be checked.
         svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
-        svc._edge_repo.create_edge = AsyncMock()
 
         result = await svc.create_branch(
             trip_id="trip1",
@@ -432,7 +430,6 @@ class TestCreateBranchDuplicateEdge:
             created_by="user_1",
         )
 
-        # Both edges should be created (no pre-existing duplicates in this case)
         assert result["edge"] is not None
         assert result["merge_edge"] is not None
 

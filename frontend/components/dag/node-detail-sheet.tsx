@@ -1,19 +1,20 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useMemo } from "react";
 import { type DocumentData } from "firebase/firestore";
 import { NodeEditForm } from "@/components/dag/node-edit-form";
-import { BranchForm } from "@/components/dag/branch-form";
+import { CreateNodeForm } from "@/components/dag/create-node-form";
 import { ActionList, type ActionTab } from "@/components/dag/action-list";
 import { AddActionForm, type AddActionData } from "@/components/dag/add-action-form";
 import {
   formatDateTimeWithPreference,
   type DateFormatPreference,
 } from "@/lib/dates";
-import type {
-  RawEdge,
-  RawNode,
-  TripSettingsLike,
+import {
+  isRestNode,
+  type RawEdge,
+  type RawNode,
+  type TripSettingsLike,
 } from "@/lib/time-inference";
 
 interface NodeDetailSheetProps {
@@ -48,6 +49,7 @@ interface NodeDetailSheetProps {
       place_id: string | null;
       arrival_time: string | null;
       departure_time: string | null;
+      duration_minutes: number | null;
       travel_mode: string;
       travel_time_hours: number;
       distance_km: number | null;
@@ -82,6 +84,16 @@ const TYPE_COLORS: Record<string, string> = {
   activity: "bg-error/10 text-error",
 };
 
+function formatTimingConflict(raw: string): string {
+  const match = raw.match(/\bis (\S+) (early|late)\b/);
+  if (match) {
+    const [, delta, direction] = match;
+    const verb = direction === "early" ? "earlier" : "later";
+    return `Route arrives ${delta} ${verb} than your scheduled time. Adjust the fixed arrival or update upstream timing.`;
+  }
+  return raw;
+}
+
 export function NodeDetailSheet({
   node,
   allNodes,
@@ -115,6 +127,70 @@ export function NodeDetailSheet({
   const lastMove = useRef<{ y: number; t: number } | null>(null);
 
   const canDrag = mode === "view";
+
+  const driveSegments = useMemo(() => {
+    if (!node.drive_cap_warning || !allNodes || !allEdges) return null;
+    
+    interface Path {
+      segments: Array<{ fromName: string; toName: string; hours: number }>;
+      totalHours: number;
+    }
+    
+    function getPathsBackwards(currentId: string, visited: Set<string> = new Set()): Path[] {
+      if (visited.has(currentId)) return [{ segments: [], totalHours: 0 }];
+      visited.add(currentId);
+      
+      const incomingEdges = allEdges!.filter(
+        (e) => e.to_node_id === currentId && (e.travel_mode === "drive" || e.travel_mode === "walk" || !e.travel_mode)
+      );
+      
+      if (incomingEdges.length === 0) {
+        visited.delete(currentId);
+        return [{ segments: [], totalHours: 0 }];
+      }
+      
+      const currentName = allNodes!.find((n) => n.id === currentId)?.name || currentId;
+      const resultPaths: Path[] = [];
+      
+      for (const edge of incomingEdges) {
+        const parentNode = allNodes!.find((n) => n.id === edge.from_node_id);
+        if (!parentNode) continue;
+        
+        const segment = {
+          fromName: parentNode.name,
+          toName: currentName,
+          hours: edge.travel_time_hours || 0,
+        };
+        
+        if (isRestNode(parentNode as any)) {
+           resultPaths.push({ segments: [segment], totalHours: segment.hours });
+        } else {
+           const subPaths = getPathsBackwards(parentNode.id, visited);
+           for (const sp of subPaths) {
+             resultPaths.push({
+               segments: [...sp.segments, segment],
+               totalHours: sp.totalHours + segment.hours
+             });
+           }
+        }
+      }
+      
+      visited.delete(currentId);
+      
+      if (resultPaths.length === 0) return [{ segments: [], totalHours: 0 }];
+      return resultPaths;
+    }
+    
+    const paths = getPathsBackwards(node.id);
+    if (paths.length === 0) return null;
+    
+    let maxPath = paths[0];
+    for (const p of paths) {
+      if (p.totalHours > maxPath.totalHours) maxPath = p;
+    }
+    
+    return maxPath;
+  }, [node.drive_cap_warning, node.id, allNodes, allEdges]);
 
   function handleDragPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     if (!canDrag) return;
@@ -318,28 +394,76 @@ export function NodeDetailSheet({
             onImpactDiscarded={onImpactDiscarded}
           />
         ) : mode === "branch" ? (
-          <BranchForm
-            sourceNode={node}
+          <CreateNodeForm
+            context={{ type: "branch", sourceNode: node }}
             allNodes={allNodes ?? []}
-            onSubmit={handleBranch}
             datetimeFormat={datetimeFormat}
             dateFormat={dateFormat}
+            onSubmit={() => {}}
+            onSubmitBranch={handleBranch}
             onCancel={() => setMode("view")}
           />
         ) : (
           <div className="px-5 pb-5 space-y-3">
-            {arrivalDate && (
+            {!node.is_start && arrivalDate && (
               <div className="flex justify-between text-sm">
                 <span className="text-on-surface-variant">Arrival</span>
-                <span className="font-medium text-on-surface">{arrivalDate}</span>
+                <span className={node.arrival_time_estimated ? "italic text-on-surface-variant" : "font-medium text-on-surface"}>
+                  {node.arrival_time_estimated ? `~${arrivalDate}` : arrivalDate}
+                </span>
               </div>
             )}
-            {departureDate && (
+            {!node.is_end && departureDate && (
               <div className="flex justify-between text-sm">
-                <span className="text-on-surface-variant">Departure</span>
-                <span className="font-medium text-on-surface">
-                  {departureDate}
+                <span className="text-on-surface-variant">
+                  {!node.departure_time_estimated && node.arrival_time_estimated ? "Leaves" : "Departure"}
                 </span>
+                <span className={node.departure_time_estimated ? "italic text-on-surface-variant" : "font-medium text-on-surface"}>
+                  {node.departure_time_estimated ? `~${departureDate}` : departureDate}
+                </span>
+              </div>
+            )}
+            {node.timing_conflict && (
+              <div className="rounded-xl bg-error/10 px-4 py-3 flex items-start gap-2">
+                <svg className="h-4 w-4 text-error shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                </svg>
+                <div>
+                  <p className="text-xs font-semibold text-error leading-snug">Timing conflict</p>
+                  <p className="text-xs text-on-surface-variant mt-0.5 leading-snug">
+                    {formatTimingConflict(String(node.timing_conflict))}
+                  </p>
+                </div>
+              </div>
+            )}
+            {node.drive_cap_warning && (
+              <div className="rounded-xl bg-[#fef3c7] px-4 py-3 flex items-start gap-2">
+                <svg className="h-4 w-4 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="#92400e">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                </svg>
+                <div className="w-full">
+                  <p className="text-xs font-semibold leading-snug" style={{ color: "#92400e" }}>
+                    {node.hold_reason === "night_drive" ? "Night drive warning" : "Daily drive limit reached"}
+                  </p>
+                  <p className="text-xs mt-0.5 leading-snug" style={{ color: "#92400e" }}>
+                    {node.hold_reason === "night_drive" 
+                      ? "This route involves driving during your set overnight rest window. Consider adjusting your times." 
+                      : "Drive cap exceeded before this stop — consider adding a rest stop earlier."}
+                  </p>
+                  {driveSegments && driveSegments.segments.length > 0 && (
+                    <div className="mt-2 text-xs space-y-1">
+                      <div className="font-medium mb-1" style={{ color: "#92400e" }}>Total Drive: {driveSegments.totalHours.toFixed(1)}h</div>
+                      {driveSegments.segments.map((seg, idx) => (
+                        <div key={idx} className="flex justify-between items-start opacity-80" style={{ color: "#92400e" }}>
+                          <span className="truncate pr-2">
+                            {seg.fromName} → {seg.toName}
+                          </span>
+                          <span className="whitespace-nowrap font-medium">{seg.hours.toFixed(1)}h</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
             {node.arrival_time &&

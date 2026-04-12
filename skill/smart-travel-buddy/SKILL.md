@@ -52,27 +52,30 @@ Always default operations to the **active plan**. Pass `plan_id` only when expli
 
 ---
 
-## 2.5 Flexible vs fixed stops
+## 2.5 Timing shapes — how to pick the right one
 
-Every stop falls into one of three implicit shapes — the DAG does **not** store a "shape" enum, it's derived from which fields you set when you create the node:
+Every stop has exactly one of four timing shapes. The DAG does **not** store a "shape" enum — it's derived from which fields you pass to `add_node` / `update_node`:
 
 | Shape | What you set | When to use |
 |---|---|---|
-| **Time-bound** | `arrival_time` **and** `departure_time` (ISO 8601) | Flights, hotel check-ins, concerts, reservations — anything with a firm clock time. |
-| **Mixed-bound** | One of `arrival_time` / `departure_time` **plus** `duration_minutes` | "Arrive at the airport at 6pm and stay 90 minutes", "leave home at 8am and drive 2 hours". |
-| **Flexible (duration-bound)** | Only `duration_minutes` | "~2 hours at the château", "half a day in Lucca", "3 nights in Barcelona" → 4320. No firm clock time. |
+| **Float** | Only `duration_minutes` | **The default for most stops.** Use whenever the user knows how long they want to stay but didn't give a firm clock time. Short stops ("30 minutes at the lookout"), day-scale stays ("half a day in Lucca"), and multi-night stays ("3 nights in Barcelona" → 4320 min) are all Floats. Arrival and departure derive from the upstream cascade. |
+| **Know when I leave** | Only `departure_time` (ISO 8601) | Stops where the user committed to a specific departure clock time ("leave Lyon by 9am") but not an arrival. The arrival depends on what happens upstream. |
+| **Know when I arrive** | Only `arrival_time` (optionally plus `duration_minutes`) | Firm arrivals — flight landings, hotel check-ins, ticketed start times — with a flexible stay length. |
+| **Fixed time** | Both `arrival_time` **and** `departure_time` | **Rare — the exception, not the rule.** Use only when the user explicitly gave firm clock times on BOTH sides (a conference session 09:00–17:00, a pre-booked ferry with fixed boarding and disembarkation). If only one side is firm, use Know when I arrive or Know when I leave instead. Never set both just to "fill in the blanks." |
 
-For a stop without an explicit clock time, **prefer the flexible shape**. Downstream nodes will auto-derive their times from upstream anchors on the next `get_trip_context` read — you don't have to manually calculate and re-set them. Updating a flex stop's duration or updating an upstream anchor propagates forward automatically.
+> **Default to the loosest shape that fits.** Most real trips are a chain of durations with one or two hard anchors (a flight arrival, a checkout time). Prefer **Float** for any stop without a firm clock anchor. Use **Know when I leave** or **Know when I arrive** only when the user explicitly stated a specific time. **Fixed time is the rarest shape** — resist the urge to pin both sides of every stop, as that creates a rigid schedule that conflicts the moment anything shifts upstream.
 
-**Durations cascade, time-bound nodes don't.** If you `update_node` on a time-bound stop and a downstream node is also time-bound, the downstream node will NOT shift — you'd get a `⚠ timing conflict` warning in the next context read. If the user wants downstream time-bound nodes to shift by the same delta, call `update_node` on each one explicitly.
+> If the user says "we want to leave Siena by 2pm", that's Know when I leave, not Float. But if they say "a couple hours in Siena", that's Float — don't invent a departure time.
 
-**Start and end.** The first chronological node needs at least a `departure_time` so the rest of the trip has an anchor, and the last node should have at least an `arrival_time`. Everything in between can be flexible.
+**Cascade rules.** `update_node` on a **Fixed time** or **Know when I arrive** stop does NOT shift downstream Fixed / Know-when-I-arrive stops — you'd get a `⚠ timing conflict` in the next context read. Downstream **Float** and **Know when I leave** stops re-derive automatically; you don't touch them. When a Fixed-time shift should ripple, call `update_node` on each affected stop explicitly.
+
+**Start and end.** The first chronological node (🚩 START) needs at least a `departure_time` — the rest of the trip anchors off it. The last node (🏁 END) needs at least an `arrival_time`. Intermediate stops default to **Know when I leave**.
 
 ### Reading estimated times in `get_trip_context`
 
 The trip context rendering marks enriched fields:
 
-- **`~` prefix** on a time (e.g. `arrives: ~2026-06-15 14:30`) means it was derived by the read-time enrichment pass, not set by the user. **`(est.)` suffix** on the specific field (e.g. `arrives: ~14:30 (est.)`) confirms that field was inferred. **`(duration est.)`** means a 30-minute default was applied because the stop had no duration. **Do not quote these as commitments.** Soften them: "you'd reach Lyon around 2:30 pm based on the drive from Dijon", not "you arrive in Lyon at 14:30".
+- **`~` prefix** on a time (e.g. `arrives: ~2026-06-15 14:30`) means it was derived by the read-time enrichment pass, not set by the user. **`(est.)` suffix** on the specific field (e.g. `arrives: ~14:30 (est.)`) confirms that field was inferred. **Do not quote these as commitments.** Soften them: "you'd reach Lyon around 2:30 pm based on the drive from Dijon", not "you arrive in Lyon at 14:30".
 - **`⚠ timing conflict: …`** under a node means propagation from upstream disagrees with the user's fixed time on that node. Surface the conflict and ask the user which to honor; do not silently overwrite either side.
 - **`🛌 overnight hold: <reason>`** means the night-drive rule or daily-drive cap forced the stop to pad its departure. If `reason` is `night_drive`, suggest adding a hotel at that stop. If it's `max_drive_hours`, suggest a rest break (meal + stop, or a shorter day).
 - **`🚩 START` / `🏁 END`** are topology chips — the nodes with no predecessors / no successors. They're derived, not stored.
@@ -107,8 +110,8 @@ The trip context rendering marks enriched fields:
 ### Mutating — nodes & edges
 | Tool | Role | Notes |
 |---|---|---|
-| `add_node` | admin/planner | Creates a stop. Does NOT connect it — follow with `add_edge`. Returns the new node ID. Pass `arrival_time` / `departure_time` for time-bound stops, `duration_minutes` for flexible stops, or both for mixed-bound (see §2.5). |
-| `update_node` | admin/planner | Updates only the target node. Accepts `duration_minutes` too. **Downstream flex stops re-derive automatically** on the next read; downstream **time-bound** stops do NOT shift — if a time-bound shift should ripple, call `update_node` on each affected stop explicitly. |
+| `add_node` | admin/planner | Creates a stop. Does NOT connect it — follow with `add_edge`. Returns the new node ID. Pick the timing shape from §2.5: **Float** (`duration_minutes` only — **the default for most stops**), **Know when I leave** (`departure_time` only), **Know when I arrive** (`arrival_time` ± `duration_minutes`), or **Fixed time** (both times — **rare, only when user gave both firm times**). |
+| `update_node` | admin/planner | Updates only the target node. Accepts `duration_minutes` too. Downstream **Float** and **Know when I leave** stops re-derive automatically on the next read; downstream **Fixed time** and **Know when I arrive** stops do NOT shift — if such a shift should ripple, call `update_node` on each affected stop explicitly. |
 | `delete_node` | admin/planner | Removes the stop. If it had exactly one in + one out edge, surrounding edges auto-reconnect. |
 | `add_edge` | admin/planner | Connects two existing nodes. Travel time, distance, polyline auto-computed. Mode heuristic: `>800km → flight`, `<3km → walk`, else `drive`. Use `ferry` for sea/ship/cruise routes (agent-set only — not auto-inferred). |
 | `delete_edge` | admin/planner | Removes a connection. |
@@ -180,7 +183,7 @@ Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_action
 
 **Branch handling:** the DAG supports multiple outgoing edges per node (parallel paths — e.g. group splits). When adding a new branch: add nodes and edges **alongside** the existing ones. Never delete existing edges unless explicitly asked.
 
-**Cascading schedule changes:** `update_node` on the MCP server does NOT propagate time changes to downstream **time-bound** nodes. Downstream **flexible** nodes (duration_minutes set, no fixed times) re-derive automatically on the next read — you don't need to touch them. But if the user shifts one stop and a downstream node is also time-bound, that downstream node will NOT move, and the next `get_trip_context` will show a `⚠ timing conflict`. In that case, call `update_node` on each affected time-bound stop explicitly. Spell this out during the confirmation step.
+**Cascading schedule changes:** `update_node` on the MCP server does NOT propagate time changes to downstream **Fixed time** or **Know when I arrive** nodes. Downstream **Float** and **Know when I leave** nodes re-derive automatically on the next read — you don't need to touch them. But if the user shifts one stop and a downstream node is Fixed time or Know when I arrive, that downstream node will NOT move, and the next `get_trip_context` will show a `⚠ timing conflict`. In that case, call `update_node` on each affected stop explicitly. Spell this out during the confirmation step.
 
 **Alternatives via plans, not destructive edits:** if the user wants to explore "what if" (skip a city, reorder stops), prefer `create_plan` to clone the active plan into a draft and edit the draft. They can `promote_plan` if they like it, or `delete_plan` if they don't. This preserves the original.
 
@@ -188,7 +191,9 @@ Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_action
 
 ## 6. Talking to the user
 
+- **Never show internal IDs in user-facing replies.** Node IDs (`n_xxxxxxxx`) and edge IDs (`e_xxxxxxxx`) are for tool calls only. Refer to every stop by name in your messages. If two stops have the same name, disambiguate by location or day ("Lyon on day 2", "the Paris hotel"), not by ID. The user should never see `n_`, `e_`, `p_`, or `t_` strings in your output.
 - **Times**: show in each stop's local timezone (e.g. "2026-06-15 10:00 CEST"). Never raw UTC / ISO 8601 to the user. Internally you still pass ISO 8601 UTC to the tools. For estimated times (`~` prefix in the trip context), soften the phrasing — "around 2:30 pm" rather than "at 14:30". See §2.5 for the full list of enrichment markers.
+- **Don't mention internal propagation mechanics to the user.** Phrases like "30-minute default duration applied" or "duration estimation fallback" are implementation details — the user doesn't need them. Just describe the resulting itinerary in plain terms.
 - **Participants**: refer to people by their display name, never raw UIDs.
 - **Locations**: the trip context shows participant locations as human-readable references ("near Rome"), not raw lat/lng — mirror that phrasing.
 - **Tone**: concise and decisive. Don't restate what the user said. Lead with the plan or the answer.
@@ -224,6 +229,8 @@ Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_action
 - Calling `create_plan` right after `create_trip` (the initial plan already exists).
 - Deleting existing edges when the user asked to *add* a branch.
 - Forgetting that `update_node` doesn't cascade — leaving downstream stops with inconsistent times.
-- Showing UTC timestamps or raw UIDs to the user.
+- Showing UTC timestamps, raw UIDs, or internal node/edge IDs (`n_...`, `e_...`) to the user.
+- Mentioning "30-minute default duration" or other propagation mechanics in user-facing replies — those are implementation details.
+- Inventing an arrival time when the user only gave a departure — use **Know when I leave** and let downstream arrivals derive from the cascade.
 - Building before the user has confirmed the prose summary.
 - Skipping the post-mutation `get_trip_context` verification.

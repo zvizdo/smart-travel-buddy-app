@@ -50,6 +50,7 @@ export interface RawEdge {
   to_node_id: string;
   travel_mode?: string;
   travel_time_hours?: number | null;
+  distance_km?: number | null;
   [key: string]: unknown;
 }
 
@@ -65,6 +66,12 @@ export interface EnrichedNode extends RawNode {
   timing_conflict: string | null;
   overnight_hold: boolean;
   hold_reason: "night_drive" | "max_drive_hours" | null;
+  drive_cap_warning: boolean;
+}
+
+export interface EnrichedEdge extends RawEdge {
+  travel_time_hours: number;
+  travel_time_estimated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,11 +312,12 @@ function intervalOverlapsWindow(
   window: NoDriveWindow,
   tz: string,
 ): boolean {
-  const startLocal = toLocalParts(startMs, tz);
+  const startLocalRaw = toLocalParts(startMs, tz);
   const endLocal = toLocalParts(endMs, tz);
-  if (!startLocal || !endLocal) return false;
+  if (!startLocalRaw || !endLocal) return false;
 
-  let cursor = { year: startLocal.year, month: startLocal.month, day: startLocal.day };
+  const prevLocal = addLocalDays(startLocalRaw.year, startLocalRaw.month, startLocalRaw.day, -1);
+  let cursor = { year: prevLocal.year, month: prevLocal.month, day: prevLocal.day };
   const endDay = { year: endLocal.year, month: endLocal.month, day: endLocal.day };
 
   // Walk day-by-day in the local zone until one full day past the end.
@@ -384,8 +392,27 @@ function draftNode(node: RawNode, adj: Adjacency): EnrichedNode {
     timing_conflict: null,
     overnight_hold: false,
     hold_reason: null,
+    drive_cap_warning: false,
   };
   return draft;
+}
+
+const MODE_SPEEDS_KMH: Record<string, number> = {
+  drive: 80,
+  walk: 5,
+  transit: 30,
+  ferry: 40,
+  flight: 800,
+};
+
+/** Returns travel_time_hours for an edge, estimating from distance when the value is 0/missing. */
+function effectiveTravelHours(edge: RawEdge): number {
+  const hours = Number(edge.travel_time_hours ?? 0);
+  if (hours > 0) return hours;
+  const distanceKm = edge.distance_km;
+  if (distanceKm == null) return 0;
+  const speed = MODE_SPEEDS_KMH[String(edge.travel_mode ?? "drive")] ?? 80;
+  return distanceKm / speed;
 }
 
 function propagateArrival(
@@ -399,13 +426,33 @@ function propagateArrival(
     if (!parent) continue;
     const parentDeparture = parseDt(parent.departure_time);
     if (!parentDeparture) return null;
-    const travelMs = Number(edge.travel_time_hours ?? 0) * 3_600_000;
+    const travelMs = effectiveTravelHours(edge) * 3_600_000;
     const candidate = new Date(parentDeparture.getTime() + travelMs);
     if (!best || candidate.getTime() > best.getTime()) {
       best = candidate;
     }
   }
   return best;
+}
+
+/** Enrich raw edges — fill in estimated travel time when the stored value is missing/zero. */
+export function enrichEdges(edges: RawEdge[]): EnrichedEdge[] {
+  return edges.map((edge) => {
+    const hours = Number(edge.travel_time_hours ?? 0);
+    if (hours > 0) {
+      return { ...edge, travel_time_hours: hours, travel_time_estimated: false };
+    }
+    const distanceKm = edge.distance_km;
+    if (distanceKm != null) {
+      const speed = MODE_SPEEDS_KMH[String(edge.travel_mode ?? "drive")] ?? 80;
+      return {
+        ...edge,
+        travel_time_hours: distanceKm / speed,
+        travel_time_estimated: true,
+      };
+    }
+    return { ...edge, travel_time_hours: 0, travel_time_estimated: false };
+  });
 }
 
 function resolveDeparture(
@@ -454,66 +501,24 @@ function checkArrivalConflict(
     `${toIsoString(userArrival)}`;
 }
 
-function applyDriveRules(
-  draft: EnrichedNode,
-  outgoing: RawEdge[] | undefined,
-  accumulatedHours: number,
-  rules: TripRules,
-): Date | null {
-  const departureDt = parseDt(draft.departure_time);
-  if (!departureDt || !outgoing || outgoing.length === 0) return departureDt;
-
-  let longestDrive = 0;
-  for (const edge of outgoing) {
-    if (!DRIVE_MODES.has(String(edge.travel_mode ?? ""))) continue;
-    const h = Number(edge.travel_time_hours ?? 0);
-    if (h > longestDrive) longestDrive = h;
-  }
-  if (longestDrive <= 0) return departureDt;
-
-  const tzName = draft.timezone ?? rules.defaultTz;
-  if (!isValidZone(tzName)) return departureDt;
-  const tz = tzName as string;
-
-  let departureMs = departureDt.getTime();
-  let holdReason: "night_drive" | "max_drive_hours" | null = null;
-
-  if (rules.window) {
-    const projectedArrivalMs = departureMs + longestDrive * 3_600_000;
-    if (
-      intervalOverlapsWindow(departureMs, projectedArrivalMs, rules.window, tz)
-    ) {
-      departureMs = shiftToWindowEnd(departureMs, rules.window, tz);
-      holdReason = "night_drive";
-    }
-  }
-
-  if (
-    rules.maxDriveHours != null &&
-    accumulatedHours + longestDrive > rules.maxDriveHours
-  ) {
-    const fallbackWindow: NoDriveWindow = rules.window ?? {
-      start_hour: 22,
-      end_hour: 6,
-    };
-    departureMs = shiftToWindowEnd(departureMs, fallbackWindow, tz);
-    holdReason = holdReason ?? "max_drive_hours";
-  }
-
-  if (holdReason) {
-    const newDeparture = new Date(departureMs);
-    draft.departure_time = toIsoString(newDeparture);
-    draft.departure_time_estimated = true;
-    draft.overnight_hold = true;
-    draft.hold_reason = holdReason;
-    return newDeparture;
-  }
-
-  return departureDt;
-}
-
-function isRestNode(draft: EnrichedNode): boolean {
+export function isRestNode(draft: EnrichedNode): boolean {
   if (draft.type && REST_NODE_TYPES.has(draft.type)) return true;
+
+  const arr = parseDt(draft.arrival_time);
+  const dep = parseDt(draft.departure_time);
+  if (arr && dep) {
+    try {
+      const tz = draft.timezone || "UTC";
+      const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "numeric", day: "numeric" });
+      if (fmt.format(arr) !== fmt.format(dep)) return true;
+    } catch (e) {
+      // Ignore if invalid timezone
+    }
+
+    const mins = (dep.getTime() - arr.getTime()) / 60000;
+    if (mins >= REST_DURATION_MINUTES) return true;
+  }
+
   return (draft.duration_minutes ?? 0) >= REST_DURATION_MINUTES;
 }
 
@@ -572,21 +577,58 @@ export function enrichDagTimes(
       draft.arrival_time_estimated = true;
     }
 
-    // (c) Drive rules
-    const outgoing = adj.forward.get(nodeId);
-    applyDriveRules(draft, outgoing, accDriveHours.get(nodeId) ?? 0, rules);
+    if (isRestNode(draft)) {
+      accDriveHours.set(nodeId, 0);
+    }
 
-    // (d) Propagate drive-hours; rest nodes reset.
+    // (c) Apply night / max-drive-hours rules to outgoing drive edges and propagate
+    const outgoing = adj.forward.get(nodeId);
     if (outgoing) {
+      const tzName = draft.timezone ?? rules.defaultTz;
+      const tzIsValid = isValidZone(tzName);
+      const departureDt = parseDt(draft.departure_time);
+
       for (const edge of outgoing) {
         const childId = edge.to_node_id;
         const child = drafts.get(childId);
         if (!child) continue;
+
         const mode = String(edge.travel_mode ?? "");
-        const travelHours = Number(edge.travel_time_hours ?? 0);
+        const travelHours = effectiveTravelHours(edge);
+
+        let holdReason: "night_drive" | "max_drive_hours" | null = null;
+        if (DRIVE_MODES.has(mode)) {
+          const accHours = accDriveHours.get(nodeId) ?? 0;
+          if (
+            rules.maxDriveHours != null &&
+            accHours + travelHours > rules.maxDriveHours
+          ) {
+            holdReason = holdReason ?? "max_drive_hours";
+          }
+
+          if (tzIsValid && rules.window && departureDt) {
+            const departureMs = departureDt.getTime();
+            const projectedArrivalMs = departureMs + travelHours * 3_600_000;
+            if (
+              intervalOverlapsWindow(
+                departureMs,
+                projectedArrivalMs,
+                rules.window,
+                tzName as string,
+              )
+            ) {
+              holdReason = "night_drive";
+            }
+          }
+        }
+
+        if (holdReason) {
+          child.drive_cap_warning = true;
+          child.hold_reason = holdReason;
+        }
+
         const carry = accDriveHours.get(nodeId) ?? 0;
         let newAcc = DRIVE_MODES.has(mode) ? carry + travelHours : carry;
-        if (isRestNode(child)) newAcc = 0;
         const existing = accDriveHours.get(childId) ?? 0;
         accDriveHours.set(childId, Math.max(existing, newAcc));
       }
