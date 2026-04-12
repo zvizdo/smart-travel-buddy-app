@@ -1,12 +1,29 @@
-"""Route service: fetch route data (polyline, duration, distance) from the Routes API."""
+"""Route service: fetch route data (polyline, duration, distance) from the Routes API.
+
+Also handles flight durations via FlightService + airport IATA resolution.
+"""
+
+from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import google.auth
 import google.auth.transport.requests
 import httpx
+
+from shared.tools.airport_resolver import (
+    extract_flight_date,
+    haversine_m,
+    resolve_nearest_airport,
+)
+
+if TYPE_CHECKING:
+    from shared.services.flight_service import FlightService
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +40,55 @@ _TRAVEL_MODE_MAP = {
     "transit": "TRANSIT",
     "walk": "WALK",
 }
+
+# The flight-duration estimate is placed on its own line inside edge.notes,
+# prefixed with "Flight estimate:" so refreshes can surgically replace it
+# without disturbing other notes (road advisories, user-entered content).
+_FLIGHT_ESTIMATE_PREFIX = "Flight estimate:"
+# One-time migration: older deployments wrote the estimate wrapped in
+# [flight-estimate]...[/flight-estimate] sentinels. Strip those on read so
+# they don't linger forever.
+_LEGACY_SENTINEL_RE = re.compile(
+    r"\s*\[flight-estimate\].*?\[/flight-estimate\]\s*", re.DOTALL,
+)
+
+
+def _merge_flight_estimate_note(
+    existing: str | None, new_estimate: str | None,
+) -> str | None:
+    """Replace any existing ``Flight estimate: ...`` line (or legacy sentinel).
+
+    Keeps other content (road advisories, manual notes) intact. If
+    ``new_estimate`` is None, just strips the stale estimate.
+    """
+    text = _LEGACY_SENTINEL_RE.sub("\n", existing or "")
+    # Drop any prior "Flight estimate: ..." line; preserve the rest verbatim.
+    kept = [
+        line for line in text.split("\n")
+        if not line.strip().startswith(_FLIGHT_ESTIMATE_PREFIX)
+    ]
+    stripped = "\n".join(line for line in kept if line.strip()).strip()
+    if new_estimate:
+        new_line = f"{_FLIGHT_ESTIMATE_PREFIX} {new_estimate}"
+        return f"{stripped}\n{new_line}" if stripped else new_line
+    return stripped or None
+
+
+def _format_duration_hm(minutes: int) -> str:
+    h, m = divmod(minutes, 60)
+    if h == 0:
+        return f"{m}m"
+    if m == 0:
+        return f"{h}h"
+    return f"{h}h {m}m"
+
+
+def _stops_label(stops: int) -> str:
+    if stops == 0:
+        return "nonstop"
+    if stops == 1:
+        return "1-stop"
+    return f"{stops}-stop"
 
 
 @dataclass
@@ -54,8 +120,13 @@ class RouteData:
 
 
 class RouteService:
-    def __init__(self, http_client: httpx.AsyncClient):
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient,
+        flight_service: FlightService | None = None,
+    ):
         self._http = http_client
+        self._flight_service = flight_service
         self._credentials: google.auth.credentials.Credentials | None = None
         self._auth_req = google.auth.transport.requests.Request()
 
@@ -77,8 +148,12 @@ class RouteService:
         in order of preference: Place IDs > Lat/Lng > Address names.
         Logs warnings on API failure; never raises.
         """
-        if travel_mode in ("flight", "ferry"):
+        if travel_mode == "ferry":
             return None
+        if travel_mode == "flight":
+            return await self._get_flight_route_data(
+                from_latlng, to_latlng, departure_time,
+            )
 
         api_mode = _TRAVEL_MODE_MAP.get(travel_mode)
         if api_mode is None:
@@ -255,6 +330,103 @@ class RouteService:
             warnings=warnings or None,
         )
 
+    async def _get_flight_route_data(
+        self,
+        from_latlng: dict | None,
+        to_latlng: dict | None,
+        departure_time: str | None,
+    ) -> RouteData | None:
+        """Resolve airports and search flights to get real duration.
+
+        Returns RouteData with duration and haversine distance (no polyline),
+        or None if resolution/search fails. Never raises.
+        """
+        if self._flight_service is None:
+            return None
+        if not from_latlng or not to_latlng:
+            return None
+
+        try:
+            # Ensure credentials are fresh
+            if self._credentials is None:
+                self._credentials, _ = google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+            if not self._credentials.valid:
+                self._credentials.refresh(self._auth_req)
+
+            origin_iata = await resolve_nearest_airport(
+                from_latlng["lat"], from_latlng["lng"],
+                self._http, self._credentials, self._auth_req,
+            )
+            if not origin_iata:
+                return None
+
+            dest_iata = await resolve_nearest_airport(
+                to_latlng["lat"], to_latlng["lng"],
+                self._http, self._credentials, self._auth_req,
+            )
+            if not dest_iata:
+                return None
+
+            flight_date = extract_flight_date(departure_time)
+            result = await self._flight_service.search(
+                origin=origin_iata,
+                destination=dest_iata,
+                date=flight_date,
+                max_results=15,
+            )
+
+            if not result.outbound:
+                logger.warning(
+                    "No flights found %s → %s on %s",
+                    origin_iata, dest_iata, flight_date,
+                )
+                return None
+
+            # Bucket by stop count and pick the LOWEST-stops bucket present.
+            # Most travelers pick the itinerary with the fewest stops whenever
+            # it exists, even if cheaper multi-stop flights dominate the
+            # results — and the total_duration_minutes for multi-stop flights
+            # is padded by long layovers that misrepresent actual travel time.
+            buckets: dict[int, list[int]] = {}
+            for f in result.outbound:
+                buckets.setdefault(f.stops, []).append(f.total_duration_minutes)
+            chosen_stops = min(buckets)
+            durations = buckets[chosen_stops]
+            avg_minutes = round(sum(durations) / len(durations))
+
+            distance_meters = round(haversine_m(
+                from_latlng["lat"], from_latlng["lng"],
+                to_latlng["lat"], to_latlng["lng"],
+            ))
+
+            estimate_note = (
+                f"Avg {_format_duration_hm(avg_minutes)} across {len(durations)} "
+                f"{_stops_label(chosen_stops)} options ({flight_date})"
+            )
+            logger.info(
+                "Flight %s → %s: %d min avg across %d %s options (%.0f km)",
+                origin_iata, dest_iata,
+                avg_minutes, len(durations), _stops_label(chosen_stops),
+                distance_meters / 1000,
+            )
+            return RouteData(
+                polyline=None,
+                duration_seconds=avg_minutes * 60,
+                distance_meters=distance_meters,
+                warnings=[estimate_note],
+            )
+
+        except Exception:
+            logger.warning(
+                "Flight route data failed for (%.2f,%.2f) → (%.2f,%.2f)",
+                from_latlng.get("lat", 0), from_latlng.get("lng", 0),
+                to_latlng.get("lat", 0), to_latlng.get("lng", 0),
+                exc_info=True,
+            )
+            return None
+
     async def fetch_and_patch_route_data(
         self,
         trip_id: str,
@@ -272,7 +444,9 @@ class RouteService:
     ) -> None:
         """Fetch route data and patch the edge document.
 
-        Intended to be run as a background task. Swallows all exceptions.
+        Intended to be run as a background task. Always writes to the edge
+        (including on failure) so the frontend's onSnapshot can detect
+        completion and clear the "recalculating" shimmer.
         """
         try:
             route_data = await self.get_route_data(
@@ -280,26 +454,60 @@ class RouteService:
                 from_name=from_name, to_name=to_name,
                 from_place_id=from_place_id, to_place_id=to_place_id,
             )
+            updates: dict = {
+                "route_updated_at": datetime.now(UTC).isoformat(),
+            }
             if route_data:
-                updates: dict = {}
                 if route_data.polyline:
                     updates["route_polyline"] = route_data.polyline
                 if route_data.travel_time_hours is not None:
                     updates["travel_time_hours"] = route_data.travel_time_hours
                 if route_data.distance_km is not None:
                     updates["distance_km"] = route_data.distance_km
-                if route_data.notes:
-                    updates["notes"] = route_data.notes
-                if updates:
-                    await edge_repo.update_edge(
-                        trip_id, plan_id, edge_id, updates
-                    )
+
+            # Notes handling diverges by mode:
+            # - Flights: merge the sentinel-wrapped estimate into existing notes
+            #   so road advisories / manual notes survive refreshes.
+            # - Other modes: current behavior (overwrite only when route_data
+            #   carried fresh advisory notes).
+            if travel_mode == "flight":
+                existing_edge = await edge_repo.get_or_raise(
+                    edge_id, trip_id=trip_id, plan_id=plan_id,
+                )
+                existing_notes = existing_edge.get("notes")
+                merged = _merge_flight_estimate_note(
+                    existing_notes,
+                    route_data.notes if route_data else None,
+                )
+                if merged != existing_notes:
+                    updates["notes"] = merged
+            elif route_data and route_data.notes:
+                updates["notes"] = route_data.notes
+
+            if not route_data:
+                # Clear stale polyline — the old route no longer applies
+                updates["route_polyline"] = None
+
+            await edge_repo.update_edge(
+                trip_id, plan_id, edge_id, updates
+            )
         except Exception:
             logger.warning(
                 "fetch_and_patch_route_data failed for edge %s",
                 edge_id,
                 exc_info=True,
             )
+            # Best-effort signal so the frontend can clear the shimmer
+            try:
+                await edge_repo.update_edge(
+                    trip_id, plan_id, edge_id,
+                    {
+                        "route_updated_at": datetime.now(UTC).isoformat(),
+                        "route_polyline": None,
+                    },
+                )
+            except Exception:
+                pass
 
     # Keep old name as alias for backward compatibility with existing callers
     async def fetch_and_patch_polyline(

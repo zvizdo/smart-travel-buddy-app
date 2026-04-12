@@ -105,7 +105,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         action_repo, location_repo, user_repo,
     )
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_connections=20))
-    route_service = RouteService(http_client)
+    flight_service = FlightService()
+    route_service = RouteService(http_client, flight_service=flight_service)
     dag_service = DAGService(
         trip_repo, plan_repo, node_repo, edge_repo,
         route_service=route_service,
@@ -123,7 +124,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         action_repo=action_repo,
     )
     places_service = PlacesService(config["google_maps_api_key"])
-    flight_service = FlightService()
 
     try:
         yield AppContext(

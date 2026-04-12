@@ -303,16 +303,21 @@ export default function TripMapPage() {
   const [insertEdgeId, setInsertEdgeId] = useState<string | null>(null);
   const [recalculatingEdges, setRecalculatingEdges] = useState<Set<string>>(new Set());
 
-  // Clear recalculating state when edges update from Firestore
-  const prevEdgePolylinesRef = useRef<Map<string, unknown>>(new Map());
+  // Clear recalculating state when edges update from Firestore.
+  // Tracks a composite key of all route-related fields so it detects
+  // polyline changes (drive/transit), time/distance changes (flights),
+  // and route_updated_at changes (failure signaling).
+  const prevEdgeRouteKeysRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
-    const prev = prevEdgePolylinesRef.current;
+    const prev = prevEdgeRouteKeysRef.current;
     const changed: string[] = [];
     for (const e of edges) {
-      if (prev.has(e.id) && prev.get(e.id) !== (e as Record<string, unknown>).route_polyline) {
+      const raw = e as Record<string, unknown>;
+      const key = `${raw.route_polyline}|${raw.travel_time_hours}|${raw.distance_km}|${raw.route_updated_at}`;
+      if (prev.has(e.id) && prev.get(e.id) !== key) {
         changed.push(e.id);
       }
-      prev.set(e.id, (e as Record<string, unknown>).route_polyline);
+      prev.set(e.id, key);
     }
     if (changed.length > 0) {
       setRecalculatingEdges((s) => {
@@ -780,6 +785,20 @@ export default function TripMapPage() {
     }
   }
 
+  async function handleEdgeRefresh() {
+    if (!selectedEdge) return;
+    setRecalculatingEdges((prev) => new Set([...prev, selectedEdge.id]));
+    try {
+      await api.post(`/trips/${tripId}/plans/${displayPlanId}/edges/${selectedEdge.id}/refresh`);
+    } catch {
+      setRecalculatingEdges((prev) => {
+        const next = new Set(prev);
+        next.delete(selectedEdge.id);
+        return next;
+      });
+    }
+  }
+
   function handleTimelineInsertStop(edgeId: string) {
     if (!canEdit) return;
     setInsertEdgeId(edgeId);
@@ -1045,6 +1064,7 @@ export default function TripMapPage() {
           notes={(selectedEdge.notes as string) ?? null}
           canEdit={canEdit}
           onInsertStop={handleInsertStop}
+          onRefresh={userRole === "admin" ? handleEdgeRefresh : undefined}
           onClose={() => setSelectedEdgeId(null)}
         />
       )}

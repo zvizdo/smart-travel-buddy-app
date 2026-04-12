@@ -52,8 +52,8 @@ async def lifespan(app: FastAPI):
     app.state.gcs = GCSClient()
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_connections=20))
     app.state.http_client = http_client
-    app.state.route_service = RouteService(http_client)
     app.state.flight_service = FlightService()
+    app.state.route_service = RouteService(http_client, flight_service=app.state.flight_service)
     yield
     app.state.firestore.close()
     await http_client.aclose()

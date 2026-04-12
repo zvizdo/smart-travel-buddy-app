@@ -15,6 +15,7 @@ interface EdgeDetailProps {
   notes?: string | null;
   canEdit?: boolean;
   onInsertStop?: () => void;
+  onRefresh?: () => void;
   onClose: () => void;
 }
 
@@ -36,6 +37,7 @@ export function EdgeDetail({
   notes,
   canEdit,
   onInsertStop,
+  onRefresh,
   onClose,
 }: EdgeDetailProps) {
   const modeColor = MODE_COLORS[edge.travel_mode] ?? "#707978";
@@ -232,6 +234,17 @@ export function EdgeDetail({
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="ml-auto shrink-0">
               <path d="m9 18 6-6-6-6" />
             </svg>
+          </button>
+        )}
+
+        {/* Dev-only: refresh route data */}
+        {process.env.NODE_ENV === "development" && onRefresh && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="w-full rounded-xl border border-dashed border-outline/30 px-3.5 py-2.5 text-xs text-on-surface-variant transition-colors active:bg-surface-low"
+          >
+            Refresh edge
           </button>
         )}
 

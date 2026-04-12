@@ -180,7 +180,7 @@ class DAGService:
         await self._edge_repo.create_edge(trip_id, plan_id, edge)
         if (
             edge.route_polyline is None
-            and edge.travel_mode not in (TravelMode.FLIGHT, TravelMode.FERRY)
+            and edge.travel_mode != TravelMode.FERRY
             and self._route_service is not None
         ):
             self._spawn_background(
@@ -1076,7 +1076,7 @@ class DAGService:
         queued = 0
         for edge_dict in connected:
             travel_mode = edge_dict.get("travel_mode", "drive")
-            if travel_mode in ("flight", "ferry"):
+            if travel_mode == "ferry":
                 continue
 
             from_node_id = edge_dict["from_node_id"]
@@ -1597,7 +1597,7 @@ class DAGService:
                 edges_to_create, edge_latlng_pairs, edge_name_pairs,
                 edge_place_id_pairs, strict=True,
             ):
-                if e.route_polyline is None and e.travel_mode not in (TravelMode.FLIGHT, TravelMode.FERRY):
+                if e.route_polyline is None and e.travel_mode != TravelMode.FERRY:
                     dep = departure_map.get(e.from_node_id) or departure_time or arrival_time
                     self._spawn_background(
                         self._route_service.fetch_and_patch_polyline(
