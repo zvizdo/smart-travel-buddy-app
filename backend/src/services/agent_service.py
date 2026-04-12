@@ -91,7 +91,7 @@ class AgentService:
         self._model = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
     async def import_chat(
-        self, messages: list[dict]
+        self, messages: list[dict], flight_service: FlightService | None = None
     ) -> ImportChatResponse:
         """Send messages to the Gemini import agent and get structured response.
 
@@ -109,6 +109,8 @@ class AgentService:
                 )
             )
 
+        search_tools = create_search_tools(flight_service) if flight_service else []
+
         response = await self._client.aio.models.generate_content(
             model=self._model,
             contents=gemini_contents,
@@ -122,11 +124,15 @@ class AgentService:
                 tools=[
                     types.Tool(google_maps=types.GoogleMaps()),
                     types.Tool(google_search=types.GoogleSearch()),
+                    *search_tools,
                 ],
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    maximum_remote_calls=10,
+                ) if search_tools else None,
             ),
         )
 
-        response_text = response.text
+        response_text = _extract_response_text(response) if search_tools else response.text
         parsed = ImportChatResponse.model_validate_json(response_text)
         elapsed = time.perf_counter() - start
         logger.info("import_chat completed in %.2fs", elapsed)

@@ -189,6 +189,8 @@ export const TimelineLane = memo(function TimelineLane({
                 selected={selectedNodeId === nodeId}
                 dimmed={isDimmed}
                 isShared={pos.isShared}
+                isStart={!!node.is_start}
+                isEnd={!!node.is_end}
                 datetimeFormat={datetimeFormat}
                 dateFormat={dateFormat}
                 onSelect={onNodeSelect}

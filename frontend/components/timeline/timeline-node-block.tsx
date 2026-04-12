@@ -23,6 +23,8 @@ interface TimelineNodeBlockProps {
   dimmed: boolean;
   hasTimingConflict?: boolean;
   isShared?: boolean;
+  isStart?: boolean;
+  isEnd?: boolean;
   datetimeFormat: "12h" | "24h";
   dateFormat: "eu" | "us" | "iso" | "short";
   onSelect: (nodeId: string) => void;
@@ -124,6 +126,8 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   selected,
   dimmed,
   isShared,
+  isStart,
+  isEnd,
   datetimeFormat,
   onSelect,
   blockRef,
@@ -231,8 +235,12 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
             </div>
           ) : (
             <span className="text-xs text-on-surface-variant">
-              {arrivalPrefix}{arrivalDisplay}
-              {departureTime ? ` - ${departurePrefix}${departureDisplay}` : ""}
+              {isStart
+                ? `${departurePrefix}${departureDisplay}`
+                : isEnd
+                  ? `${arrivalPrefix}${arrivalDisplay}`
+                  : `${arrivalPrefix}${arrivalDisplay}${departureTime ? ` - ${departurePrefix}${departureDisplay}` : ""}`
+              }
             </span>
           )}
         </div>
@@ -285,6 +293,8 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   prev.spansDays === next.spansDays &&
   prev.hasTimingConflict === next.hasTimingConflict &&
   prev.isShared === next.isShared &&
+  prev.isStart === next.isStart &&
+  prev.isEnd === next.isEnd &&
   prev.datetimeFormat === next.datetimeFormat &&
   prev.dateFormat === next.dateFormat
 );

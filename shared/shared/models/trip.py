@@ -49,8 +49,8 @@ class TripSettings(BaseModel):
     datetime_format: DateTimeFormat = DateTimeFormat.H24
     date_format: DateFormat = DateFormat.EU
     distance_unit: DistanceUnit = DistanceUnit.KM
-    no_drive_window: NoDriveWindow | None = Field(default_factory=NoDriveWindow)
-    max_drive_hours_per_day: float | None = Field(default=10.0, ge=1.0, le=24.0)
+    no_drive_window: NoDriveWindow | None = Field(default=None)
+    max_drive_hours_per_day: float | None = Field(default=None, ge=1.0, le=24.0)
 
 
 class Trip(BaseModel):

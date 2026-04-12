@@ -63,13 +63,14 @@ async def import_chat(
     user: dict = Depends(get_current_user),
     trip_service: TripService = Depends(get_trip_service),
     agent_service: AgentService = Depends(get_agent_service),
+    flight_service: FlightService = Depends(get_flight_service),
 ):
     """Send messages in the import conversation. Returns agent reply + notes."""
     trip = await trip_service.get_trip(trip_id, user["uid"])
     require_role(trip, user["uid"], TripRole.ADMIN, TripRole.PLANNER)
 
     messages = [m.model_dump() for m in body.messages]
-    result = await agent_service.import_chat(messages)
+    result = await agent_service.import_chat(messages, flight_service=flight_service)
 
     return {
         "reply": {"role": "assistant", "content": result.reply},

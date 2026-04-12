@@ -155,6 +155,9 @@ export const TimelineEdgeConnector = memo(function TimelineEdgeConnector({
   );
 }, (prev, next) =>
   prev.edgeId === next.edgeId &&
+  prev.travelMode === next.travelMode &&
+  prev.travelTimeHours === next.travelTimeHours &&
+  prev.distanceKm === next.distanceKm &&
   prev.selected === next.selected &&
   prev.dimmed === next.dimmed &&
   prev.connectorHeightPx === next.connectorHeightPx &&
