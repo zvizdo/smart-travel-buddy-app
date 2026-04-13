@@ -1,14 +1,10 @@
 """Trip CRUD endpoints."""
 
 from backend.src.auth.firebase_auth import get_current_user
-from backend.src.auth.permissions import require_role
-from backend.src.deps import get_trip_repo, get_trip_service
+from backend.src.deps import get_trip_service
 from backend.src.services.trip_service import TripService
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-
-from shared.models import TripRole
-from shared.repositories.trip_repository import TripRepository
 
 router = APIRouter(tags=["trips"])
 
@@ -81,27 +77,19 @@ async def update_trip_settings(
     body: UpdateTripSettingsRequest,
     user: dict = Depends(get_current_user),
     trip_service: TripService = Depends(get_trip_service),
-    trip_repo: TripRepository = Depends(get_trip_repo),
 ):
     """Update trip-level settings (admin only)."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    require_role(trip, user["uid"], TripRole.ADMIN)
-
-    current = trip.settings.model_dump()
-    if body.datetime_format is not None:
-        current["datetime_format"] = body.datetime_format
-    if body.date_format is not None:
-        current["date_format"] = body.date_format
-    if body.distance_unit is not None:
-        current["distance_unit"] = body.distance_unit
-    if body.clear_no_drive_window:
-        current["no_drive_window"] = None
-    elif body.no_drive_window is not None:
-        current["no_drive_window"] = body.no_drive_window.model_dump()
-    if body.clear_max_drive_hours:
-        current["max_drive_hours_per_day"] = None
-    elif body.max_drive_hours_per_day is not None:
-        current["max_drive_hours_per_day"] = body.max_drive_hours_per_day
-
-    await trip_repo.update(trip_id, {"settings": current})
+    current = await trip_service.update_trip_settings(
+        trip_id,
+        user["uid"],
+        datetime_format=body.datetime_format,
+        date_format=body.date_format,
+        distance_unit=body.distance_unit,
+        no_drive_window=(
+            body.no_drive_window.model_dump() if body.no_drive_window else None
+        ),
+        clear_no_drive_window=body.clear_no_drive_window,
+        max_drive_hours_per_day=body.max_drive_hours_per_day,
+        clear_max_drive_hours=body.clear_max_drive_hours,
+    )
     return {"settings": current}

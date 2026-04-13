@@ -10,6 +10,8 @@ import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from google.cloud import firestore
+
 from shared.models import (
     Action,
     Edge,
@@ -181,20 +183,33 @@ class PlanService:
 
         previous_active_id = trip.active_plan_id
 
-        # Demote the current active plan to draft so it can be promoted again later
-        if previous_active_id:
-            await self._plan_repo.update_plan(
-                trip_id, previous_active_id, {"status": PlanStatus.DRAFT.value}
+        # Atomic promotion: demote old active, promote new, update trip pointer.
+        # Without a transaction a crash between writes can leave the trip with
+        # two active plans, zero active plans, or a pointer to a non-active plan.
+        db = self._trip_repo._db
+        plan_col = self._plan_repo._collection(trip_id=trip_id)
+        trip_ref = self._trip_repo._collection().document(trip_id)
+        new_plan_ref = plan_col.document(plan_id)
+        prev_plan_ref = (
+            plan_col.document(previous_active_id) if previous_active_id else None
+        )
+        now_iso = datetime.now(UTC).isoformat()
+
+        @firestore.async_transactional
+        async def _commit(transaction) -> None:
+            if prev_plan_ref is not None:
+                transaction.update(
+                    prev_plan_ref, {"status": PlanStatus.DRAFT.value}
+                )
+            transaction.update(
+                new_plan_ref, {"status": PlanStatus.ACTIVE.value}
+            )
+            transaction.update(
+                trip_ref,
+                {"active_plan_id": plan_id, "updated_at": now_iso},
             )
 
-        # Promote the new plan
-        await self._plan_repo.update_plan(
-            trip_id, plan_id, {"status": PlanStatus.ACTIVE.value}
-        )
-        await self._trip_repo.update_trip(trip_id, {
-            "active_plan_id": plan_id,
-            "updated_at": datetime.now(UTC).isoformat(),
-        })
+        await _commit(db.transaction())
 
         # Notify all participants (optional — only when a notification service was injected)
         if self._notification_service is not None:

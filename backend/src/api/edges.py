@@ -1,7 +1,9 @@
 """Edge endpoints: list, update, split, refresh."""
 
+import asyncio
+
 from backend.src.auth.firebase_auth import get_current_user
-from backend.src.auth.permissions import require_plan_editable, require_role
+from backend.src.auth.permissions import require_role, resolve_editable_plan
 from backend.src.deps import (
     get_dag_service,
     get_edge_repo,
@@ -14,7 +16,6 @@ from backend.src.services.trip_service import TripService
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from shared.models.plan import Plan
 from shared.models.trip import TripRole
 from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
@@ -78,9 +79,7 @@ async def update_edge(
     plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Update an edge's travel data or route polyline."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
-    require_plan_editable(trip, Plan(**plan_data), user["uid"])
+    await resolve_editable_plan(trip_service, plan_repo, trip_id, plan_id, user["uid"])
 
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if not updates:
@@ -102,9 +101,7 @@ async def split_edge(
     plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Insert a new node by splitting an existing edge into two."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
-    require_plan_editable(trip, Plan(**plan_data), user["uid"])
+    await resolve_editable_plan(trip_service, plan_repo, trip_id, plan_id, user["uid"])
 
     leg_a = body.leg_a or LegData()
     leg_b = body.leg_b or LegData()
@@ -153,11 +150,13 @@ async def refresh_edge_route(
         raise ValueError("Route service not available")
 
     edge = await edge_repo.get_or_raise(edge_id, trip_id=trip_id, plan_id=plan_id)
-    from_node = await node_repo.get_or_raise(
-        edge["from_node_id"], trip_id=trip_id, plan_id=plan_id,
-    )
-    to_node = await node_repo.get_or_raise(
-        edge["to_node_id"], trip_id=trip_id, plan_id=plan_id,
+    from_node, to_node = await asyncio.gather(
+        node_repo.get_or_raise(
+            edge["from_node_id"], trip_id=trip_id, plan_id=plan_id,
+        ),
+        node_repo.get_or_raise(
+            edge["to_node_id"], trip_id=trip_id, plan_id=plan_id,
+        ),
     )
 
     from_ll = from_node.get("lat_lng")

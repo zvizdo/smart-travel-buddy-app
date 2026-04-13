@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from backend.src.auth.firebase_auth import get_current_user
-from backend.src.auth.permissions import require_plan_editable, require_role
+from backend.src.auth.permissions import require_role, resolve_editable_plan
 from backend.src.deps import (
     get_action_repo,
     get_dag_service,
@@ -18,7 +18,6 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from shared.models import Action, ActionType, PlaceData, TripRole
-from shared.models.plan import Plan
 from shared.repositories.action_repository import ActionRepository
 from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
@@ -33,9 +32,9 @@ class NodeUpdateRequest(BaseModel):
     type: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
-    duration_minutes: int | None = None
-    lat: float | None = None
-    lng: float | None = None
+    duration_minutes: int | None = Field(default=None, ge=0, le=1440)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
     place_id: str | None = None
     client_updated_at: str | None = None
 
@@ -43,12 +42,12 @@ class NodeUpdateRequest(BaseModel):
 class CreateNodeRequest(BaseModel):
     name: str
     type: str = "place"
-    lat: float
-    lng: float
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
     place_id: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
-    duration_minutes: int | None = None
+    duration_minutes: int | None = Field(default=None, ge=0, le=1440)
     connect_after_node_id: str | None = None
     connect_before_node_id: str | None = None
     travel_mode: str = "drive"
@@ -68,12 +67,12 @@ class ConnectionData(BaseModel):
 class ConnectedNodeRequest(BaseModel):
     name: str
     type: str = "place"
-    lat: float
-    lng: float
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
     place_id: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
-    duration_minutes: int | None = None
+    duration_minutes: int | None = Field(default=None, ge=0, le=1440)
     incoming: list[ConnectionData] = []
     outgoing: list[ConnectionData] = []
 
@@ -85,12 +84,12 @@ class ParticipantAssignmentRequest(BaseModel):
 class BranchFromNodeRequest(BaseModel):
     name: str
     type: str = "place"
-    lat: float
-    lng: float
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
     place_id: str | None = None
     arrival_time: str | None = None
     departure_time: str | None = None
-    duration_minutes: int | None = None
+    duration_minutes: int | None = Field(default=None, ge=0, le=1440)
     travel_mode: str = "drive"
     travel_time_hours: float = 1.0
     distance_km: float | None = None
@@ -129,9 +128,7 @@ async def create_node(
     plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Create a new node. Optionally connect it after an existing node."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
-    require_plan_editable(trip, Plan(**plan_data), user["uid"])
+    await resolve_editable_plan(trip_service, plan_repo, trip_id, plan_id, user["uid"])
 
     if body.connect_after_node_id and body.connect_before_node_id:
         raise ValueError("Cannot specify both connect_after_node_id and connect_before_node_id")
@@ -172,9 +169,7 @@ async def create_connected_node(
 
     Returns 400 with cycle_path if the connections would create a cycle.
     """
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
-    require_plan_editable(trip, Plan(**plan_data), user["uid"])
+    await resolve_editable_plan(trip_service, plan_repo, trip_id, plan_id, user["uid"])
 
     result = await dag_service.create_connected_node(
         trip_id=trip_id,
@@ -206,9 +201,7 @@ async def branch_from_node(
     plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Create a new node branching off from an existing node."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
-    require_plan_editable(trip, Plan(**plan_data), user["uid"])
+    await resolve_editable_plan(trip_service, plan_repo, trip_id, plan_id, user["uid"])
 
     result = await dag_service.create_branch(
         trip_id=trip_id,
@@ -245,9 +238,9 @@ async def update_node(
     plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Update a node and return an impact preview for downstream enrichment."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
-    require_plan_editable(trip, Plan(**plan_data), user["uid"])
+    trip, _ = await resolve_editable_plan(
+        trip_service, plan_repo, trip_id, plan_id, user["uid"]
+    )
 
     client_updated_at = body.client_updated_at
     updates: dict = body.model_dump(exclude_unset=True)
@@ -283,9 +276,7 @@ async def delete_node(
     plan_repo: PlanRepository = Depends(get_plan_repo),
 ):
     """Delete a node and reconnect edges around it."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    plan_data = await plan_repo.get_or_raise(plan_id, trip_id=trip_id)
-    require_plan_editable(trip, Plan(**plan_data), user["uid"])
+    await resolve_editable_plan(trip_service, plan_repo, trip_id, plan_id, user["uid"])
 
     result = await dag_service.delete_node(trip_id, plan_id, node_id)
     return result

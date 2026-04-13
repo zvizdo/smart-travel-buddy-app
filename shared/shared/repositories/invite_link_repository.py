@@ -30,4 +30,3 @@ class InviteLinkRepository(BaseRepository):
     ) -> InviteLink:
         data = await self.get_or_raise(token, trip_id=trip_id)
         return InviteLink(**data)
-

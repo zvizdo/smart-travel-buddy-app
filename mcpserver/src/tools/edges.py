@@ -26,7 +26,7 @@ async def add_edge(
         to_node_id: ID of the destination node.
         plan_id: Optional plan version. Defaults to active plan.
         travel_mode: Travel mode - one of: drive, ferry, flight, transit, walk. Use 'ferry' for ship/cruise routes. Default: drive.
-        notes: Optional advisory note about the route (e.g., seasonal closures, scenic highlights).
+        notes: Optional advisory note about the route (e.g., seasonal closures, scenic highlights, flight numbers).
     """
     _, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context

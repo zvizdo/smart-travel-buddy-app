@@ -207,7 +207,10 @@ class AgentService:
             reply = BuildDagReply.model_validate_json(response_text)
             summary = reply.summary
         except Exception:
-            logger.warning("Failed to parse BuildDagReply, using raw text", exc_info=True)
+            logger.warning(
+                "Failed to parse BuildDagReply for trip=%s plan=%s user=%s",
+                trip_id, plan_id, user_id, exc_info=True,
+            )
             summary = response_text or "Trip built."
 
         elapsed = time.perf_counter() - start
@@ -302,8 +305,10 @@ class AgentService:
             reply = agent_reply.reply
             preferences_extracted = agent_reply.preferences_extracted
         except Exception:
-            # Fallback: use raw text if structured parsing fails
-            logger.warning("Failed to parse AgentReply, using raw text", exc_info=True)
+            logger.warning(
+                "Failed to parse AgentReply for trip=%s plan=%s user=%s",
+                trip_id, plan_id, user_id, exc_info=True,
+            )
             reply = response_text or "I wasn't able to generate a response."
             preferences_extracted = []
 

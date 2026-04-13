@@ -27,12 +27,13 @@ class TestNoDriveWindowBounds:
 
 
 class TestTripSettingsFlexFields:
-    def test_defaults_include_flex_rules(self):
+    def test_defaults_are_none(self):
+        # Per commit bda8c1d, new trips default to no travel rules enabled;
+        # users opt in via settings. NoDriveWindow's own defaults (22→6) still
+        # apply when the user explicitly enables the rule.
         s = TripSettings()
-        assert s.no_drive_window is not None
-        assert s.no_drive_window.start_hour == 22
-        assert s.no_drive_window.end_hour == 6
-        assert s.max_drive_hours_per_day == 10.0
+        assert s.no_drive_window is None
+        assert s.max_drive_hours_per_day is None
 
     def test_no_drive_window_can_be_disabled(self):
         s = TripSettings(no_drive_window=None)

@@ -72,15 +72,20 @@ conda activate travel-app
 cd mcpserver && uvicorn src.main:app --reload --port 8080
 ```
 
+### Running tests
+
+```bash
+# Python (backend + shared)
+conda activate travel-app
+PYTHONPATH=. pytest backend/tests shared/tests
+
+# Frontend
+cd frontend && pnpm test
+```
+
 ## Deployment
 
-Three Cloud Run services in `europe-west1`, GCP project `as-dev-anze`.
-
-| Service | URL |
-|---|---|
-| Frontend | `https://smart-travel-buddy-px6atnevbq-ew.a.run.app` |
-| Backend | `https://smart-travel-buddy-backend-px6atnevbq-ew.a.run.app` |
-| MCP Server | `https://smart-travel-buddy-mcpserver-px6atnevbq-ew.a.run.app` |
+Three Cloud Run services in `europe-west1`, GCP project `as-dev-anze` (frontend, backend, MCP server).
 
 ### Deploy script
 

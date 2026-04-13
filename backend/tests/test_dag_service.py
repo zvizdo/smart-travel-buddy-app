@@ -698,9 +698,10 @@ class TestDeleteNodeRouteData:
         svc._test_batch.set.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_reconnect_uses_arrival_as_departure_fallback(self):
-        """When the from-node has no departure_time, fall back to arrival_time
-        for the route request."""
+    async def test_reconnect_uses_enriched_departure(self):
+        """When the from-node has no explicit departure_time, enrichment
+        derives it from arrival_time + duration_minutes; the route request
+        should use that enriched departure."""
         import asyncio
 
         nodes = [
@@ -733,8 +734,9 @@ class TestDeleteNodeRouteData:
         await svc.delete_node("trip1", "plan1", "B")
         await asyncio.sleep(0)
 
+        # A.arrival=10:00 + duration=480min → enriched departure 18:00
         call_kwargs = mock_route_service.fetch_and_patch_polyline.call_args
-        assert call_kwargs.kwargs["departure_time"] == "2026-06-01T10:00:00+00:00"
+        assert call_kwargs.kwargs["departure_time"] == "2026-06-01T18:00:00+00:00"
 
 
 # ── Cleanup stale participant_ids ──────────────────────────────────
@@ -827,7 +829,9 @@ class TestBuildDepartureMap:
         result = _build_departure_map(nodes, edges)
 
         assert result["root"] == "2026-07-25T18:00:00+00:00"
-        assert result["flex"] == "2026-07-25T18:00:00+00:00"
+        # root dep 18:00 + 2h travel → flex arrival 20:00 + 120min duration
+        # → enriched flex departure 22:00
+        assert result["flex"] == "2026-07-25T22:00:00+00:00"
 
     def test_node_with_arrival_uses_arrival(self):
         nodes = [
@@ -841,7 +845,8 @@ class TestBuildDepartureMap:
 
         result = _build_departure_map(nodes, edges)
 
-        assert result["B"] == "2026-07-26T12:00:00+00:00"
+        # B.arrival=12:00 + duration=120min → enriched departure 14:00
+        assert result["B"] == "2026-07-26T14:00:00+00:00"
 
     def test_all_flex_nodes_returns_empty(self):
         """When no node has any time at all, map should be empty."""
@@ -859,6 +864,14 @@ class TestBuildDepartureMap:
 # ── Departure-time fallback for Routes API ───────────────────────
 
 TRIP_ROOT_DEPARTURE = "2026-07-25T18:00:00+00:00"
+# Enriched departure for flex node B in _flex_dag_nodes_and_edges():
+# A.dep=18:00 + 6h travel → B.arrival=00:00 next day + 120min duration
+# → B.dep=02:00 next day. This is what enrich_dag_times produces for
+# flex downstream of a timed source.
+FLEX_B_ENRICHED_DEPARTURE = "2026-07-26T02:00:00+00:00"
+# Enriched departure for flex node C: B.dep=02:00 + 2h travel
+# → C.arrival=04:00 + 60min duration → C.dep=05:00.
+FLEX_C_ENRICHED_DEPARTURE = "2026-07-26T05:00:00+00:00"
 
 
 def _make_node_model(
@@ -939,8 +952,9 @@ class TestDepartureTimeFallbackCreateNode:
         )
         await asyncio.sleep(0)
 
+        # B is flex; enrichment derives its departure from A.dep + travel_time + duration
         call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
-        assert call_kwargs.kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+        assert call_kwargs.kwargs["departure_time"] == FLEX_B_ENRICHED_DEPARTURE
 
     @pytest.mark.asyncio
     async def test_connect_before_flex_new_node_uses_trip_root_departure(self):
@@ -969,8 +983,10 @@ class TestDepartureTimeFallbackCreateNode:
         )
         await asyncio.sleep(0)
 
+        # New node inserted before C; C is flex so its enriched arrival
+        # propagates. Enrichment yields departure 2026-07-26T05:00:00+00:00.
         call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
-        assert call_kwargs.kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+        assert call_kwargs.kwargs["departure_time"] == FLEX_C_ENRICHED_DEPARTURE
 
     @pytest.mark.asyncio
     async def test_connect_after_timed_source_uses_direct_departure(self):
@@ -1034,7 +1050,7 @@ class TestDepartureTimeFallbackCreateBranch:
         await asyncio.sleep(0)
 
         call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
-        assert call_kwargs.kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+        assert call_kwargs.kwargs["departure_time"] == FLEX_B_ENRICHED_DEPARTURE
 
     @pytest.mark.asyncio
     async def test_flex_merge_edge_uses_trip_root_departure(self):
@@ -1070,11 +1086,12 @@ class TestDepartureTimeFallbackCreateBranch:
         )
         await asyncio.sleep(0)
 
-        # Both branch and merge edges should get trip root departure
+        # Both branch and merge edges originate from flex B; enrichment
+        # derives B's departure from A.dep + travel_time + duration.
         calls = mock_rs.fetch_and_patch_polyline.call_args_list
         assert len(calls) == 2
-        assert calls[0].kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
-        assert calls[1].kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+        assert calls[0].kwargs["departure_time"] == FLEX_B_ENRICHED_DEPARTURE
+        assert calls[1].kwargs["departure_time"] == FLEX_B_ENRICHED_DEPARTURE
 
 
 class TestDepartureTimeFallbackCreateStandaloneEdge:
@@ -1111,9 +1128,9 @@ class TestDepartureTimeFallbackCreateStandaloneEdge:
             travel_mode="drive",
         )
 
-        # The sync get_route_data call should have received the trip root departure
+        # Sync get_route_data receives B's enriched departure (flex → derived)
         call_kwargs = mock_rs.get_route_data.call_args
-        assert call_kwargs[0][3] == TRIP_ROOT_DEPARTURE
+        assert call_kwargs[0][3] == FLEX_B_ENRICHED_DEPARTURE
 
     @pytest.mark.asyncio
     async def test_flex_from_node_background_retry_uses_trip_root_departure(self):
@@ -1161,7 +1178,7 @@ class TestDepartureTimeFallbackCreateStandaloneEdge:
         await asyncio.sleep(0)
 
         call_kwargs = mock_rs.fetch_and_patch_polyline.call_args
-        assert call_kwargs.kwargs["departure_time"] == TRIP_ROOT_DEPARTURE
+        assert call_kwargs.kwargs["departure_time"] == FLEX_B_ENRICHED_DEPARTURE
 
 
 class TestDepartureTimeFallbackSplitEdge:
@@ -1206,11 +1223,11 @@ class TestDepartureTimeFallbackSplitEdge:
         )
         await asyncio.sleep(0)
 
-        # Both edge_a (B->new) and edge_b (new->C) should have departure times
+        # Both edge_a (B->new) and edge_b (new->C) originate from flex B's
+        # enriched departure (new split node has no times of its own).
         calls = mock_rs.fetch_and_patch_polyline.call_args_list
         assert len(calls) == 2
         dep_a = calls[0].kwargs.get("departure_time")
         dep_b = calls[1].kwargs.get("departure_time")
-        assert dep_a == TRIP_ROOT_DEPARTURE
-        # dep_b falls back to dep_a when new node has no times
-        assert dep_b == TRIP_ROOT_DEPARTURE
+        assert dep_a == FLEX_B_ENRICHED_DEPARTURE
+        assert dep_b == FLEX_B_ENRICHED_DEPARTURE

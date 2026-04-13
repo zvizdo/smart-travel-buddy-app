@@ -77,7 +77,7 @@ export function AgentOverlay({
         }
         setIsNewSession(data.is_new_session);
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => {
         if (!cancelled) setLoadingHistory(false);
       });
@@ -174,7 +174,7 @@ export function AgentOverlay({
           </svg>
         </button>
         <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-bold text-on-surface">Trip Agent</h2>
+          <h2 className="text-sm font-bold text-on-surface">Trip Buddy</h2>
           {tripName && (
             <p className="text-[11px] text-on-surface-variant truncate">
               {tripName}
@@ -214,7 +214,7 @@ export function AgentOverlay({
               </svg>
             </div>
             <h3 className="text-lg font-bold text-on-surface mb-1.5">
-              Trip Agent
+              Trip Buddy
             </h3>
             <p className="text-xs text-on-surface-variant leading-relaxed">
               Add stops, change dates, search for places,
@@ -227,11 +227,10 @@ export function AgentOverlay({
             {messages.map((msg, i) => (
               <div key={i}>
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-                    msg.role === "user"
-                      ? "self-end ml-auto gradient-primary text-on-primary"
-                      : "self-start bg-surface-lowest text-on-surface shadow-soft"
-                  }`}
+                  className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${msg.role === "user"
+                    ? "self-end ml-auto gradient-primary text-on-primary"
+                    : "self-start bg-surface-lowest text-on-surface shadow-soft"
+                    }`}
                 >
                   {msg.role === "user" ? (
                     <p className="whitespace-pre-wrap">{msg.content}</p>

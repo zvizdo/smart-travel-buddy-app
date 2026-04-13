@@ -33,6 +33,7 @@ import { EdgeDisambiguationPicker } from "@/components/dag/edge-disambiguation-p
 import { TimelineView } from "@/components/timeline/timeline-view";
 import { TimelineViewToggle } from "@/components/timeline/timeline-view-toggle";
 import type { TimelineZoomLevel } from "@/lib/timeline-layout";
+import { haversineKm } from "@/lib/geo";
 
 interface NodeData {
   id: string;
@@ -201,24 +202,6 @@ export default function TripMapPage() {
     const tripInProgress =
       tripStart != null && tripEnd != null && now >= tripStart && now <= tripEnd;
     const tripOver = tripEnd != null && now > tripEnd;
-
-    function haversineKm(
-      a: { lat: number; lng: number },
-      b: { lat: number; lng: number },
-    ) {
-      const R = 6371;
-      const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-      const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-      const sinLat = Math.sin(dLat / 2);
-      const sinLng = Math.sin(dLng / 2);
-      const h =
-        sinLat * sinLat +
-        Math.cos((a.lat * Math.PI) / 180) *
-          Math.cos((b.lat * Math.PI) / 180) *
-          sinLng *
-          sinLng;
-      return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-    }
 
     // Priority 1: Trip in progress + user near a stop (<50km)
     if (tripInProgress && liveLocations.length > 0) {

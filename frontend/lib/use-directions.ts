@@ -2,17 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMapsLibrary } from "@vis.gl/react-google-maps";
+import { haversineKm, type LatLng } from "@/lib/geo";
 
 export interface TravelData {
   travel_mode: string;
   travel_time_hours: number;
   distance_km: number | null;
   route_polyline: string | null;
-}
-
-interface LatLng {
-  lat: number;
-  lng: number;
 }
 
 // Types for google.maps.routes.Route.computeRoutes (not yet in @types/google.maps)
@@ -54,19 +50,6 @@ function inferTravelMode(distanceKm: number): string {
 function parseDurationToHours(duration: string): number {
   const seconds = parseFloat(duration.replace("s", ""));
   return isNaN(seconds) ? 0 : seconds / 3600;
-}
-
-/** Haversine fallback */
-function haversineKm(a: LatLng, b: LatLng): number {
-  const R = 6371;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-  const x =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((a.lat * Math.PI) / 180) *
-      Math.cos((b.lat * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
 /**

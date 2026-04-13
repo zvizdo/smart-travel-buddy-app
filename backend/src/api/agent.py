@@ -18,7 +18,6 @@ from backend.src.deps import (
     get_user_service,
 )
 from backend.src.repositories.chat_history_repository import ChatHistoryRepository
-from backend.src.repositories.preference_repository import PreferenceRepository
 from backend.src.services.agent_service import AgentService
 from backend.src.services.trip_service import TripService
 from backend.src.services.user_service import UserService
@@ -29,6 +28,7 @@ from shared.models import Plan, PlanStatus, TripRole
 from shared.repositories.edge_repository import EdgeRepository
 from shared.repositories.node_repository import NodeRepository
 from shared.repositories.plan_repository import PlanRepository
+from shared.repositories.preference_repository import PreferenceRepository
 from shared.services.dag_service import DAGService
 from shared.services.flight_service import FlightService
 from shared.tools.id_gen import generate_id

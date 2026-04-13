@@ -3,9 +3,8 @@
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from backend.src.repositories.invite_link_repository import InviteLinkRepository
-
 from shared.models import InviteLink, Participant, TripRole
+from shared.repositories.invite_link_repository import InviteLinkRepository
 from shared.repositories.trip_repository import TripRepository
 
 
@@ -68,7 +67,7 @@ class InviteService:
 
         participant = Participant(
             role=invite.role,
-            display_name=user_display_name or user_id,
+            display_name=(user_display_name or user_id)[:200],
             joined_at=datetime.now(UTC),
         )
         await self._trip_repo.update_trip(trip_id, {

@@ -31,6 +31,13 @@ class ToolExecutor:
         self._preferences: list[dict] = preferences or []
         self._trip_settings: dict = trip_settings or {}
         self.actions_taken: list[ActionTaken] = []
+        # Lazy-populated node_id → name cache. Reused across every tool call
+        # in a single agent turn so we don't re-fetch node docs just to build
+        # human-readable action descriptions. Gemini AFC can chain up to 128
+        # tool calls per build turn (50 per ongoing turn), and each
+        # delete_edge/add_edge/delete_node previously issued 1–2 extra reads
+        # purely for the description string.
+        self._node_name_cache: dict[str, str] | None = None
 
     async def execute(self, name: str, args: dict) -> dict:
         """Dispatch a tool call to the corresponding DAGService method.
@@ -80,6 +87,8 @@ class ToolExecutor:
             duration_minutes=args.get("duration_minutes"),
         )
         node = result["node"]
+        if self._node_name_cache is not None:
+            self._node_name_cache[node["id"]] = node["name"]
         self.actions_taken.append(ActionTaken(
             type="node_added",
             node_id=node["id"],
@@ -104,6 +113,9 @@ class ToolExecutor:
             node_id=node_id,
             updates=updates,
         )
+
+        if self._node_name_cache is not None and node.get("name"):
+            self._node_name_cache[node_id] = node["name"]
 
         self.actions_taken.append(ActionTaken(
             type="node_updated",
@@ -170,7 +182,24 @@ class ToolExecutor:
         return result
 
     async def _resolve_node_name(self, node_id: str) -> str:
-        """Look up a node's name by ID, returning the ID as fallback."""
-        return await self._dag.get_node_name(
-            self._trip_id, self._plan_id, node_id,
-        )
+        """Look up a node's name by ID, returning the ID as fallback.
+
+        Lazily builds a single node_id → name map on first call via
+        ``list_by_plan`` (one round-trip) and serves all subsequent lookups
+        from memory. Falls back to a single-doc fetch for IDs added by the
+        same agent turn after the cache was primed (rare path).
+        """
+        if self._node_name_cache is None:
+            nodes = await self._dag._node_repo.list_by_plan(
+                self._trip_id, self._plan_id
+            )
+            self._node_name_cache = {
+                n["id"]: n.get("name") or n["id"] for n in nodes
+            }
+        name = self._node_name_cache.get(node_id)
+        if name is None:
+            name = await self._dag.get_node_name(
+                self._trip_id, self._plan_id, node_id,
+            )
+            self._node_name_cache[node_id] = name
+        return name

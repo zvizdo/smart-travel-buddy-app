@@ -1,7 +1,4 @@
 from backend.src.repositories.chat_history_repository import ChatHistoryRepository
-from backend.src.repositories.invite_link_repository import InviteLinkRepository
-from backend.src.repositories.notification_repository import NotificationRepository
-from backend.src.repositories.preference_repository import PreferenceRepository
 from backend.src.services.agent_service import AgentService
 from backend.src.services.invite_service import InviteService
 from backend.src.services.notification_service import NotificationService
@@ -13,9 +10,12 @@ from google.cloud.storage import Client as GCSClient
 
 from shared.repositories.action_repository import ActionRepository
 from shared.repositories.edge_repository import EdgeRepository
+from shared.repositories.invite_link_repository import InviteLinkRepository
 from shared.repositories.location_repository import LocationRepository
 from shared.repositories.node_repository import NodeRepository
+from shared.repositories.notification_repository import NotificationRepository
 from shared.repositories.plan_repository import PlanRepository
+from shared.repositories.preference_repository import PreferenceRepository
 from shared.repositories.trip_repository import TripRepository
 from shared.repositories.user_repository import UserRepository
 from shared.services.dag_service import DAGService

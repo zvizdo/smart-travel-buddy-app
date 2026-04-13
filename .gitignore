@@ -36,8 +36,8 @@ Thumbs.db
 # Logs
 *.log
 
-# Deploy scripts contain secrets — never commit
-deploy/deploy.sh
+# Deploy auth setup notes (contain project-specific details)
+deploy/README-gcp-auth.md
 
 # MCP configuration with API keys
 .mcp.json

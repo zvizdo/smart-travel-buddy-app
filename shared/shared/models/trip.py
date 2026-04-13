@@ -12,7 +12,7 @@ class TripRole(StrEnum):
 
 class Participant(BaseModel):
     role: TripRole
-    display_name: str = ""
+    display_name: str = Field(default="", max_length=200)
     joined_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

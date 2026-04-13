@@ -220,6 +220,12 @@ def format_trip_context(
         lines.append(
             f"- [{edge_id}] {from_name} -> {to_name} ({mode}, {time_str}{dist_str})"
         )
+        notes = e.get("notes")
+        if notes:
+            for note_line in str(notes).splitlines():
+                stripped = note_line.strip()
+                if stripped:
+                    lines.append(f"  - note: {stripped}")
 
     if paths:
         lines.append("\n## Participant Paths")

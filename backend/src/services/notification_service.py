@@ -3,9 +3,8 @@
 import uuid
 from datetime import UTC, datetime
 
-from backend.src.repositories.notification_repository import NotificationRepository
-
 from shared.models import Notification, NotificationType, RelatedEntity
+from shared.repositories.notification_repository import NotificationRepository
 
 
 class NotificationService:

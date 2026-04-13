@@ -1,5 +1,7 @@
 """Invite link endpoints: generate and claim."""
 
+import logging
+
 from backend.src.auth.firebase_auth import get_current_user
 from backend.src.auth.permissions import require_role
 from backend.src.deps import get_invite_service, get_notification_service, get_trip_service
@@ -7,16 +9,18 @@ from backend.src.services.invite_service import InviteService
 from backend.src.services.notification_service import NotificationService
 from backend.src.services.trip_service import TripService
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.models import TripRole
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["invites"])
 
 
 class CreateInviteRequest(BaseModel):
     role: str
-    expires_in_hours: int = 72
+    expires_in_hours: int = Field(default=72, ge=1, le=8760)
 
 
 @router.post("/trips/{trip_id}/invites", status_code=201)
@@ -59,11 +63,17 @@ async def claim_invite(
     )
 
     trip = await trip_service.get_trip(result["trip_id"], user["uid"])
-    await notification_service.notify_member_joined(
-        trip_id=result["trip_id"],
-        joined_user_name=user.get("name", "New member"),
-        all_participant_ids=list(trip.participants.keys()),
-        joined_user_id=user["uid"],
-    )
+    try:
+        await notification_service.notify_member_joined(
+            trip_id=result["trip_id"],
+            joined_user_name=user.get("name", "New member"),
+            all_participant_ids=list(trip.participants.keys()),
+            joined_user_id=user["uid"],
+        )
+    except Exception:
+        logger.warning(
+            "notify_member_joined failed for trip=%s user=%s",
+            result["trip_id"], user["uid"], exc_info=True,
+        )
 
     return result
