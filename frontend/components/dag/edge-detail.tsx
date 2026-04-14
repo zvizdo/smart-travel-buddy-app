@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { type DocumentData } from "firebase/firestore";
 import { formatTravelTime, formatDistance } from "@/lib/dates";
 import { TravelModeIcon, MODE_COLORS } from "@/components/dag/travel-mode-icon";
+import { LoadingButton } from "@/components/ui/loading-button";
 
 interface EdgeDetailProps {
   edge: DocumentData;
@@ -16,6 +17,7 @@ interface EdgeDetailProps {
   canEdit?: boolean;
   onInsertStop?: () => void;
   onRefresh?: () => void;
+  refreshing?: boolean;
   onClose: () => void;
 }
 
@@ -38,6 +40,7 @@ export function EdgeDetail({
   canEdit,
   onInsertStop,
   onRefresh,
+  refreshing = false,
   onClose,
 }: EdgeDetailProps) {
   const modeColor = MODE_COLORS[edge.travel_mode] ?? "#707978";
@@ -239,13 +242,14 @@ export function EdgeDetail({
 
         {/* Dev-only: refresh route data */}
         {process.env.NODE_ENV === "development" && onRefresh && (
-          <button
-            type="button"
+          <LoadingButton
             onClick={onRefresh}
+            loading={refreshing}
+            spinnerVariant="current"
             className="w-full rounded-xl border border-dashed border-outline/30 px-3.5 py-2.5 text-xs text-on-surface-variant transition-colors active:bg-surface-low"
           >
             Refresh edge
-          </button>
+          </LoadingButton>
         )}
 
         {/* Warning */}

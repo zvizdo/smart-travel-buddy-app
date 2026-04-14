@@ -25,8 +25,13 @@ import { PlanSwitcher } from "@/components/dag/plan-switcher";
 import { CreateDraftOverlay } from "@/components/dag/create-draft-overlay";
 import { OfflineBanner, useOnlineStatus } from "@/components/ui/offline-banner";
 import { flushQueue } from "@/lib/offline-queue";
+import {
+  pruneResolvedPending,
+  filterOutPendingNodes,
+  filterOutPendingEdges,
+} from "@/lib/pending-set";
 import { BottomNav } from "@/components/ui/bottom-nav";
-import { Toast } from "@/components/ui/toast";
+import { toast } from "@/components/ui/toast";
 import { ProfileAvatar } from "@/components/ui/profile-avatar";
 import { AgentOverlay } from "@/components/chat/agent-overlay";
 import { EdgeDisambiguationPicker } from "@/components/dag/edge-disambiguation-picker";
@@ -140,9 +145,34 @@ export default function TripMapPage() {
     }
   }, [online]);
 
-  const nodes = liveNodes as unknown as NodeData[];
-  const edges = liveEdges as unknown as EdgeData[];
+  const allLiveNodes = liveNodes as unknown as NodeData[];
+  const allLiveEdges = liveEdges as unknown as EdgeData[];
   const loading = enrichmentLoading;
+
+  // Optimistically-deleted node IDs — hidden from UI immediately. Connected
+  // edges are also filtered out to mirror the backend's cascade delete.
+  // Cleared once Firestore snapshot confirms the removal (same pattern as
+  // deletedActionIds).
+  const [pendingNodeDeletes, setPendingNodeDeletes] = useState<Set<string>>(
+    () => new Set(),
+  );
+  useEffect(() => {
+    setPendingNodeDeletes((prev) =>
+      pruneResolvedPending(
+        prev,
+        allLiveNodes.map((n) => n.id),
+      ),
+    );
+  }, [allLiveNodes]);
+
+  const nodes = useMemo(
+    () => filterOutPendingNodes(allLiveNodes, pendingNodeDeletes),
+    [allLiveNodes, pendingNodeDeletes],
+  );
+  const edges = useMemo(
+    () => filterOutPendingEdges(allLiveEdges, pendingNodeDeletes),
+    [allLiveEdges, pendingNodeDeletes],
+  );
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -160,19 +190,12 @@ export default function TripMapPage() {
     () => new Set(),
   );
   useEffect(() => {
-    setDeletedActionIds((prev) => {
-      if (prev.size === 0) return prev;
-      const present = new Set(nodeActions.map((a) => a.id));
-      let changed = false;
-      const next = new Set(prev);
-      for (const id of prev) {
-        if (!present.has(id)) {
-          next.delete(id);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
+    setDeletedActionIds((prev) =>
+      pruneResolvedPending(
+        prev,
+        nodeActions.map((a) => a.id),
+      ),
+    );
   }, [nodeActions]);
   const visibleNodeActions = useMemo(
     () => nodeActions.filter((a) => !deletedActionIds.has(a.id)),
@@ -332,8 +355,6 @@ export default function TripMapPage() {
 
   const [activeTab, setActiveTab] = useState<"map" | "agent" | "settings">("map");
   const [showCreateDraft, setShowCreateDraft] = useState(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const handleToastDismiss = useCallback(() => setToastMessage(null), []);
 
   function handleTabChange(tab: "map" | "agent" | "settings") {
     if (tab === "agent") {
@@ -542,15 +563,21 @@ export default function TripMapPage() {
       );
       setPlans((prev) => [...prev, result.plan]);
       setViewedPlanId(result.plan.id);
-      setToastMessage("Draft created. You're now editing your draft.");
-    } catch {
-      // Error handled by api client
+      toast("Draft created. You're now editing your draft.");
+    } catch (err) {
+      toast({
+        message:
+          err instanceof Error && err.message
+            ? `Couldn't create draft: ${err.message}`
+            : "Couldn't create draft",
+        variant: "error",
+      });
     }
   }
 
   function handleMapClick(place: PlaceResult) {
     if (plannerReadOnly) {
-      setToastMessage("Switch to a draft plan to add stops.");
+      toast("Switch to a draft plan to add stops.");
       return;
     }
     if (!canEdit) return;
@@ -593,30 +620,77 @@ export default function TripMapPage() {
     }
 
     try {
-      // The PATCH response now carries an `impact_preview` diff produced by
-      // `enrich_dag_times(before)` vs `enrich_dag_times(after)`. The page-level
-      // edit path doesn't surface it — the live impact panel in the edit sheet
-      // (Commit 5) is the intended consumer. We still await the call so the
-      // optimistic UI follows the backend write.
+      // The PATCH response carries an `impact_preview` diff produced by
+      // `enrich_dag_times(before)` vs `enrich_dag_times(after)`. The live
+      // impact panel in the edit sheet consumes it directly; page-level just
+      // awaits so the shimmer clears when the server write settles.
       await api.patch<{
         node: NodeData;
         impact_preview: ImpactPreview;
         conflict: boolean;
       }>(`/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}`, updates);
-    } catch {
-      // Error handled by api client
+    } catch (err) {
+      // Clear shimmer so the edge doesn't spin forever on save failure.
+      if (locationChanged) {
+        const connectedEdgeIds = edges
+          .filter((e) => e.from_node_id === nodeId || e.to_node_id === nodeId)
+          .map((e) => e.id);
+        setRecalculatingEdges((prev) => {
+          const next = new Set(prev);
+          for (const id of connectedEdgeIds) next.delete(id);
+          return next;
+        });
+      }
+      const msg =
+        err instanceof Error && err.message ? err.message : "Update failed";
+      toast({
+        message: `Couldn't save changes: ${msg}`,
+        variant: "error",
+        action: {
+          label: "Retry",
+          onClick: () => {
+            void handleNodeEdit(nodeId, updates);
+          },
+        },
+      });
     }
   }
 
   async function handleNodeDelete(nodeId: string) {
     if (!displayPlanId) return;
+    // Optimistic remove: add to pending set (filters from visible nodes+edges)
+    // and close the sheet so the user sees instant feedback. Firestore
+    // snapshot will confirm within ~200ms and the cleanup effect drops the id.
+    setPendingNodeDeletes((prev) => {
+      const next = new Set(prev);
+      next.add(nodeId);
+      return next;
+    });
+    setSelectedNodeId(null);
     try {
       await api.delete(
         `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}`,
       );
-      setSelectedNodeId(null);
-    } catch {
-      // Error handled by api client
+    } catch (err) {
+      // Rollback: the node reappears in the UI. Surface an error with Retry.
+      setPendingNodeDeletes((prev) => {
+        if (!prev.has(nodeId)) return prev;
+        const next = new Set(prev);
+        next.delete(nodeId);
+        return next;
+      });
+      const msg =
+        err instanceof Error && err.message ? err.message : "Delete failed";
+      toast({
+        message: `Couldn't delete stop: ${msg}`,
+        variant: "error",
+        action: {
+          label: "Retry",
+          onClick: () => {
+            void handleNodeDelete(nodeId);
+          },
+        },
+      });
     }
   }
 
@@ -641,7 +715,7 @@ export default function TripMapPage() {
         // Error surfaced by api client; keep iterating so partial success still applies.
       }
     }
-    setToastMessage(
+    toast(
       shifts.length === 1
         ? "Shifted 1 following stop"
         : `Shifted ${shifts.length} following stops`,
@@ -764,21 +838,25 @@ export default function TripMapPage() {
     setInsertEdgeId(selectedEdge.id);
     setSelectedEdgeId(null);
     if (viewMode === "map") {
-      setToastMessage("Tap the map to place your new stop");
+      toast("Tap the map to place your new stop");
     }
   }
 
   async function handleEdgeRefresh() {
     if (!selectedEdge) return;
-    setRecalculatingEdges((prev) => new Set([...prev, selectedEdge.id]));
+    const edgeId = selectedEdge.id;
+    setRecalculatingEdges((prev) => new Set([...prev, edgeId]));
     try {
-      await api.post(`/trips/${tripId}/plans/${displayPlanId}/edges/${selectedEdge.id}/refresh`);
-    } catch {
+      await api.post(`/trips/${tripId}/plans/${displayPlanId}/edges/${edgeId}/refresh`);
+    } catch (err) {
       setRecalculatingEdges((prev) => {
         const next = new Set(prev);
-        next.delete(selectedEdge.id);
+        next.delete(edgeId);
         return next;
       });
+      const msg =
+        err instanceof Error && err.message ? err.message : "Refresh failed";
+      toast({ message: `Couldn't refresh route: ${msg}`, variant: "error" });
     }
   }
 
@@ -863,7 +941,10 @@ export default function TripMapPage() {
     } catch (err: unknown) {
       const error = err as { error?: { code?: string; message?: string } };
       if (error?.error?.code === "CYCLE_DETECTED") {
-        setToastMessage("This connection would create a loop — routes can't circle back.");
+        toast({
+          message: "This connection would create a loop — routes can't circle back.",
+          variant: "error",
+        });
       }
     }
   }
@@ -1032,7 +1113,7 @@ export default function TripMapPage() {
           onBranch={handleBranch}
           onProposeChanges={handleCloneToDraft}
           onShiftFollowing={handleShiftFollowing}
-          onImpactDiscarded={() => setToastMessage("Edit discarded")}
+          onImpactDiscarded={() => toast("Edit discarded")}
         />
       )}
 
@@ -1048,6 +1129,9 @@ export default function TripMapPage() {
           canEdit={canEdit}
           onInsertStop={handleInsertStop}
           onRefresh={userRole === "admin" ? handleEdgeRefresh : undefined}
+          refreshing={
+            selectedEdge ? recalculatingEdges.has(selectedEdge.id) : false
+          }
           onClose={() => setSelectedEdgeId(null)}
         />
       )}
@@ -1109,7 +1193,7 @@ export default function TripMapPage() {
         tripId={tripId}
         activeTab={activeTab}
         onTabChange={handleTabChange}
-        onPulseToast={setToastMessage}
+        onPulseToast={(msg) => toast(msg)}
         showPulse={trip?.participants[user?.uid ?? ""]?.location_tracking_enabled === true}
       />
 
@@ -1130,12 +1214,6 @@ export default function TripMapPage() {
         />
       )}
 
-      {/* Toast */}
-      <Toast
-        message={toastMessage}
-        duration={5000}
-        onDismiss={handleToastDismiss}
-      />
     </div>
   );
 }
