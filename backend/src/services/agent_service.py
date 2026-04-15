@@ -129,6 +129,7 @@ class AgentService:
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(
                     maximum_remote_calls=10,
                 ) if search_tools else None,
+                labels={"feature": "import_chat", "model": self._model},
             ),
         )
 
@@ -193,6 +194,7 @@ class AgentService:
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(
                     maximum_remote_calls=256,
                 ),
+                labels={"feature": "build_dag", "model": self._model},
             ),
         )
 
@@ -295,6 +297,7 @@ class AgentService:
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(
                     maximum_remote_calls=100,
                 ),
+                labels={"feature": "ongoing_chat", "model": self._model},
             ),
         )
 

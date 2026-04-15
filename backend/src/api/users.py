@@ -19,6 +19,7 @@ router = APIRouter(tags=["users"])
 class UpdateProfileRequest(BaseModel):
     display_name: str | None = Field(None, min_length=1, max_length=200)
     location_tracking_enabled: bool | None = None
+    analytics_enabled: bool | None = None
 
 
 class BatchUsersRequest(BaseModel):
@@ -56,6 +57,7 @@ async def update_profile(
         uid=user["uid"],
         display_name=body.display_name,
         location_tracking_enabled=body.location_tracking_enabled,
+        analytics_enabled=body.analytics_enabled,
     )
 
     # When disabling location tracking, delete all location docs for this user.

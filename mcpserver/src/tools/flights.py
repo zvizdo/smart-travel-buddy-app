@@ -1,9 +1,8 @@
 """MCP tool for flight search: find_flights."""
 
 from fastmcp import Context
-from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
-from mcpserver.src.tools._helpers import tool_error_guard
+from mcpserver.src.tools._helpers import resolve_authenticated, tool_error_guard
 
 from shared.services.flight_service import FlightSearchError, format_flight_results
 
@@ -37,7 +36,7 @@ async def find_flights(
         max_results: Number of results to return (1-10, default 5).
         adults: Number of adult passengers (1-9, default 1).
     """
-    get_user_id(ctx)  # auth check
+    await resolve_authenticated(ctx)
     app: AppContext = ctx.lifespan_context
 
     try:

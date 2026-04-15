@@ -4,6 +4,34 @@ import { useRef, useEffect, useState } from "react";
 import { ActionBadges } from "@/components/chat/action-badges";
 import { MarkdownContent } from "@/components/chat/markdown-content";
 import { api } from "@/lib/api";
+import {
+  trackAgentClosed,
+  trackAgentMessageSent,
+  trackAgentOpened,
+  trackAgentResponseReceived,
+  trackDagMutation,
+  type MutationAction,
+  type MutationEntity,
+} from "@/lib/analytics";
+
+function mapActionToDagMutation(
+  type: string,
+): { action: MutationAction; entity: MutationEntity } | null {
+  switch (type) {
+    case "add_node":
+      return { action: "create", entity: "node" };
+    case "update_node":
+      return { action: "edit", entity: "node" };
+    case "delete_node":
+      return { action: "delete", entity: "node" };
+    case "add_edge":
+      return { action: "create", entity: "edge" };
+    case "delete_edge":
+      return { action: "delete", entity: "edge" };
+    default:
+      return null;
+  }
+}
 
 interface ActionTaken {
   type: string;
@@ -95,6 +123,7 @@ export function AgentOverlay({
 
   useEffect(() => {
     if (open) {
+      trackAgentOpened();
       setTimeout(() => inputRef.current?.focus(), 200);
     }
   }, [open]);
@@ -108,6 +137,8 @@ export function AgentOverlay({
     setInput("");
     setSending(true);
     setError(null);
+    trackAgentMessageSent(trimmed.length);
+    const sendStart = performance.now();
 
     try {
       const data = await api.post<AgentChatResponse>(
@@ -124,6 +155,17 @@ export function AgentOverlay({
 
       setMessages((prev) => [...prev, assistantEntry]);
       setIsNewSession(data.is_new_session);
+      trackAgentResponseReceived({
+        action_count: data.actions_taken.length,
+        preference_count: data.preferences_extracted.length,
+        duration_ms: Math.round(performance.now() - sendStart),
+      });
+      for (const act of data.actions_taken) {
+        const mapped = mapActionToDagMutation(act.type);
+        if (mapped) {
+          trackDagMutation({ source: "agent", ...mapped });
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't send — please try again.");
     } finally {
@@ -156,7 +198,10 @@ export function AgentOverlay({
       {/* Header */}
       <header className="flex items-center gap-3 px-4 py-3 bg-surface-lowest shadow-soft">
         <button
-          onClick={onClose}
+          onClick={() => {
+            trackAgentClosed();
+            onClose();
+          }}
           className="h-9 w-9 rounded-full bg-surface-low flex items-center justify-center text-on-surface-variant transition-colors active:bg-surface-container"
         >
           <svg

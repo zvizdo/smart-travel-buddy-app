@@ -25,6 +25,8 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+import os
+
 import firebase_admin
 import httpx
 from fastmcp import FastMCP
@@ -44,6 +46,7 @@ from shared.repositories import (
     TripRepository,
     UserRepository,
 )
+from shared.services.analytics_service import AnalyticsService
 from shared.services.dag_service import DAGService
 from shared.services.flight_service import FlightService
 from shared.services.plan_service import PlanService
@@ -63,6 +66,7 @@ class AppContext:
     plan_service: PlanService
     places_service: PlacesService
     flight_service: FlightService
+    analytics_service: AnalyticsService
     config: dict
     http_client: httpx.AsyncClient | None = field(default=None)
 
@@ -124,6 +128,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         action_repo=action_repo,
     )
     places_service = PlacesService(config["google_maps_api_key"])
+    analytics_service = AnalyticsService(
+        http_client,
+        measurement_id=os.environ.get("GA_MEASUREMENT_ID"),
+        api_secret=os.environ.get("GA_API_SECRET"),
+    )
 
     try:
         yield AppContext(
@@ -133,6 +142,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             plan_service=plan_service,
             places_service=places_service,
             flight_service=flight_service,
+            analytics_service=analytics_service,
             config=config,
             http_client=http_client,
         )
@@ -158,6 +168,14 @@ import mcpserver.src.tools.nodes
 import mcpserver.src.tools.places
 import mcpserver.src.tools.plans
 import mcpserver.src.tools.trips  # noqa: F401
+
+# Analytics is implemented as an on_call_tool middleware so it stays out of
+# the auth gates and tool bodies. Imported after tool registration to avoid
+# the circular import on AppContext (the middleware reads analytics_service
+# from the lifespan context at call time).
+from mcpserver.src.middleware.analytics import AnalyticsMiddleware
+
+mcp.add_middleware(AnalyticsMiddleware())
 
 # Streamable-HTTP ASGI app. fastmcp's http_app() includes:
 #   - Session manager lifespan (task group init)

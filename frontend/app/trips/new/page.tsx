@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { api } from "@/lib/api";
+import { trackTripCreated } from "@/lib/analytics";
 
 export default function NewTripPage() {
   const { user } = useAuth();
@@ -26,6 +27,7 @@ export default function NewTripPage() {
     setError(null);
     try {
       const trip = await api.post<{ id: string }>("/trips", { name: trimmed });
+      trackTripCreated();
       router.push(`/trips/${trip.id}/import`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't create trip — please try again.");

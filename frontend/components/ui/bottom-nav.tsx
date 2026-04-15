@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { PulseButton } from "@/components/map/pulse-button";
+import { trackNavTabClicked } from "@/lib/analytics";
 
 type Tab = "map" | "agent" | "settings";
 
@@ -24,7 +25,10 @@ export function BottomNav({
     <nav className="relative z-30 flex items-center justify-around bg-surface-lowest px-2 py-2 shadow-[0_-2px_12px_rgba(0,0,0,0.06)]">
       {/* Map */}
       <button
-        onClick={() => onTabChange("map")}
+        onClick={() => {
+          trackNavTabClicked("map");
+          onTabChange("map");
+        }}
         className={`flex flex-col items-center gap-0.5 px-4 py-1 rounded-xl transition-colors ${
           activeTab === "map"
             ? "text-primary"
@@ -39,7 +43,10 @@ export function BottomNav({
 
       {/* Agent */}
       <button
-        onClick={() => onTabChange("agent")}
+        onClick={() => {
+          trackNavTabClicked("agent");
+          onTabChange("agent");
+        }}
         className={`flex flex-col items-center gap-0.5 px-4 py-1 rounded-xl transition-colors ${
           activeTab === "agent"
             ? "text-primary"
@@ -55,6 +62,7 @@ export function BottomNav({
       {/* Settings */}
       <Link
         href={`/trips/${tripId}/settings`}
+        onClick={() => trackNavTabClicked("settings")}
         className={`flex flex-col items-center gap-0.5 px-4 py-1 rounded-xl transition-colors text-on-surface-variant`}
       >
         <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">

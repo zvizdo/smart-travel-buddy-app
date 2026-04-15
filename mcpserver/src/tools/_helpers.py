@@ -1,13 +1,13 @@
 """Shared helpers for MCP tool handlers.
 
-Auth gates (see /Users/anzekravanja/.claude/plans/lively-squishing-quill.md):
-
 - Gate A (editor):      resolve_trip_plan — admin or planner, plan resolution.
 - Gate B (participant): resolve_trip_participant — any participant, plan resolution.
 - Gate C (admin):       resolve_trip_admin — admin only, no plan resolution.
-- Gate D (auth):        get_user_id directly — for tools where no trip exists yet.
+- Gate D (auth):        resolve_authenticated — any authenticated user.
 
 Every @mcp.tool() must call exactly one gate on its first executable line.
+Analytics (``mcp_tool_called``) is fired by ``AnalyticsMiddleware`` around
+every call, not by these gates.
 """
 
 import functools
@@ -171,3 +171,10 @@ async def resolve_trip_admin(
     app: AppContext = ctx.lifespan_context
     app.trip_service._require_admin(role)
     return user_id, trip_data.get("name", trip_id)
+
+
+async def resolve_authenticated(ctx: Context) -> str:
+    """Gate D: authenticated-only tools (``create_trip``, ``find_places``,
+    ``find_flights``, simple trip listings). Returns the user_id.
+    """
+    return get_user_id(ctx)

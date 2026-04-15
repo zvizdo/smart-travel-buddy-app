@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { api } from "@/lib/api";
+import { trackInviteAccepted } from "@/lib/analytics";
 
 export default function InviteClaimPage() {
   const params = useParams<{ tripId: string; token: string }>();
@@ -22,6 +23,7 @@ export default function InviteClaimPage() {
         `/trips/${params.tripId}/invites/${params.token}/claim`,
       )
       .then((result) => {
+        trackInviteAccepted(result.role);
         router.push(`/trips/${result.trip_id}`);
       })
       .catch((err) => {

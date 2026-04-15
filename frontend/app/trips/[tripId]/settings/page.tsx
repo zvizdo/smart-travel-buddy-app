@@ -9,6 +9,13 @@ import { api } from "@/lib/api";
 import { formatNotificationDate } from "@/lib/dates";
 import { OfflineBanner, useOnlineStatus } from "@/components/ui/offline-banner";
 import { formatUserName } from "@/lib/user-display";
+import {
+  trackInviteGenerated,
+  trackParticipantRoleChanged,
+  trackPlanCreated,
+  trackPlanDeleted,
+  trackPlanPromoted,
+} from "@/lib/analytics";
 
 interface InviteResult {
   token: string;
@@ -70,6 +77,7 @@ export default function TripSettingsPage() {
         },
       );
       setPlans((prev) => [...prev, result.plan]);
+      trackPlanCreated();
       setAltName("");
       setAltSourcePlanId("");
       setAltIncludeActions(false);
@@ -88,6 +96,7 @@ export default function TripSettingsPage() {
     setPromoting(true);
     try {
       await api.post(`/trips/${tripId}/plans/${planId}/promote`);
+      trackPlanPromoted();
       setPlans((prev) =>
         prev.map((p) => ({
           ...p,
@@ -123,6 +132,7 @@ export default function TripSettingsPage() {
     setDeleteError(null);
     try {
       await api.delete(`/trips/${tripId}/plans/${planId}`);
+      trackPlanDeleted();
       setPlans((prev) => prev.filter((p) => p.id !== planId));
       setDeletePlanConfirm(null);
     } catch {
@@ -180,6 +190,7 @@ export default function TripSettingsPage() {
         { role: inviteRole, expires_in_hours: 72 },
       );
       setInvite(result);
+      trackInviteGenerated(inviteRole);
     } catch {
       // Error handled by api client
     } finally {
@@ -283,6 +294,7 @@ export default function TripSettingsPage() {
     setChangingRoleId(uid);
     try {
       await api.patch(`/trips/${tripId}/participants/${uid}`, { role: newRole });
+      trackParticipantRoleChanged(newRole);
       refetch();
     } catch {
       // Error handled by api client

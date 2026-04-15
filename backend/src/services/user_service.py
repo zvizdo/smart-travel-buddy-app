@@ -40,6 +40,7 @@ class UserService:
         uid: str,
         display_name: str | None = None,
         location_tracking_enabled: bool | None = None,
+        analytics_enabled: bool | None = None,
     ) -> dict:
         """Update user profile fields."""
         updates: dict = {}
@@ -47,6 +48,8 @@ class UserService:
             updates["display_name"] = display_name
         if location_tracking_enabled is not None:
             updates["location_tracking_enabled"] = location_tracking_enabled
+        if analytics_enabled is not None:
+            updates["analytics_enabled"] = analytics_enabled
         if not updates:
             user = await self._user_repo.get_user_or_raise(uid)
             return user.model_dump(mode="json")

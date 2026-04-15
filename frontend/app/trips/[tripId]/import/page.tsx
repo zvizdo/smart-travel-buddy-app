@@ -9,6 +9,36 @@ import {
   type BuildAction,
 } from "@/components/dag/build-progress";
 import { api } from "@/lib/api";
+import {
+  trackDagMutation,
+  trackImportBuildCompleted,
+  trackImportBuildFailed,
+  trackImportBuildStarted,
+  trackImportMessageSent,
+  type MutationAction,
+  type MutationEntity,
+} from "@/lib/analytics";
+
+function mapBuildActionToDagMutation(
+  type: string,
+): { action: MutationAction; entity: MutationEntity } | null {
+  switch (type) {
+    case "node_added":
+    case "add_node":
+      return { action: "create", entity: "node" };
+    case "edge_added":
+    case "add_edge":
+      return { action: "create", entity: "edge" };
+    case "node_deleted":
+    case "delete_node":
+      return { action: "delete", entity: "node" };
+    case "edge_deleted":
+    case "delete_edge":
+      return { action: "delete", entity: "edge" };
+    default:
+      return null;
+  }
+}
 
 const MAX_INPUT_LENGTH = 10_000;
 
@@ -72,6 +102,7 @@ export default function ImportPage() {
     setInput("");
     setSending(true);
     setError(null);
+    trackImportMessageSent(trimmed.length);
 
     try {
       const data = await api.post<ChatResponse>(
@@ -94,6 +125,8 @@ export default function ImportPage() {
     setBuildActions([]);
     setBuildPhase("preparing");
     setError(null);
+    trackImportBuildStarted();
+    const buildStart = performance.now();
 
     try {
       const data = await api.post<BuildResponse>(
@@ -130,11 +163,25 @@ export default function ImportPage() {
       setBuildPhase("complete");
       await new Promise((r) => setTimeout(r, 1200));
 
+      for (const act of data.actions_taken) {
+        const mapped = mapBuildActionToDagMutation(act.type);
+        if (mapped) {
+          trackDagMutation({ source: "import_build", ...mapped });
+        }
+      }
+      trackImportBuildCompleted({
+        node_count: data.nodes_created,
+        edge_count: data.edges_created,
+        duration_ms: Math.round(performance.now() - buildStart),
+      });
+
       refetch();
       router.push(`/trips/${tripId}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't build the trip — please try again.");
+      const message = err instanceof Error ? err.message : "Couldn't build the trip — please try again.";
+      setError(message);
       setBuilding(false);
+      trackImportBuildFailed(message);
     }
   }
 

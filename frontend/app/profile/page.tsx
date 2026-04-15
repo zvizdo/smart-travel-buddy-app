@@ -6,12 +6,19 @@ import { updateProfile } from "firebase/auth";
 import { useAuth } from "@/components/auth/auth-provider";
 import { getFirebaseAuth } from "@/lib/firebase";
 import { api } from "@/lib/api";
+import {
+  getAnalyticsClient,
+  trackAnalyticsToggled,
+  trackLocationTrackingToggled,
+  trackProfileUpdated,
+} from "@/lib/analytics";
 
 interface UserProfile {
   id: string;
   display_name: string;
   email: string;
   location_tracking_enabled: boolean;
+  analytics_enabled: boolean;
   created_at: string;
 }
 
@@ -25,6 +32,7 @@ export default function ProfilePage() {
   const [nameValue, setNameValue] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [savingLocation, setSavingLocation] = useState(false);
+  const [savingAnalytics, setSavingAnalytics] = useState(false);
 
   // API Key state
   const [apiKeys, setApiKeys] = useState<
@@ -95,6 +103,7 @@ export default function ProfilePage() {
         display_name: nameValue.trim(),
       });
       setProfile(updated);
+      trackProfileUpdated("display_name");
       setEditingName(false);
     } catch {
       // Error handled by api client
@@ -106,15 +115,40 @@ export default function ProfilePage() {
   async function handleToggleLocation() {
     if (!profile) return;
     setSavingLocation(true);
+    const next = !profile.location_tracking_enabled;
     try {
       const updated = await api.patch<UserProfile>("/users/me", {
-        location_tracking_enabled: !profile.location_tracking_enabled,
+        location_tracking_enabled: next,
       });
       setProfile(updated);
+      trackLocationTrackingToggled(next);
     } catch {
       // Error handled by api client
     } finally {
       setSavingLocation(false);
+    }
+  }
+
+  async function handleToggleAnalytics() {
+    if (!profile) return;
+    setSavingAnalytics(true);
+    const next = !profile.analytics_enabled;
+    try {
+      if (!next) {
+        trackAnalyticsToggled(false);
+      }
+      const updated = await api.patch<UserProfile>("/users/me", {
+        analytics_enabled: next,
+      });
+      setProfile(updated);
+      getAnalyticsClient().setEnabled(next);
+      if (next) {
+        trackAnalyticsToggled(true);
+      }
+    } catch {
+      // Error handled by api client
+    } finally {
+      setSavingAnalytics(false);
     }
   }
 
@@ -313,7 +347,7 @@ export default function ProfilePage() {
             <h3 className="text-xs font-semibold text-primary tracking-wide uppercase mb-4">
               Preferences
             </h3>
-            <div className="rounded-2xl bg-surface-lowest p-5 shadow-soft">
+            <div className="rounded-2xl bg-surface-lowest p-5 shadow-soft space-y-5">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <p className="text-sm font-medium text-on-surface">
@@ -336,6 +370,37 @@ export default function ProfilePage() {
                 >
                   <span
                     className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-on-primary shadow-soft transition-transform mt-1 ${profile?.location_tracking_enabled
+                      ? "translate-x-6 ml-0.5"
+                      : "translate-x-0.5"
+                      }`}
+                  />
+                </button>
+              </div>
+
+              <div className="h-px bg-surface-low" />
+
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-on-surface">
+                    Usage Analytics
+                  </p>
+                  <p className="text-xs text-on-surface-variant mt-0.5">
+                    Help improve the app by sharing anonymous usage data
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={profile?.analytics_enabled ?? true}
+                  onClick={handleToggleAnalytics}
+                  disabled={savingAnalytics || loading}
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors disabled:opacity-40 ${profile?.analytics_enabled ?? true
+                    ? "bg-primary"
+                    : "bg-surface-high"
+                    }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-on-primary shadow-soft transition-transform mt-1 ${profile?.analytics_enabled ?? true
                       ? "translate-x-6 ml-0.5"
                       : "translate-x-0.5"
                       }`}

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { formatUserName } from "@/lib/user-display";
+import { trackDivergenceResolved } from "@/lib/analytics";
 
 interface NodeInfo {
   id: string;
@@ -226,6 +227,7 @@ export function DivergenceResolver({
           `/trips/${tripId}/plans/${planId}/nodes/${nodeId}/choose`,
         );
       }
+      trackDivergenceResolved();
     } catch {
       // Error handled by api client
     } finally {

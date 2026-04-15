@@ -4,6 +4,11 @@ import { useCallback, useState } from "react";
 import { api } from "@/lib/api";
 import { useOnlineStatus } from "@/components/ui/offline-banner";
 import { enqueuePulse } from "@/lib/offline-queue";
+import {
+  trackPulseError,
+  trackPulseInitiated,
+  trackPulseSent,
+} from "@/lib/analytics";
 
 interface PulseButtonProps {
   tripId: string;
@@ -18,9 +23,11 @@ export function PulseButton({ tripId, onToast }: PulseButtonProps) {
 
   const handlePulse = useCallback(async () => {
     setStatus("locating");
+    trackPulseInitiated();
 
     if (!navigator.geolocation) {
       onToast?.("GPS not available on this device");
+      trackPulseError("no_geolocation");
       setStatus("error");
       setTimeout(() => setStatus("idle"), 3000);
       return;
@@ -51,6 +58,7 @@ export function PulseButton({ tripId, onToast }: PulseButtonProps) {
 
       setStatus("sending");
       await api.post(`/trips/${tripId}/pulse`, { lat, lng, heading });
+      trackPulseSent();
       onToast?.("Sharing your location with the group");
       setStatus("done");
       setTimeout(() => setStatus("idle"), 2000);
@@ -62,8 +70,10 @@ export function PulseButton({ tripId, onToast }: PulseButtonProps) {
           3: "Location request timed out",
         };
         onToast?.(messages[err.code] ?? "Could not get location");
+        trackPulseError(`geo_${err.code}`);
       } else {
         onToast?.("Failed to send check-in");
+        trackPulseError("send_failed");
       }
       setStatus("error");
       setTimeout(() => setStatus("idle"), 3000);

@@ -4,6 +4,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import Image from "next/image";
+import { trackSignInInitiated } from "@/lib/analytics";
 
 // Apple and Yahoo sign-in are temporarily disabled on the landing page.
 // The providers are still wired in auth-provider.tsx for when we re-enable them.
@@ -66,7 +67,10 @@ export default function SignInPage() {
     };
     return (
       <button
-        onClick={signInWithGoogle}
+        onClick={() => {
+          trackSignInInitiated("google");
+          void signInWithGoogle();
+        }}
         className={`inline-flex items-center justify-center ${sizes[size]} bg-surface-lowest font-semibold text-on-surface shadow-soft ring-1 ring-black/5 transition-all hover:shadow-ambient hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]`}
       >
         <GoogleIcon className={size === "lg" ? "h-5 w-5" : "h-4 w-4"} />

@@ -39,6 +39,17 @@ import { TimelineView } from "@/components/timeline/timeline-view";
 import { TimelineViewToggle } from "@/components/timeline/timeline-view-toggle";
 import type { TimelineZoomLevel } from "@/lib/timeline-layout";
 import { haversineKm } from "@/lib/geo";
+import {
+  trackDagMutation,
+  trackEdgeOpened,
+  trackNodeAction,
+  trackNodeOpened,
+  trackPathModeToggled,
+  trackPlanCreated,
+  trackTimelineZoomChanged,
+  trackTimingShifted,
+  trackViewChanged,
+} from "@/lib/analytics";
 
 interface NodeData {
   id: string;
@@ -109,6 +120,14 @@ export default function TripMapPage() {
     if (viewedPlanId && viewedPlanId !== activePlanId) {
       setViewedPlanId(null);
     }
+  }
+
+  if (
+    viewedPlanId &&
+    plans.length > 0 &&
+    !plans.some((p) => p.id === viewedPlanId)
+  ) {
+    setViewedPlanId(null);
   }
 
   const enrichmentSettings = useMemo<TripSettingsLike>(
@@ -341,6 +360,7 @@ export default function TripMapPage() {
   const setViewMode = useCallback(
     (mode: "map" | "timeline") => {
       const params = new URLSearchParams(searchParams.toString());
+      const from = params.get("view") === "timeline" ? "timeline" : "map";
       if (mode === "timeline") {
         params.set("view", "timeline");
       } else {
@@ -348,10 +368,23 @@ export default function TripMapPage() {
       }
       const qs = params.toString();
       router.replace(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false });
+      if (from !== mode) trackViewChanged(from, mode);
     },
     [searchParams, router, pathname],
   );
-  const [timelineZoom, setTimelineZoom] = useState<TimelineZoomLevel>(2);
+  const [timelineZoom, setTimelineZoomState] = useState<TimelineZoomLevel>(2);
+  const setTimelineZoom = useCallback<
+    React.Dispatch<React.SetStateAction<TimelineZoomLevel>>
+  >((value) => {
+    setTimelineZoomState((prev) => {
+      const next =
+        typeof value === "function"
+          ? (value as (p: TimelineZoomLevel) => TimelineZoomLevel)(prev)
+          : value;
+      if (next !== prev) trackTimelineZoomChanged(next);
+      return next;
+    });
+  }, []);
 
   const [activeTab, setActiveTab] = useState<"map" | "agent" | "settings">("map");
   const [showCreateDraft, setShowCreateDraft] = useState(false);
@@ -522,7 +555,12 @@ export default function TripMapPage() {
     setSelectedEdgeId(null);
     setAddNodePlace(null);
     setDisambiguationEdges(null);
-    setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
+    setSelectedNodeId((prev) => {
+      if (prev === nodeId) return null;
+      const node = nodes.find((n) => n.id === nodeId);
+      trackNodeOpened(node?.type);
+      return nodeId;
+    });
   }
 
   function handleEdgeSelect(edgeId: string, overlappingEdgeIds?: string[]) {
@@ -546,6 +584,8 @@ export default function TripMapPage() {
     } else {
       setDisambiguationEdges(null);
       setSelectedEdgeId(edgeId);
+      const edge = edges.find((e) => e.id === edgeId);
+      trackEdgeOpened(edge?.travel_mode);
     }
   }
 
@@ -563,6 +603,7 @@ export default function TripMapPage() {
       );
       setPlans((prev) => [...prev, result.plan]);
       setViewedPlanId(result.plan.id);
+      trackPlanCreated();
       toast("Draft created. You're now editing your draft.");
     } catch (err) {
       toast({
@@ -629,6 +670,12 @@ export default function TripMapPage() {
         impact_preview: ImpactPreview;
         conflict: boolean;
       }>(`/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}`, updates);
+      trackDagMutation({
+        source: "ui",
+        action: "edit",
+        entity: "node",
+        fields_changed: Object.keys(updates).join(","),
+      });
     } catch (err) {
       // Clear shimmer so the edge doesn't spin forever on save failure.
       if (locationChanged) {
@@ -671,6 +718,7 @@ export default function TripMapPage() {
       await api.delete(
         `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}`,
       );
+      trackDagMutation({ source: "ui", action: "delete", entity: "node" });
     } catch (err) {
       // Rollback: the node reappears in the UI. Surface an error with Retry.
       setPendingNodeDeletes((prev) => {
@@ -715,6 +763,7 @@ export default function TripMapPage() {
         // Error surfaced by api client; keep iterating so partial success still applies.
       }
     }
+    trackTimingShifted(shifts.length);
     toast(
       shifts.length === 1
         ? "Shifted 1 following stop"
@@ -732,6 +781,7 @@ export default function TripMapPage() {
         `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}/actions`,
         data,
       );
+      trackNodeAction({ action: "added", action_type: data.type, source: "ui" });
     } catch {
       // Error handled by api client
     }
@@ -750,6 +800,7 @@ export default function TripMapPage() {
       await api.delete(
         `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}/actions/${actionId}`,
       );
+      trackNodeAction({ action: "deleted", action_type: "unknown", source: "ui" });
     } catch {
       // Revert optimistic hide on failure so the item reappears.
       setDeletedActionIds((prev) => {
@@ -771,6 +822,7 @@ export default function TripMapPage() {
       `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}/actions/${actionId}`,
       { is_completed: isCompleted },
     );
+    trackNodeAction({ action: "toggled", action_type: "todo", source: "ui" });
   }
 
   async function handleBranch(
@@ -797,6 +849,13 @@ export default function TripMapPage() {
         `/trips/${tripId}/plans/${displayPlanId}/nodes/${nodeId}/branch`,
         data,
       );
+      trackDagMutation({
+        source: "ui",
+        action: "branch",
+        entity: "node",
+        node_type: data.type,
+        travel_mode: data.travel_mode,
+      });
       setSelectedNodeId(null);
     } catch {
       // Error handled by api client
@@ -825,6 +884,13 @@ export default function TripMapPage() {
         `/trips/${tripId}/plans/${displayPlanId}/nodes`,
         data,
       );
+      trackDagMutation({
+        source: "ui",
+        action: "create",
+        entity: "node",
+        node_type: data.type,
+        travel_mode: data.travel_mode,
+      });
       setAddNodePlace(null);
       setInsertEdgeId(null);
     } catch {
@@ -912,6 +978,12 @@ export default function TripMapPage() {
         `/trips/${tripId}/plans/${displayPlanId}/edges/${edgeId}/split`,
         data,
       );
+      trackDagMutation({
+        source: "ui",
+        action: "split",
+        entity: "edge",
+        node_type: data.type,
+      });
       setAddNodePlace(null);
       setInsertEdgeId(null);
     } catch {
@@ -937,6 +1009,12 @@ export default function TripMapPage() {
         `/trips/${tripId}/plans/${displayPlanId}/nodes/connected`,
         data,
       );
+      trackDagMutation({
+        source: "ui",
+        action: "insert",
+        entity: "node",
+        node_type: data.type,
+      });
       setAddNodePlace(null);
     } catch (err: unknown) {
       const error = err as { error?: { code?: string; message?: string } };
@@ -1025,7 +1103,15 @@ export default function TripMapPage() {
       {/* Sub-toolbar: view toggle + path filter */}
       <div className="absolute top-[60px] left-0 right-0 z-10 flex items-center justify-between px-4 py-1.5">
         <TimelineViewToggle viewMode={viewMode} onToggle={setViewMode} />
-        {hasBranches && <PathFilter mode={pathMode} onModeChange={setPathMode} />}
+        {hasBranches && (
+          <PathFilter
+            mode={pathMode}
+            onModeChange={(mode) => {
+              setPathMode(mode);
+              trackPathModeToggled(mode);
+            }}
+          />
+        )}
       </div>
 
       <div className="absolute top-[104px] left-0 right-0 z-20">

@@ -5,9 +5,9 @@ Write: create_trip, delete_trip, update_trip_settings.
 """
 
 from fastmcp import Context
-from mcpserver.src.auth.api_key_auth import get_user_id
 from mcpserver.src.main import AppContext, mcp
 from mcpserver.src.tools._helpers import (
+    resolve_authenticated,
     resolve_trip_admin,
     tool_error_guard,
     tool_error_guard_text,
@@ -24,7 +24,7 @@ async def get_trips(ctx: Context) -> dict:
     Returns trip names, your role, and participant counts.
     No parameters needed.
     """
-    user_id = get_user_id(ctx)
+    user_id = await resolve_authenticated(ctx)
     app: AppContext = ctx.lifespan_context
     trips = await app.trip_service.get_trips(user_id)
     return {"trips": trips}
@@ -42,7 +42,7 @@ async def get_trip_plans(trip_id: str, ctx: Context) -> dict:
     Args:
         trip_id: The trip identifier.
     """
-    user_id = get_user_id(ctx)
+    user_id = await resolve_authenticated(ctx)
     app: AppContext = ctx.lifespan_context
     return await app.trip_service.get_trip_plans(trip_id, user_id)
 
@@ -66,7 +66,7 @@ async def get_trip_context(
         trip_id: The trip identifier.
         plan_id: Optional specific plan version ID. Defaults to the active plan.
     """
-    user_id = get_user_id(ctx)
+    user_id = await resolve_authenticated(ctx)
     app: AppContext = ctx.lifespan_context
     result = await app.trip_service.get_trip_context(trip_id, user_id, plan_id)
 
@@ -104,7 +104,7 @@ async def create_trip(name: str, ctx: Context) -> dict:
 
     Returns: The created trip with its ID, plan, and participant info.
     """
-    user_id = get_user_id(ctx)
+    user_id = await resolve_authenticated(ctx)
     app: AppContext = ctx.lifespan_context
 
     return await app.trip_service.create_trip(

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { ProfileAvatar } from "@/components/ui/profile-avatar";
 import { api } from "@/lib/api";
+import { trackTripOpened, trackTripsListLoaded } from "@/lib/analytics";
 
 interface TripSummary {
   id: string;
@@ -35,7 +36,10 @@ export default function HomePage() {
 
     api
       .get<{ trips: TripSummary[] }>("/trips")
-      .then((data) => setTrips(data.trips))
+      .then((data) => {
+        setTrips(data.trips);
+        trackTripsListLoaded(data.trips.length);
+      })
       .catch(() => setTrips([]))
       .finally(() => setLoading(false));
   }, [user, authLoading, router]);
@@ -141,6 +145,7 @@ export default function HomePage() {
                   <li key={trip.id}>
                     <Link
                       href={`/trips/${trip.id}`}
+                      onClick={() => trackTripOpened(trip.id, trip.role)}
                       className="block rounded-2xl bg-surface-lowest p-5 shadow-soft transition-all active:scale-[0.98] hover:shadow-ambient"
                     >
                       <div className="flex items-start justify-between gap-3">
