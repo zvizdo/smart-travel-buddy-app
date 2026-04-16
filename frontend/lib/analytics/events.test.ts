@@ -61,7 +61,7 @@ describe("analytics event helpers", () => {
     const { trackScreenView } = await import("./events");
     trackScreenView("/trips/abc", { trip_id: "abc" });
     expect(client.logEvent).toHaveBeenCalledWith("screen_view", {
-      page_path: "/trips/abc",
+      screen_name: "/trips/abc",
       trip_id: "abc",
     });
   });
