@@ -27,11 +27,14 @@ async def add_edge(
         plan_id: Optional plan version. Defaults to active plan.
         travel_mode: Travel mode - one of: drive, ferry, flight, transit, walk. Use 'ferry' for ship/cruise routes. Default: drive.
         notes: Optional advisory note about the route (e.g., seasonal closures, scenic highlights, flight numbers).
+
+    Returns: ``{edge: {id, from_node_id, to_node_id, travel_mode,
+        travel_time_hours, distance_km, route_polyline, notes}}``.
     """
     _, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context
 
-    result = await app.dag_service.create_standalone_edge(
+    edge = await app.dag_service.create_standalone_edge(
         trip_id=trip_id,
         plan_id=resolved_plan_id,
         from_node_id=from_node_id,
@@ -39,7 +42,7 @@ async def add_edge(
         travel_mode=travel_mode,
         notes=notes,
     )
-    return result
+    return {"edge": edge}
 
 
 @mcp.tool()
@@ -58,6 +61,8 @@ async def delete_edge(
         trip_id: The trip identifier.
         edge_id: ID of the edge to delete.
         plan_id: Optional plan version. Defaults to active plan.
+
+    Returns: ``{deleted: true, edge_id}``.
     """
     _, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context
@@ -67,4 +72,7 @@ async def delete_edge(
         plan_id=resolved_plan_id,
         edge_id=edge_id,
     )
-    return result
+    return {
+        "deleted": True,
+        "edge_id": result.get("deleted_edge_id", edge_id),
+    }

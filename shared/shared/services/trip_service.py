@@ -78,6 +78,47 @@ class TripService:
             raise PermissionError("You are not a participant of this trip")
         return trip
 
+    # ---- Role gates (used by both backend callers and MCP tool helpers) -----
+    # These three methods are intentionally part of the public API despite the
+    # authorization-sensitive nature of the checks: MCP's gate helpers in
+    # mcpserver/src/tools/_helpers.py call them directly. Do NOT prefix with
+    # underscore or delete during refactors — see the regression history in
+    # shared/tests/test_trip_service_role_gates.py.
+
+    def verify_participant(self, trip: dict, user_id: str) -> str:
+        """Return the caller's role string, or raise PermissionError."""
+        participants = trip.get("participants", {})
+        entry = participants.get(user_id)
+        if entry is None:
+            raise PermissionError("You are not a participant of this trip")
+        return entry["role"]
+
+    def require_editor(self, role: str) -> None:
+        """Allow admin + planner. Raise PermissionError otherwise."""
+        if role not in (TripRole.ADMIN.value, TripRole.PLANNER.value):
+            raise PermissionError(
+                "This action requires one of the following roles: admin, planner"
+            )
+
+    def require_admin(self, role: str) -> None:
+        """Allow admin only. Raise PermissionError otherwise."""
+        if role != TripRole.ADMIN.value:
+            raise PermissionError(
+                "This action requires the admin role"
+            )
+
+    async def resolve_participant(
+        self, trip_id: str, user_id: str
+    ) -> tuple[dict, str]:
+        """Fetch the trip as a dict, verify participation, return (trip, role).
+
+        Consolidates the "load trip + gate" pattern that both the MCP tool
+        helpers and this service's own methods were duplicating.
+        """
+        trip_data = await self._trip_repo.get_or_raise(trip_id)
+        role = self.verify_participant(trip_data, user_id)
+        return trip_data, role
+
     async def list_trips(self, user_id: str) -> list[dict]:
         """List all trips for a user, including their role."""
         trips = await self._trip_repo.list_by_user(user_id)
@@ -271,3 +312,8 @@ class TripService:
             for ref in refs[i : i + batch_size]:
                 batch.delete(ref)
             await batch.commit()
+
+        # Trip doc was deleted via the batch, bypassing the repo's
+        # cache-invalidating wrappers. Drop the cached entry so a future
+        # read on the same instance doesn't return a ghost trip.
+        self._trip_repo.invalidate(trip_id)

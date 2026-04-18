@@ -41,12 +41,12 @@ async def test_departure_time_included():
         {"lat": 48.8, "lng": 2.3},
         {"lat": 45.7, "lng": 4.8},
         "drive",
-        departure_time="2027-01-15T08:00:00Z",
+        departure_time=datetime(2027, 1, 15, 8, 0, tzinfo=UTC),
     )
 
     call_kwargs = client.post.call_args
     body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-    assert body["departureTime"] == "2027-01-15T08:00:00Z"
+    assert body["departureTime"] == "2027-01-15T08:00:00+00:00"
     assert body["routingPreference"] == "TRAFFIC_AWARE_OPTIMAL"
 
 
@@ -95,7 +95,7 @@ async def test_walk_mode_omits_routing_preference():
         {"lat": 48.8, "lng": 2.3},
         {"lat": 45.7, "lng": 4.8},
         "walk",
-        departure_time="2027-01-15T08:00:00Z",
+        departure_time=datetime(2027, 1, 15, 8, 0, tzinfo=UTC),
     )
 
     call_kwargs = client.post.call_args
@@ -105,7 +105,13 @@ async def test_walk_mode_omits_routing_preference():
 
 
 @pytest.mark.asyncio
-async def test_transit_mode_gets_departure_time():
+async def test_transit_mode_gets_departure_time_without_routing_preference():
+    """Transit sends departureTime but NOT routingPreference.
+
+    The Routes API rejects `TRAFFIC_AWARE_OPTIMAL` on transit by returning an
+    empty `routes` array — which is how transit edges used to silently
+    persist as `{travel_time_hours: 0.0, distance_km: null}`.
+    """
     client = _mock_http_client()
     svc = RouteService(client)
 
@@ -113,13 +119,13 @@ async def test_transit_mode_gets_departure_time():
         {"lat": 48.8, "lng": 2.3},
         {"lat": 45.7, "lng": 4.8},
         "transit",
-        departure_time="2027-01-15T08:00:00Z",
+        departure_time=datetime(2027, 1, 15, 8, 0, tzinfo=UTC),
     )
 
     call_kwargs = client.post.call_args
     body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-    assert body["departureTime"] == "2027-01-15T08:00:00Z"
-    assert body["routingPreference"] == "TRAFFIC_AWARE_OPTIMAL"
+    assert body["departureTime"] == "2027-01-15T08:00:00+00:00"
+    assert "routingPreference" not in body
 
 
 # --- Fallback waypoint tests ---
@@ -326,7 +332,7 @@ async def test_flight_returns_route_data_on_success(monkeypatch):
         {"lat": 40.6, "lng": -73.8},
         {"lat": 51.5, "lng": -0.5},
         "flight",
-        departure_time="2026-06-15T10:00:00Z",
+        departure_time=datetime(2026, 6, 15, 10, 0, tzinfo=UTC),
     )
 
     assert result is not None
@@ -822,3 +828,340 @@ async def test_fetch_and_patch_non_flight_does_not_touch_flight_sentinel():
 
     # get_or_raise should NOT have been called — non-flight path skips the merge
     edge_repo.get_or_raise.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_patch_flight_skips_edge_read_when_notes_provided():
+    """When the caller already has the edge in scope (e.g. refresh_edge_route),
+    passing existing_notes lets the flight path merge in-process instead of
+    re-fetching the edge from Firestore."""
+    from shared.services.route_service import RouteData
+
+    svc = RouteService(AsyncMock(spec=httpx.AsyncClient))
+    edge_repo = AsyncMock()
+
+    with patch.object(
+        svc, "get_route_data",
+        return_value=RouteData(
+            polyline=None, duration_seconds=180 * 60, distance_meters=4_000_000,
+            warnings=["Avg 3h across 10 nonstop options (2026-06-15)"],
+        ),
+    ):
+        await svc.fetch_and_patch_route_data(
+            trip_id="t_1", plan_id="p_1", edge_id="e_1",
+            from_latlng={"lat": 36.08, "lng": -115.15},
+            to_latlng={"lat": 47.45, "lng": -122.31},
+            travel_mode="flight", edge_repo=edge_repo,
+            existing_notes="Parts of this road may be closed",
+        )
+
+    # No redundant edge read — caller supplied existing_notes
+    edge_repo.get_or_raise.assert_not_called()
+    updates = edge_repo.update_edge.call_args[0][3]
+    assert "Parts of this road may be closed" in updates["notes"]
+    assert "Flight estimate:" in updates["notes"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_patch_flight_skips_edge_read_when_notes_explicitly_none():
+    """existing_notes=None is a real value (caller knows the edge has no notes),
+    not a 'fetch from DB' signal — must be distinguished from the unset sentinel."""
+    from shared.services.route_service import RouteData
+
+    svc = RouteService(AsyncMock(spec=httpx.AsyncClient))
+    edge_repo = AsyncMock()
+
+    with patch.object(
+        svc, "get_route_data",
+        return_value=RouteData(
+            polyline=None, duration_seconds=180 * 60, distance_meters=4_000_000,
+            warnings=["Avg 3h across 10 nonstop options (2026-06-15)"],
+        ),
+    ):
+        await svc.fetch_and_patch_route_data(
+            trip_id="t_1", plan_id="p_1", edge_id="e_1",
+            from_latlng={"lat": 36.08, "lng": -115.15},
+            to_latlng={"lat": 47.45, "lng": -122.31},
+            travel_mode="flight", edge_repo=edge_repo,
+            existing_notes=None,
+        )
+
+    edge_repo.get_or_raise.assert_not_called()
+    updates = edge_repo.update_edge.call_args[0][3]
+    assert updates["notes"].startswith("Flight estimate:")
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_patch_flight_falls_back_to_edge_read_when_notes_unset():
+    """Background callers that didn't pre-load the edge still get correct
+    merging via the existing fetch path."""
+    from shared.services.route_service import RouteData
+
+    svc = RouteService(AsyncMock(spec=httpx.AsyncClient))
+    edge_repo = AsyncMock()
+    edge_repo.get_or_raise = AsyncMock(return_value={
+        "id": "e_1", "notes": "Parts of this road may be closed",
+    })
+
+    with patch.object(
+        svc, "get_route_data",
+        return_value=RouteData(
+            polyline=None, duration_seconds=180 * 60, distance_meters=4_000_000,
+            warnings=["Avg 3h across 10 nonstop options (2026-06-15)"],
+        ),
+    ):
+        await svc.fetch_and_patch_route_data(
+            trip_id="t_1", plan_id="p_1", edge_id="e_1",
+            from_latlng={"lat": 36.08, "lng": -115.15},
+            to_latlng={"lat": 47.45, "lng": -122.31},
+            travel_mode="flight", edge_repo=edge_repo,
+        )
+
+    # No existing_notes argument → fall back to fetching the edge
+    edge_repo.get_or_raise.assert_called_once()
+
+
+# --- existing_route diff (audit item #3) ---
+#
+# When a node moves but the recomputed polyline equals what's already stored,
+# the per-edge background recalc used to write the same polyline / duration /
+# distance back. Foreground refresh callers can now pass the stored values via
+# ``existing_route`` so the no-op fields drop out of the write — only
+# ``route_updated_at`` is bumped so the frontend shimmer still clears.
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_patch_skips_route_fields_when_unchanged():
+    """Stored route matches fetched route → only route_updated_at written."""
+    client = _mock_http_client()  # returns polyline=abc123, 1.0h, 50.0km
+    svc = RouteService(client)
+    edge_repo = AsyncMock()
+
+    await svc.fetch_and_patch_route_data(
+        trip_id="t_1", plan_id="p_1", edge_id="e_1",
+        from_latlng={"lat": 48.8, "lng": 2.3},
+        to_latlng={"lat": 45.7, "lng": 4.8},
+        travel_mode="drive",
+        edge_repo=edge_repo,
+        existing_route={
+            "route_polyline": "abc123",
+            "travel_time_hours": 1.0,
+            "distance_km": 50.0,
+        },
+    )
+
+    edge_repo.update_edge.assert_called_once()
+    updates = edge_repo.update_edge.call_args[0][3]
+    assert set(updates.keys()) == {"route_updated_at"}, (
+        f"expected only route_updated_at, got {sorted(updates)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_patch_writes_changed_fields_only():
+    """Only the field whose stored value differs from the fetched value is written."""
+    client = _mock_http_client()  # returns polyline=abc123, 1.0h, 50.0km
+    svc = RouteService(client)
+    edge_repo = AsyncMock()
+
+    await svc.fetch_and_patch_route_data(
+        trip_id="t_1", plan_id="p_1", edge_id="e_1",
+        from_latlng={"lat": 48.8, "lng": 2.3},
+        to_latlng={"lat": 45.7, "lng": 4.8},
+        travel_mode="drive",
+        edge_repo=edge_repo,
+        existing_route={
+            "route_polyline": "abc123",       # unchanged → drop
+            "travel_time_hours": 1.0,         # unchanged → drop
+            "distance_km": 49.5,              # changed   → keep
+        },
+    )
+
+    edge_repo.update_edge.assert_called_once()
+    updates = edge_repo.update_edge.call_args[0][3]
+    assert set(updates.keys()) == {"route_updated_at", "distance_km"}
+    assert updates["distance_km"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_patch_writes_all_when_existing_route_unset():
+    """Background callers (sentinel default) keep the existing write-everything
+    behavior — diffing against a missing snapshot would incorrectly drop fields
+    on freshly-created edges that have no stored route yet."""
+    client = _mock_http_client()
+    svc = RouteService(client)
+    edge_repo = AsyncMock()
+
+    await svc.fetch_and_patch_route_data(
+        trip_id="t_1", plan_id="p_1", edge_id="e_1",
+        from_latlng={"lat": 48.8, "lng": 2.3},
+        to_latlng={"lat": 45.7, "lng": 4.8},
+        travel_mode="drive",
+        edge_repo=edge_repo,
+    )
+
+    edge_repo.update_edge.assert_called_once()
+    updates = edge_repo.update_edge.call_args[0][3]
+    assert updates.get("route_polyline") == "abc123"
+    assert updates.get("travel_time_hours") == 1.0
+    assert updates.get("distance_km") == 50.0
+    assert "route_updated_at" in updates
+
+
+# --- Real JSON-encoding regression test ---
+#
+# The tests above mock httpx.AsyncClient via AsyncMock — that path never
+# invokes stdlib json.dumps on the body. A datetime accidentally reaching
+# body["departureTime"] would serialize fine under AsyncMock but crash under
+# the real httpx request pipeline with
+# TypeError: Object of type datetime is not JSON serializable.
+#
+# This test swaps AsyncMock for httpx.MockTransport, which drives httpx's
+# real request-building (including body JSON encoding) but intercepts at the
+# transport layer. If _call_routes_api ever forgets to serialize a datetime
+# via .isoformat() before putting it in body, this test fails with a real
+# TypeError — catching exactly the class of bug that made add_edge
+# silently return INTERNAL_ERROR.
+
+
+@pytest.mark.asyncio
+async def test_real_json_encoding_accepts_datetime_departure():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["content"] = request.content
+        return httpx.Response(
+            200,
+            json={
+                "routes": [{
+                    "polyline": {"encodedPolyline": "xyz"},
+                    "duration": "1800s",
+                    "distanceMeters": 25000,
+                    "legs": [],
+                }],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        svc = RouteService(client)
+        svc._credentials = MagicMock()
+        svc._credentials.valid = True
+        svc._credentials.token = "test-token"
+
+        result = await svc.get_route_data(
+            {"lat": 48.8, "lng": 2.3},
+            {"lat": 45.7, "lng": 4.8},
+            "drive",
+            departure_time=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        )
+
+    assert result is not None, (
+        "get_route_data returned None — likely a TypeError during JSON "
+        "encoding of the body dict (did a datetime reach body['departureTime'] "
+        "without .isoformat()?)"
+    )
+    body = json.loads(captured["content"])
+    assert isinstance(body["departureTime"], str)
+    assert body["departureTime"] == "2026-05-01T10:00:00+00:00"
+
+
+# --- TRANSIT vs DRIVE request shape regression tests ---
+#
+# The Routes API rejects `routingPreference: TRAFFIC_AWARE_OPTIMAL` on TRANSIT
+# by returning an empty `routes` array. That's how transit edges used to
+# persist as `{travel_time_hours: 0.0, distance_km: null}` — the sync fetch
+# came back empty, the edge was written with defaults, and the caller saw no
+# error. These tests lock the DRIVE-vs-TRANSIT divergence so the field can't
+# regress into being sent on TRANSIT.
+
+
+@pytest.mark.asyncio
+async def test_transit_body_omits_routing_preference():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["content"] = request.content
+        captured["field_mask"] = request.headers.get("X-Goog-FieldMask", "")
+        return httpx.Response(
+            200,
+            json={
+                "routes": [{
+                    "polyline": {"encodedPolyline": "abc"},
+                    "duration": "7200s",
+                    "distanceMeters": 400_000,
+                    "legs": [{"steps": [
+                        {"travelMode": "TRANSIT", "transitDetails": {}},
+                    ]}],
+                }],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        svc = RouteService(client)
+        svc._credentials = MagicMock()
+        svc._credentials.valid = True
+        svc._credentials.token = "test-token"
+
+        result = await svc.get_route_data(
+            {"lat": 35.6812, "lng": 139.7671},  # Tokyo
+            {"lat": 35.0116, "lng": 135.7681},  # Kyoto
+            "transit",
+            departure_time=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+        )
+
+    assert result is not None
+    body = json.loads(captured["content"])
+    assert body["travelMode"] == "TRANSIT"
+    assert "routingPreference" not in body, (
+        "TRANSIT must not send routingPreference — Google Routes API rejects "
+        "the field on transit requests and returns an empty `routes` array, "
+        "which is how transit edges used to silently persist as 0h/null."
+    )
+    assert body["departureTime"] == "2026-05-10T09:00:00+00:00", (
+        "TRANSIT should still send departureTime for schedule lookup."
+    )
+    assert "transitDetails" in captured["field_mask"], (
+        "Field mask must include routes.legs.steps.transitDetails so the API "
+        "materialises transit-specific response fields."
+    )
+
+
+@pytest.mark.asyncio
+async def test_drive_body_preserves_routing_preference():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["content"] = request.content
+        return httpx.Response(
+            200,
+            json={
+                "routes": [{
+                    "polyline": {"encodedPolyline": "xyz"},
+                    "duration": "3600s",
+                    "distanceMeters": 100_000,
+                    "legs": [],
+                }],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        svc = RouteService(client)
+        svc._credentials = MagicMock()
+        svc._credentials.valid = True
+        svc._credentials.token = "test-token"
+
+        result = await svc.get_route_data(
+            {"lat": 48.8, "lng": 2.3},
+            {"lat": 45.7, "lng": 4.8},
+            "drive",
+            departure_time=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        )
+
+    assert result is not None
+    body = json.loads(captured["content"])
+    assert body["travelMode"] == "DRIVE"
+    assert body["routingPreference"] == "TRAFFIC_AWARE_OPTIMAL"
+    assert body["departureTime"] == "2026-05-01T10:00:00+00:00"

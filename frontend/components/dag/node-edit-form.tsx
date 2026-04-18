@@ -96,26 +96,25 @@ function PinIcon({ colored = false }: { colored?: boolean }) {
   );
 }
 
-function inferInitialMode(node: NodeEditFormProps["node"]): EditMode {
-  if (node.duration_minutes != null && !node.duration_estimated) {
-    return "flexible";
-  }
+function inferInitialState(node: NodeEditFormProps["node"]): {
+  mode: EditMode;
+  anchor: FlexAnchor;
+} {
   const hasUserArrival =
     node.arrival_time != null && !node.arrival_time_estimated;
   const hasUserDeparture =
     node.departure_time != null && !node.departure_time_estimated;
-  if (hasUserArrival && hasUserDeparture) return "fixed";
-  return "flexible";
-}
+  const hasUserDuration =
+    node.duration_minutes != null && !node.duration_estimated;
 
-function inferInitialAnchor(node: NodeEditFormProps["node"]): FlexAnchor {
-  const hasUserArrival =
-    node.arrival_time != null && !node.arrival_time_estimated;
-  const hasUserDeparture =
-    node.departure_time != null && !node.departure_time_estimated;
-  if (hasUserArrival && !node.is_start) return "arrival";
-  if (hasUserDeparture && !node.is_end) return "departure";
-  return "none";
+  const mode: EditMode =
+    !hasUserDuration && hasUserArrival && hasUserDeparture ? "fixed" : "flexible";
+
+  let anchor: FlexAnchor = "none";
+  if (hasUserArrival && !node.is_start) anchor = "arrival";
+  else if (hasUserDeparture && !node.is_end) anchor = "departure";
+
+  return { mode, anchor };
 }
 
 interface ImpactDiff {
@@ -202,11 +201,11 @@ function diffEnrichments(
       }
     }
 
-    if (a.overnight_hold && !b.overnight_hold) {
+    if (a.hold_reason && !b.hold_reason) {
       diff.overnightHolds.push({
         id: a.id,
         name: String(a.name ?? a.id),
-        reason: a.hold_reason ?? "night_drive",
+        reason: a.hold_reason,
       });
     }
   }
@@ -246,8 +245,9 @@ export function NodeEditForm({
   const tz = (node as Record<string, unknown>).timezone as string | undefined;
   const [name, setName] = useState(node.name);
   const [type, setType] = useState(node.type);
-  const [mode, setMode] = useState<EditMode>(() => inferInitialMode(node));
-  const [anchor, setAnchor] = useState<FlexAnchor>(() => inferInitialAnchor(node));
+  const initialState = inferInitialState(node);
+  const [mode, setMode] = useState<EditMode>(initialState.mode);
+  const [anchor, setAnchor] = useState<FlexAnchor>(initialState.anchor);
   const [durationMinutes, setDurationMinutes] = useState<number | null>(() =>
     node.duration_estimated ? null : (node.duration_minutes ?? null),
   );
@@ -262,6 +262,8 @@ export function NodeEditForm({
   const [locationUpdate, setLocationUpdate] = useState<PlaceResult | null>(null);
   const [locationState, setLocationState] = useState<"chip" | "searching">("chip");
   const [searchKey, setSearchKey] = useState(0);
+  const [timingTouched, setTimingTouched] = useState(false);
+  const [durationWasInferred, setDurationWasInferred] = useState(false);
 
   const places = useMapsLibrary("places");
   const [resolvedPlaceName, setResolvedPlaceName] = useState<string | null>(null);
@@ -300,46 +302,52 @@ export function NodeEditForm({
     if (name.trim() && name !== node.name) updates.name = name.trim();
     if (type !== node.type) updates.type = type;
 
-    const durationBaseline = node.duration_estimated
-      ? null
-      : (node.duration_minutes ?? null);
+    // Only write timing fields if the user actually touched the timing section.
+    // A rename or type change should never silently clear arrival/departure.
+    if (timingTouched) {
+      const durationBaseline = node.duration_estimated
+        ? null
+        : (node.duration_minutes ?? null);
 
-    if (mode === "fixed") {
-      const newArrival = arrivalTime ? localInputToUtc(arrivalTime, tz) : null;
-      const newDeparture = departureTime
-        ? localInputToUtc(departureTime, tz)
-        : null;
-      if (newArrival !== node.arrival_time) updates.arrival_time = newArrival;
-      if (newDeparture !== node.departure_time) {
-        updates.departure_time = newDeparture;
-      }
-      if (node.duration_minutes != null && !node.duration_estimated) {
-        updates.duration_minutes = null;
-      }
-    } else {
-      // flexible
-      if (durationMinutes !== durationBaseline) {
-        updates.duration_minutes = durationMinutes;
-      }
-      if (anchor === "none") {
-        // In no-anchor flex mode both times must be absent from Firestore.
-        // Writing null when the field is already null is a safe no-op.
-        updates.arrival_time = null;
-        updates.departure_time = null;
-      } else if (anchor === "arrival") {
+      if (mode === "fixed") {
         const newArrival = arrivalTime ? localInputToUtc(arrivalTime, tz) : null;
-        if (newArrival !== node.arrival_time) updates.arrival_time = newArrival;
-        // Departure must always be null in arrival-anchor flex mode.
-        updates.departure_time = null;
-      } else {
         const newDeparture = departureTime
           ? localInputToUtc(departureTime, tz)
           : null;
+        if (newArrival !== node.arrival_time) updates.arrival_time = newArrival;
         if (newDeparture !== node.departure_time) {
           updates.departure_time = newDeparture;
         }
-        // Arrival must always be null in departure-anchor flex mode.
-        updates.arrival_time = null;
+        if (node.duration_minutes != null && !node.duration_estimated) {
+          updates.duration_minutes = null;
+        }
+      } else {
+        // flexible
+        if (durationMinutes !== durationBaseline) {
+          updates.duration_minutes = durationMinutes;
+        }
+        if (anchor === "none") {
+          // In no-anchor flex mode both times must be absent from Firestore.
+          // Writing null when the field is already null is a safe no-op.
+          updates.arrival_time = null;
+          updates.departure_time = null;
+        } else if (anchor === "arrival") {
+          const newArrival = arrivalTime
+            ? localInputToUtc(arrivalTime, tz)
+            : null;
+          if (newArrival !== node.arrival_time) updates.arrival_time = newArrival;
+          // Departure must always be null in arrival-anchor flex mode.
+          updates.departure_time = null;
+        } else {
+          const newDeparture = departureTime
+            ? localInputToUtc(departureTime, tz)
+            : null;
+          if (newDeparture !== node.departure_time) {
+            updates.departure_time = newDeparture;
+          }
+          // Arrival must always be null in departure-anchor flex mode.
+          updates.arrival_time = null;
+        }
       }
     }
 
@@ -365,6 +373,7 @@ export function NodeEditForm({
     durationMinutes,
     anchor,
     locationUpdate,
+    timingTouched,
     tz,
     node,
   ]);
@@ -682,6 +691,31 @@ export function NodeEditForm({
       <TimingFieldsSection
         value={{ mode, anchor, arrivalTime, departureTime, durationMinutes }}
         onChange={(next) => {
+          setTimingTouched(true);
+          const switchingToFlex =
+            mode === "fixed" && next.mode === "flexible";
+          if (
+            switchingToFlex &&
+            next.durationMinutes == null &&
+            node.arrival_time &&
+            node.departure_time
+          ) {
+            const delta = Math.round(
+              (new Date(node.departure_time).getTime() -
+                new Date(node.arrival_time).getTime()) /
+                60000,
+            );
+            if (delta > 0) {
+              next = { ...next, durationMinutes: delta };
+              setDurationWasInferred(true);
+            }
+          } else if (
+            next.durationMinutes !== durationMinutes &&
+            durationWasInferred
+          ) {
+            // User typed over the inferred value — drop the sub-label.
+            setDurationWasInferred(false);
+          }
           setMode(next.mode);
           setAnchor(next.anchor);
           setArrivalTime(next.arrivalTime);
@@ -694,6 +728,7 @@ export function NodeEditForm({
         dateFormat={dateFormat}
         showValidation
         timezone={tz}
+        durationWasInferred={durationWasInferred}
       />
 
       {/* Live impact panel */}

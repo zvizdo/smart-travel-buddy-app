@@ -84,15 +84,41 @@ const TYPE_COLORS: Record<string, string> = {
   activity: "bg-error/10 text-error",
 };
 
-function formatTimingConflict(raw: string): string {
+type TimingConflictSeverity = "info" | "advisory" | "error";
+
+function parseTimingDelta(raw: string): { delta: string; direction: "early" | "late" } | null {
   const match = raw.match(/\bis (\S+) (early|late)\b/);
-  if (match) {
-    const [, delta, direction] = match;
-    const verb = direction === "early" ? "earlier" : "later";
-    return `Route arrives ${delta} ${verb} than your scheduled time. Adjust the fixed arrival or update upstream timing.`;
-  }
-  return raw;
+  if (!match) return null;
+  return { delta: match[1], direction: match[2] as "early" | "late" };
 }
+
+function timingConflictCopy(raw: string, severity: TimingConflictSeverity): { title: string; detail: string } {
+  const parsed = parseTimingDelta(raw);
+  if (!parsed) return { title: "Timing conflict", detail: raw };
+  const { delta, direction } = parsed;
+  if (direction === "early") {
+    if (severity === "advisory") {
+      return {
+        title: "Large buffer before this stop",
+        detail: `You'll arrive ${delta} early. Consider adding a stop or adjusting your departure.`,
+      };
+    }
+    return {
+      title: "Arriving early",
+      detail: `You'll arrive about ${delta} before your scheduled time.`,
+    };
+  }
+  return {
+    title: "Running late",
+    detail: `You'll arrive ${delta} after your scheduled time. Leave earlier, reschedule, or remove the fixed time.`,
+  };
+}
+
+const SEVERITY_TREATMENTS: Record<TimingConflictSeverity, { bg: string; color: string; icon: "warn" | "info" }> = {
+  error: { bg: "bg-error/10", color: "text-error", icon: "warn" },
+  advisory: { bg: "bg-[#fef3c7]", color: "text-[#92400e]", icon: "warn" },
+  info: { bg: "bg-surface-high", color: "text-on-surface-variant", icon: "info" },
+};
 
 export function NodeDetailSheet({
   node,
@@ -423,19 +449,30 @@ export function NodeDetailSheet({
                 </span>
               </div>
             )}
-            {node.timing_conflict && (
-              <div className="rounded-xl bg-error/10 px-4 py-3 flex items-start gap-2">
-                <svg className="h-4 w-4 text-error shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
-                </svg>
-                <div>
-                  <p className="text-xs font-semibold text-error leading-snug">Timing conflict</p>
-                  <p className="text-xs text-on-surface-variant mt-0.5 leading-snug">
-                    {formatTimingConflict(String(node.timing_conflict))}
-                  </p>
+            {node.timing_conflict && (() => {
+              const severity: TimingConflictSeverity = (node.timing_conflict_severity as TimingConflictSeverity | null) ?? "error";
+              const treatment = SEVERITY_TREATMENTS[severity];
+              const { title, detail } = timingConflictCopy(String(node.timing_conflict), severity);
+              return (
+                <div className={`rounded-xl ${treatment.bg} px-4 py-3 flex items-start gap-2`}>
+                  {treatment.icon === "info" ? (
+                    <svg className={`h-4 w-4 shrink-0 mt-0.5 ${treatment.color}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="12" y1="16" x2="12" y2="12" strokeLinecap="round" />
+                      <line x1="12" y1="8" x2="12.01" y2="8" strokeLinecap="round" />
+                    </svg>
+                  ) : (
+                    <svg className={`h-4 w-4 shrink-0 mt-0.5 ${treatment.color}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                    </svg>
+                  )}
+                  <div>
+                    <p className={`text-xs font-semibold leading-snug ${treatment.color}`}>{title}</p>
+                    <p className="text-xs text-on-surface-variant mt-0.5 leading-snug">{detail}</p>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
             {node.drive_cap_warning && (
               <div className="rounded-xl bg-[#fef3c7] px-4 py-3 flex items-start gap-2">
                 <svg className="h-4 w-4 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="#92400e">

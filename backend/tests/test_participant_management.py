@@ -71,6 +71,9 @@ class TestRemoveParticipant:
 
         assert result["removed_user_id"] == "planner1"
         assert result["self_removal"] is False
+        # Notification-fan-out data the handler used to re-fetch the trip for.
+        assert result["target_name"] == "Planner One"
+        assert set(result["remaining_participant_ids"]) == {"admin1", "viewer1"}
         svc._trip_repo.update_trip.assert_awaited_once()
         call_args = svc._trip_repo.update_trip.call_args[0]
         assert "participants.planner1" in call_args[1]
@@ -171,6 +174,10 @@ class TestChangeParticipantRole:
 
         assert result["user_id"] == "planner1"
         assert result["new_role"] == "viewer"
+        # Notification-fan-out data the handler used to re-fetch the trip for.
+        assert result["target_name"] == "Planner One"
+        assert result["actor_name"] == "Admin One"
+        assert set(result["all_participant_ids"]) == {"admin1", "planner1", "viewer1"}
         svc._trip_repo.update_trip.assert_awaited_once()
         call_args = svc._trip_repo.update_trip.call_args[0]
         assert call_args[1]["participants.planner1.role"] == "viewer"
@@ -228,3 +235,28 @@ class TestChangeParticipantRole:
 
         assert result["new_role"] == "planner"
         svc._trip_repo.update_trip.assert_awaited_once()
+
+
+class TestParticipantMutationsAvoidRedundantTripRead:
+    """Pin the optimization: handlers used to load the trip purely to derive
+    notification fan-out data (display names + participant id list), and the
+    service then loaded it again for permission checks. The service now
+    returns those derived fields itself so the handler can drop its
+    pre-fetch. A regression here would silently re-add a trip-doc read on
+    every participant mutation."""
+
+    @pytest.mark.asyncio
+    async def test_remove_participant_loads_trip_exactly_once(self):
+        trip = _make_trip()
+        svc = _make_service(trip)
+
+        await svc.remove_participant("trip1", "planner1", "admin1")
+        assert svc._trip_repo.get_trip_or_raise.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_change_role_loads_trip_exactly_once(self):
+        trip = _make_trip()
+        svc = _make_service(trip)
+
+        await svc.change_participant_role("trip1", "planner1", "viewer", "admin1")
+        assert svc._trip_repo.get_trip_or_raise.await_count == 1

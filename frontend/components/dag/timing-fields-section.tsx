@@ -24,6 +24,7 @@ interface TimingFieldsSectionProps {
   dateFormat?: DateFormatPreference;
   showValidation?: boolean;
   timezone?: string | null;
+  durationWasInferred?: boolean;
 }
 
 export function TimingFieldsSection({
@@ -35,6 +36,7 @@ export function TimingFieldsSection({
   dateFormat = "eu",
   showValidation,
   timezone,
+  durationWasInferred,
 }: TimingFieldsSectionProps) {
   const { mode, anchor, arrivalTime, departureTime, durationMinutes } = value;
 
@@ -188,6 +190,11 @@ export function TimingFieldsSection({
             value={durationMinutes}
             onChange={setDurationMinutes}
           />
+          {durationWasInferred && (
+            <p className="text-[11px] text-on-surface-variant -mt-1">
+              Kept from original schedule
+            </p>
+          )}
         </>
       )}
     </>

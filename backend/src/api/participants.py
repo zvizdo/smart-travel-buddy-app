@@ -23,13 +23,10 @@ async def remove_participant(
     notification_service: NotificationService = Depends(get_notification_service),
 ):
     """Remove a participant from a trip. Admins can remove anyone; any participant can remove themselves."""
-    # Capture trip state before removal for notifications
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    target_participant = trip.participants.get(user_id)
-    target_name = target_participant.display_name if target_participant else "Unknown"
-    remaining_ids = [uid for uid in trip.participants if uid != user_id]
-
     result = await trip_service.remove_participant(trip_id, user_id, user["uid"])
+
+    target_name = result.pop("target_name")
+    remaining_ids = result.pop("remaining_participant_ids")
 
     await notification_service.notify_member_removed(
         trip_id=trip_id,
@@ -51,20 +48,18 @@ async def change_participant_role(
     notification_service: NotificationService = Depends(get_notification_service),
 ):
     """Change a participant's role. Admin only."""
-    trip = await trip_service.get_trip(trip_id, user["uid"])
-    target_participant = trip.participants.get(user_id)
-    target_name = target_participant.display_name if target_participant else "Unknown"
-    actor_participant = trip.participants.get(user["uid"])
-    actor_name = actor_participant.display_name if actor_participant else "Unknown"
-
     result = await trip_service.change_participant_role(trip_id, user_id, body.role, user["uid"])
+
+    target_name = result.pop("target_name")
+    actor_name = result.pop("actor_name")
+    all_participant_ids = result.pop("all_participant_ids")
 
     await notification_service.notify_role_changed(
         trip_id=trip_id,
         target_user_name=target_name,
         actor_user_name=actor_name,
         new_role=result["new_role"],
-        all_participant_ids=list(trip.participants.keys()),
+        all_participant_ids=all_participant_ids,
     )
 
     return result

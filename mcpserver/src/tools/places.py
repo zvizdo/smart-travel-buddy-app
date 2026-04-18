@@ -2,18 +2,18 @@
 
 from fastmcp import Context
 from mcpserver.src.main import AppContext, mcp
-from mcpserver.src.tools._helpers import resolve_authenticated, tool_error_guard_text
+from mcpserver.src.tools._helpers import resolve_authenticated, tool_error_guard
 
 
 @mcp.tool()
-@tool_error_guard_text
+@tool_error_guard
 async def find_places(
     query: str,
     lat: float,
     lng: float,
     ctx: Context,
     radius_km: float = 10,
-) -> str:
+) -> dict:
     """Search for places (restaurants, hotels, attractions, anything) near coordinates.
 
     Coordinates for every trip stop are included in get_trip_context output as
@@ -21,6 +21,17 @@ async def find_places(
     stops, average their coordinates. Scale radius_km with the area you're
     searching: tight city search ~2, between two stops ~half the distance
     between them (min 5, max 50).
+
+    Returns a structured payload so callers can pass `place_id` directly into
+    `add_action(type='place')` without re-parsing prose:
+
+        {
+          "query": str,
+          "center": {"lat": float, "lng": float},
+          "places": [
+            {"name", "place_id", "lat", "lng", "rating", "types", "address"}
+          ]
+        }
 
     Args:
         query: Free-text search (e.g. "Italian restaurant", "budget hotel",
@@ -36,13 +47,8 @@ async def find_places(
         query=query, lat=lat, lng=lng, radius_km=radius_km
     )
 
-    if not results:
-        return f"No places found for '{query}' near {lat:.4f},{lng:.4f}."
-
-    lines = [f"Places matching '{query}' near {lat:.4f},{lng:.4f}:"]
-    for p in results:
-        rating = f", rating: {p['rating']}" if p.get("rating") else ""
-        lines.append(f"- {p['name']} (place_id: {p['place_id']}{rating})")
-        if p.get("address"):
-            lines.append(f"  Address: {p['address']}")
-    return "\n".join(lines)
+    return {
+        "query": query,
+        "center": {"lat": lat, "lng": lng},
+        "places": results,
+    }

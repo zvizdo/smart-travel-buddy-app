@@ -102,16 +102,19 @@ async def create_trip(name: str, ctx: Context) -> dict:
     Args:
         name: Human-readable trip name, e.g. "Italy 2026" or "Summer road trip".
 
-    Returns: The created trip with its ID, plan, and participant info.
+    Returns: ``{trip: {...}, plan: {...}}`` — the created trip and its initial
+        active plan as sibling records.
     """
     user_id = await resolve_authenticated(ctx)
     app: AppContext = ctx.lifespan_context
 
-    return await app.trip_service.create_trip(
+    result = await app.trip_service.create_trip(
         user_id=user_id,
         name=name,
         user_display_name="",
     )
+    plan = result.pop("plan", None)
+    return {"trip": result, "plan": plan}
 
 
 @mcp.tool()
@@ -127,12 +130,13 @@ async def delete_trip(trip_id: str, ctx: Context) -> dict:
     Args:
         trip_id: The trip identifier to delete.
 
-    Returns: Deletion result with counts of what was removed.
+    Returns: ``{deleted: true, trip_id}``.
     """
     user_id, _ = await resolve_trip_admin(ctx, trip_id)
     app: AppContext = ctx.lifespan_context
 
-    return await app.trip_service.delete_trip(trip_id, user_id)
+    result = await app.trip_service.delete_trip(trip_id, user_id)
+    return {"deleted": True, "trip_id": result.get("trip_id", trip_id)}
 
 
 @mcp.tool()
@@ -179,7 +183,8 @@ async def update_trip_settings(
             nodes. Float in [1.0, 24.0].
         clear_max_drive_hours: Set to True to explicitly disable the cap.
 
-    Returns: The updated settings dict.
+    Returns: ``{trip_id, settings: {...}}`` — the trip ID plus the full
+        updated settings block.
     """
     user_id, _ = await resolve_trip_admin(ctx, trip_id)
     app: AppContext = ctx.lifespan_context
@@ -218,7 +223,7 @@ async def update_trip_settings(
             "clear_no_drive_window, max_drive_hours_per_day, clear_max_drive_hours."
         )
 
-    return await app.trip_service.update_trip_settings(
+    settings = await app.trip_service.update_trip_settings(
         user_id=user_id,
         trip_id=trip_id,
         datetime_format=datetime_format,
@@ -229,3 +234,4 @@ async def update_trip_settings(
         max_drive_hours_per_day=max_drive_hours_per_day,
         clear_max_drive_hours=clear_max_drive_hours,
     )
+    return {"trip_id": trip_id, "settings": settings}

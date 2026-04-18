@@ -193,9 +193,6 @@ def format_trip_context(
 
         if n.get("timing_conflict"):
             lines.append(f"  - ⚠ timing conflict: {n['timing_conflict']}")
-        if n.get("overnight_hold"):
-            reason = n.get("hold_reason") or "overnight_hold"
-            lines.append(f"  - 🛌 overnight hold: {reason}")
         if n.get("drive_cap_warning"):
             reason = n.get("hold_reason") or "max_drive_hours"
             lines.append(f"  - ⚠ warning: drive limit exceeded ({reason})")

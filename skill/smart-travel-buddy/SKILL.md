@@ -69,6 +69,8 @@ Every stop has exactly one of four timing shapes. The DAG does **not** store a "
 
 **Cascade rules.** `update_node` on a **Fixed time** or **Know when I arrive** stop does NOT shift downstream Fixed / Know-when-I-arrive stops — you'd get a `⚠ timing conflict` in the next context read. Downstream **Float** and **Know when I leave** stops re-derive automatically; you don't touch them. When a Fixed-time shift should ripple, call `update_node` on each affected stop explicitly.
 
+> **Ask before shifting anything timed.** Whenever a user request would change a stop's `arrival_time`, `departure_time`, or `duration_minutes` (not renames or lat/lng nudges), pause before calling `update_node`: list every downstream **Fixed time** and **Know when I arrive** stop that will NOT auto-shift, and ask the user which option they want — (a) shift all those downstream stops by the same delta, (b) apply specific per-stop times, or (c) leave them and accept the resulting `⚠ timing conflict` warnings. Never silently leave the trip in a conflicting state. Concrete example: the user says "extend Tokyo from 1 to 2 nights." Tokyo's departure moves +24h. Before touching it, check which downstream stops have fixed arrivals (say, Kyoto 2026-05-11 14:00 and Osaka 2026-05-12 10:30). Tell the user those arrivals won't move on their own, and offer to shift them by +24h too, or keep them and surface the conflicts.
+
 **Start and end.** The first chronological node (🚩 START) needs at least a `departure_time` — the rest of the trip anchors off it. The last node (🏁 END) needs at least an `arrival_time`. Intermediate stops default to **Know when I leave**.
 
 ### Reading estimated times in `get_trip_context`
@@ -91,7 +93,7 @@ The trip context rendering marks enriched fields:
 | `get_trips` | Start of session, or user says "my trips". Lists every trip with role + participant count. |
 | `get_trip_context` | **Your primary lens.** Fetches the full DAG (nodes, edges, paths, participants) for a trip. Call this before proposing any change. Node IDs are in `[brackets]` — use those exact strings in subsequent tool calls. |
 | `get_trip_plans` | User mentions alternatives / versions, or before `promote_plan` / `delete_plan` to discover drafts. |
-| `find_places` | Discover restaurants, hotels, viewpoints, gas stations, etc. near a point. Coordinates come from `get_trip_context` node lines; for a midpoint, average two nodes' lat/lng. |
+| `find_places` | Discover restaurants, hotels, viewpoints, gas stations, etc. near a point. Coordinates come from `get_trip_context` node lines; for a midpoint, average two nodes' lat/lng. Returns `{query, center, places: [{name, place_id, lat, lng, rating, types, address}]}` — pass `places[i].place_id` straight into `add_action` without reformatting. |
 
 ### Mutating — trip lifecycle
 | Tool | Role | Notes |
@@ -183,7 +185,7 @@ Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_action
 
 **Branch handling:** the DAG supports multiple outgoing edges per node (parallel paths — e.g. group splits). When adding a new branch: add nodes and edges **alongside** the existing ones. Never delete existing edges unless explicitly asked.
 
-**Cascading schedule changes:** `update_node` on the MCP server does NOT propagate time changes to downstream **Fixed time** or **Know when I arrive** nodes. Downstream **Float** and **Know when I leave** nodes re-derive automatically on the next read — you don't need to touch them. But if the user shifts one stop and a downstream node is Fixed time or Know when I arrive, that downstream node will NOT move, and the next `get_trip_context` will show a `⚠ timing conflict`. In that case, call `update_node` on each affected stop explicitly. Spell this out during the confirmation step.
+**Cascading schedule changes:** `update_node` on the MCP server does NOT propagate time changes to downstream **Fixed time** or **Know when I arrive** nodes. Downstream **Float** and **Know when I leave** nodes re-derive automatically on the next read — you don't need to touch them. But if the user shifts one stop and a downstream node is Fixed time or Know when I arrive, that downstream node will NOT move, and the next `get_trip_context` will show a `⚠ timing conflict`. Before calling `update_node` for any timing change, **present the ripple options to the user** — shift all downstream fixed stops by the same delta, apply specific per-stop times, or leave them and accept the conflicts. Then execute whichever they pick via additional `update_node` calls. Never commit a timing change without asking first.
 
 **Alternatives via plans, not destructive edits:** if the user wants to explore "what if" (skip a city, reorder stops), prefer `create_plan` to clone the active plan into a draft and edit the draft. They can `promote_plan` if they like it, or `delete_plan` if they don't. This preserves the original.
 
@@ -214,7 +216,7 @@ Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_action
 → `create_plan` cloning active as "Without Venice" (draft) → `delete_node` Venice in the draft → `get_trip_context(plan_id=<draft>)` to verify → present the alternative → if user picks it, `promote_plan`.
 
 **"Find a good dinner spot near our Florence hotel"**
-→ `get_trip_context` to get the hotel node's lat/lng → `find_places(query="dinner restaurant", lat, lng, radius_km=2)` → present top options → optionally `add_action` type=`place` on that node if the user picks one.
+→ `get_trip_context` to get the hotel node's lat/lng → `find_places(query="dinner restaurant", lat, lng, radius_km=2)` → present top options by name/rating → optionally `add_action(type='place', place_id=places[i].place_id, place_name=..., place_lat=..., place_lng=...)` on that node if the user picks one.
 
 **"Remove the whole trip"**
 → Confirm they mean the entire trip (not just a draft plan) → `delete_trip`. High-risk, irreversible — require explicit confirmation.
@@ -228,7 +230,7 @@ Everything else (`get_trips`, `get_trip_context`, `get_trip_plans`, `list_action
 - Reasoning from stale context instead of calling `get_trip_context` first.
 - Calling `create_plan` right after `create_trip` (the initial plan already exists).
 - Deleting existing edges when the user asked to *add* a branch.
-- Forgetting that `update_node` doesn't cascade — leaving downstream stops with inconsistent times.
+- Shifting an upstream stop's timing without asking whether to shift downstream Fixed / Know-when-I-arrive stops too. Always offer the user the ripple options (shift all / per-stop / leave conflicts) before calling `update_node`.
 - Showing UTC timestamps, raw UIDs, or internal node/edge IDs (`n_...`, `e_...`) to the user.
 - Mentioning "30-minute default duration" or other propagation mechanics in user-facing replies — those are implementation details.
 - Inventing an arrival time when the user only gave a departure — use **Know when I leave** and let downstream arrivals derive from the cascade.

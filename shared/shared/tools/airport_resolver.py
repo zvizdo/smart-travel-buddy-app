@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 
 import google.auth.credentials
@@ -200,17 +200,13 @@ async def resolve_nearest_airport(
         return None
 
 
-def extract_flight_date(departure_time: str | None) -> str:
+def extract_flight_date(departure_time: datetime | None) -> str:
     """Extract a YYYY-MM-DD date string for flight search.
 
-    If ``departure_time`` is a valid ISO datetime, extracts the date portion.
-    Otherwise falls back to 14 days from today (synthetic date).
+    Falls back to 14 days from today when ``departure_time`` is None.
     """
-    if departure_time:
-        try:
-            return departure_time[:10]  # "2026-06-15T10:00:00Z" → "2026-06-15"
-        except (TypeError, IndexError):
-            pass
+    if departure_time is not None:
+        return departure_time.date().isoformat()
     return (date.today() + timedelta(days=14)).isoformat()
 
 

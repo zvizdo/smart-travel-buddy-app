@@ -531,7 +531,6 @@ describe("timeline layout: enrichment flag propagation", () => {
     const nodes = [
       {
         ...node("A", { arrival_time: "2026-04-01T10:00:00Z", departure_time: "2026-04-02T06:00:00Z" }),
-        overnight_hold: true,
         hold_reason: "night_drive" as const,
       },
     ];

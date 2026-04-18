@@ -44,7 +44,6 @@
         "is_start": true,
         "is_end": false,
         "timing_conflict": null,
-        "overnight_hold": false,
         "hold_reason": null
       },
       {
@@ -58,7 +57,6 @@
         "is_start": false,
         "is_end": true,
         "timing_conflict": null,
-        "overnight_hold": false,
         "hold_reason": null
       }
     ]
@@ -115,8 +113,7 @@
         "arrival_time_estimated": true,
         "departure_time_estimated": false,
         "is_start": true,
-        "is_end": false,
-        "overnight_hold": false
+        "is_end": false
       },
       {
         "id": "n_mid",
@@ -127,8 +124,7 @@
         "departure_time_estimated": true,
         "duration_estimated": false,
         "is_start": false,
-        "is_end": false,
-        "overnight_hold": false
+        "is_end": false
       },
       {
         "id": "n_end",
@@ -139,8 +135,7 @@
         "departure_time_estimated": true,
         "duration_estimated": false,
         "is_start": false,
-        "is_end": true,
-        "overnight_hold": false
+        "is_end": true
       }
     ]
   },
@@ -318,7 +313,7 @@
   },
   {
     "name": "night_rule_pads_overnight_drive",
-    "description": "Evening start + long drive triggers overnight hold at the predecessor.",
+    "description": "Evening start + long drive triggers passive warning on the child.",
     "trip_settings": {
       "no_drive_window": {
         "start_hour": 22,
@@ -353,13 +348,11 @@
     "expected": [
       {
         "id": "n_a",
-        "overnight_hold": false,
         "departure_time": "2026-05-01T17:00:00+00:00"
       },
       {
         "id": "n_b",
         "arrival_time": "2026-05-02T01:00:00+00:00",
-        "overnight_hold": false,
         "drive_cap_warning": true,
         "hold_reason": "night_drive"
       }
@@ -400,13 +393,12 @@
     "expected": [
       {
         "id": "n_a",
-        "departure_time": "2026-05-01T21:00:00+00:00",
-        "overnight_hold": false
+        "departure_time": "2026-05-01T21:00:00+00:00"
       },
       {
         "id": "n_b",
         "arrival_time": "2026-05-02T02:00:00+00:00",
-        "overnight_hold": false
+        "hold_reason": null
       }
     ]
   },
@@ -458,13 +450,11 @@
       {
         "id": "n_b",
         "arrival_time": "2026-05-01T16:00:00+00:00",
-        "departure_time": "2026-05-01T17:00:00+00:00",
-        "overnight_hold": false
+        "departure_time": "2026-05-01T17:00:00+00:00"
       },
       {
         "id": "n_c",
-        "arrival_time": "2026-05-01T23:00:00+00:00",
-        "overnight_hold": false
+        "arrival_time": "2026-05-01T23:00:00+00:00"
       }
     ]
   },
@@ -506,7 +496,8 @@
         "arrival_time": "2026-05-01T10:00:00+00:00",
         "departure_time": "2026-05-01T11:00:00+00:00",
         "arrival_time_estimated": false,
-        "departure_time_estimated": false
+        "departure_time_estimated": false,
+        "timing_conflict_severity": "error"
       }
     ],
     "expect_conflict_on": "n_b"
@@ -596,16 +587,739 @@
     "expected": [
       {
         "id": "n_start",
-        "departure_time": "2026-05-01T08:00:00+00:00",
-        "overnight_hold": false
+        "departure_time": "2026-05-01T08:00:00+00:00"
       },
       {
         "id": "n_mid",
         "arrival_time": "2026-05-01T14:00:00+00:00",
         "departure_time": "2026-05-01T15:00:00+00:00",
         "drive_cap_warning": true,
-        "hold_reason": "max_drive_hours",
-        "overnight_hold": false
+        "hold_reason": "max_drive_hours"
+      }
+    ]
+  },
+  {
+    "name": "distance_km_estimation_drive_mode",
+    "description": "Edge has only distance_km; arrival propagation should estimate via mode speed (regression for Python _propagate_arrival bug).",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T08:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "place",
+        "timezone": "UTC",
+        "duration_minutes": 30
+      }
+    ],
+    "edges": [
+      {
+        "from_node_id": "a",
+        "to_node_id": "b",
+        "travel_mode": "drive",
+        "distance_km": 160
+      }
+    ],
+    "expected": [
+      {
+        "id": "b",
+        "arrival_time": "2026-05-01T10:00:00+00:00",
+        "departure_time": "2026-05-01T10:30:00+00:00",
+        "arrival_time_estimated": true,
+        "departure_time_estimated": true
+      }
+    ]
+  },
+  {
+    "name": "flight_mode_no_night_rule",
+    "description": "Overnight flight does not trigger night rule; only drive + walk do.",
+    "trip_settings": {
+      "no_drive_window": {"start_hour": 22, "end_hour": 6},
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "city",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T23:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "city",
+        "timezone": "UTC",
+        "duration_minutes": 60
+      }
+    ],
+    "edges": [
+      {
+        "from_node_id": "a",
+        "to_node_id": "b",
+        "travel_mode": "flight",
+        "travel_time_hours": 5
+      }
+    ],
+    "expected": [
+      {
+        "id": "b",
+        "hold_reason": null,
+        "drive_cap_warning": false
+      }
+    ]
+  },
+  {
+    "name": "ferry_mode_no_night_rule",
+    "description": "Ferry edge does not trigger night rule or drive cap.",
+    "trip_settings": {
+      "no_drive_window": {"start_hour": 22, "end_hour": 6},
+      "max_drive_hours_per_day": 6.0
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "city",
+        "timezone": "Europe/Oslo",
+        "departure_time": "2026-05-01T22:30:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "city",
+        "timezone": "Europe/Oslo",
+        "duration_minutes": 60
+      }
+    ],
+    "edges": [
+      {
+        "from_node_id": "a",
+        "to_node_id": "b",
+        "travel_mode": "ferry",
+        "travel_time_hours": 8
+      }
+    ],
+    "expected": [
+      {
+        "id": "b",
+        "hold_reason": null,
+        "drive_cap_warning": false
+      }
+    ]
+  },
+  {
+    "name": "walk_mode_triggers_night_rule",
+    "description": "Walking is a drive-mode; night rule applies.",
+    "trip_settings": {
+      "no_drive_window": {"start_hour": 22, "end_hour": 6},
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "city",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T21:30:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "city",
+        "timezone": "UTC",
+        "duration_minutes": 30
+      }
+    ],
+    "edges": [
+      {
+        "from_node_id": "a",
+        "to_node_id": "b",
+        "travel_mode": "walk",
+        "travel_time_hours": 3
+      }
+    ],
+    "expected": [
+      {
+        "id": "b",
+        "drive_cap_warning": true,
+        "hold_reason": "night_drive"
+      }
+    ]
+  },
+  {
+    "name": "non_crossing_window_drive_only_daytime",
+    "description": "Non-crossing window (6-22 means drive only at night); daytime drive overlaps and triggers hold.",
+    "trip_settings": {
+      "no_drive_window": {"start_hour": 6, "end_hour": 22},
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "city",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T10:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "city",
+        "timezone": "UTC",
+        "duration_minutes": 30
+      }
+    ],
+    "edges": [
+      {
+        "from_node_id": "a",
+        "to_node_id": "b",
+        "travel_mode": "drive",
+        "travel_time_hours": 2
+      }
+    ],
+    "expected": [
+      {
+        "id": "b",
+        "drive_cap_warning": true,
+        "hold_reason": "night_drive"
+      }
+    ]
+  },
+  {
+    "name": "asymmetric_diamond_drive_accumulation",
+    "description": "Diamond where one branch accumulates more drive hours; merge carries max(acc) of both parents.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": 10.0
+    },
+    "nodes": [
+      {
+        "id": "r",
+        "name": "R",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T06:00:00+00:00"
+      },
+      {
+        "id": "l",
+        "name": "L",
+        "type": "activity",
+        "timezone": "UTC",
+        "duration_minutes": 60
+      },
+      {
+        "id": "x",
+        "name": "X",
+        "type": "activity",
+        "timezone": "UTC",
+        "duration_minutes": 60
+      },
+      {
+        "id": "m",
+        "name": "M",
+        "type": "place",
+        "timezone": "UTC",
+        "duration_minutes": 30
+      }
+    ],
+    "edges": [
+      {"from_node_id": "r", "to_node_id": "l", "travel_mode": "drive", "travel_time_hours": 2},
+      {"from_node_id": "r", "to_node_id": "x", "travel_mode": "drive", "travel_time_hours": 9},
+      {"from_node_id": "l", "to_node_id": "m", "travel_mode": "drive", "travel_time_hours": 2},
+      {"from_node_id": "x", "to_node_id": "m", "travel_mode": "drive", "travel_time_hours": 2}
+    ],
+    "expected": [
+      {
+        "id": "m",
+        "drive_cap_warning": true,
+        "hold_reason": "max_drive_hours"
+      }
+    ]
+  },
+  {
+    "name": "multi_root_both_starts",
+    "description": "Two root nodes both have is_start=true.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "r1",
+        "name": "R1",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T08:00:00+00:00"
+      },
+      {
+        "id": "r2",
+        "name": "R2",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T12:00:00+00:00"
+      },
+      {
+        "id": "m",
+        "name": "M",
+        "type": "activity",
+        "timezone": "UTC",
+        "duration_minutes": 60
+      }
+    ],
+    "edges": [
+      {"from_node_id": "r1", "to_node_id": "m", "travel_mode": "drive", "travel_time_hours": 1},
+      {"from_node_id": "r2", "to_node_id": "m", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "r1", "is_start": true, "is_end": false},
+      {"id": "r2", "is_start": true, "is_end": false},
+      {
+        "id": "m",
+        "is_start": false,
+        "is_end": true,
+        "arrival_time": "2026-05-01T13:00:00+00:00"
+      }
+    ]
+  },
+  {
+    "name": "early_under_threshold_suppressed",
+    "description": "Propagated 10 min earlier than user arrival is suppressed (below 30-min early floor).",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T10:10:00+00:00",
+        "departure_time": "2026-05-01T11:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict": null, "timing_conflict_severity": null}
+    ]
+  },
+  {
+    "name": "early_info_band",
+    "description": "45 min early (30m–2h band) emits 'info' severity.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T10:45:00+00:00",
+        "departure_time": "2026-05-01T11:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict_severity": "info"}
+    ],
+    "expect_conflict_on": "b"
+  },
+  {
+    "name": "early_advisory_band",
+    "description": "3h early (>= 2h) emits 'advisory' severity.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T13:00:00+00:00",
+        "departure_time": "2026-05-01T15:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict_severity": "advisory"}
+    ],
+    "expect_conflict_on": "b"
+  },
+  {
+    "name": "conflict_within_tolerance_no_flag",
+    "description": "User arrival 30s off from propagated is within tolerance; no conflict.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T10:00:30+00:00",
+        "departure_time": "2026-05-01T11:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict": null, "timing_conflict_severity": null}
+    ]
+  },
+  {
+    "name": "conflict_late_arrival_sets_flag",
+    "description": "User arrival 30min before propagated trips the conflict as 'late' with 'error' severity.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T09:30:00+00:00",
+        "departure_time": "2026-05-01T11:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {
+        "id": "b",
+        "arrival_time": "2026-05-01T09:30:00+00:00",
+        "timing_conflict_severity": "error"
+      }
+    ],
+    "expect_conflict_on": "b"
+  },
+  {
+    "name": "late_by_two_minutes_is_error",
+    "description": "Any late — even 2 min — surfaces as error. Missing a booked time is always a real problem.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T09:58:00+00:00",
+        "departure_time": "2026-05-01T11:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict_severity": "error"}
+    ],
+    "expect_conflict_on": "b"
+  },
+  {
+    "name": "early_just_under_threshold_suppressed",
+    "description": "29m59s early — still under the 30-min suppression floor, no conflict emitted.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T10:29:59+00:00",
+        "departure_time": "2026-05-01T11:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict": null, "timing_conflict_severity": null}
+    ]
+  },
+  {
+    "name": "early_exactly_at_info_boundary",
+    "description": "Exactly 30m early crosses the suppression threshold → 'info'.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T10:30:00+00:00",
+        "departure_time": "2026-05-01T11:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict_severity": "info"}
+    ],
+    "expect_conflict_on": "b"
+  },
+  {
+    "name": "early_just_under_advisory_boundary",
+    "description": "119m early stays in the info band.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T11:59:00+00:00",
+        "departure_time": "2026-05-01T13:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict_severity": "info"}
+    ],
+    "expect_conflict_on": "b"
+  },
+  {
+    "name": "early_exactly_at_advisory_boundary",
+    "description": "Exactly 2h early crosses into advisory.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "activity",
+        "timezone": "UTC",
+        "arrival_time": "2026-05-01T12:00:00+00:00",
+        "departure_time": "2026-05-01T13:00:00+00:00"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "timing_conflict_severity": "advisory"}
+    ],
+    "expect_conflict_on": "b"
+  },
+  {
+    "name": "one_parent_unresolved_merge_floats",
+    "description": "Merge with a parent whose departure is unresolved stays floating.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "place",
+        "timezone": "UTC",
+        "duration_minutes": 60
+      },
+      {
+        "id": "c",
+        "name": "C",
+        "type": "place",
+        "timezone": "UTC",
+        "duration_minutes": 30
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "c", "travel_mode": "drive", "travel_time_hours": 1},
+      {"from_node_id": "b", "to_node_id": "c", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {"id": "b", "arrival_time": null, "departure_time": null},
+      {"id": "c", "arrival_time": null, "departure_time": null}
+    ]
+  },
+  {
+    "name": "transit_mode_accumulates_no_drive_hours",
+    "description": "Transit leg does not count toward drive cap; subsequent drive under cap does not warn.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": 5.0
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T08:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "place",
+        "timezone": "UTC",
+        "duration_minutes": 30
+      },
+      {
+        "id": "c",
+        "name": "C",
+        "type": "place",
+        "timezone": "UTC",
+        "duration_minutes": 30
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "transit", "travel_time_hours": 4},
+      {"from_node_id": "b", "to_node_id": "c", "travel_mode": "drive", "travel_time_hours": 3}
+    ],
+    "expected": [
+      {"id": "c", "drive_cap_warning": false, "hold_reason": null}
+    ]
+  },
+  {
+    "name": "night_then_max_both_fire_night_wins",
+    "description": "When both max-drive-hours cap and night window fire on the same edge, night_drive takes precedence.",
+    "trip_settings": {
+      "no_drive_window": {"start_hour": 22, "end_hour": 6},
+      "max_drive_hours_per_day": 5.0
+    },
+    "nodes": [
+      {
+        "id": "a",
+        "name": "A",
+        "type": "city",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T20:00:00+00:00"
+      },
+      {
+        "id": "b",
+        "name": "B",
+        "type": "city",
+        "timezone": "UTC",
+        "duration_minutes": 30
+      }
+    ],
+    "edges": [
+      {"from_node_id": "a", "to_node_id": "b", "travel_mode": "drive", "travel_time_hours": 6}
+    ],
+    "expected": [
+      {
+        "id": "b",
+        "drive_cap_warning": true,
+        "hold_reason": "night_drive"
       }
     ]
   }

@@ -14,7 +14,7 @@ export function enqueuePulse(pulse: QueuedPulse): void {
   localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
 }
 
-export function getQueue(): QueuedPulse[] {
+function getQueue(): QueuedPulse[] {
   try {
     const raw = localStorage.getItem(QUEUE_KEY);
     return raw ? (JSON.parse(raw) as QueuedPulse[]) : [];
@@ -23,7 +23,7 @@ export function getQueue(): QueuedPulse[] {
   }
 }
 
-export function clearQueue(): void {
+function clearQueue(): void {
   localStorage.removeItem(QUEUE_KEY);
 }
 

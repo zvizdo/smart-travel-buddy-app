@@ -52,7 +52,6 @@ async def claim_invite(
     user: dict = Depends(get_current_user),
     invite_service: InviteService = Depends(get_invite_service),
     notification_service: NotificationService = Depends(get_notification_service),
-    trip_service: TripService = Depends(get_trip_service),
 ):
     """Claim an invite link and join the trip."""
     result = await invite_service.claim_invite(
@@ -62,12 +61,12 @@ async def claim_invite(
         user_display_name=user.get("name", ""),
     )
 
-    trip = await trip_service.get_trip(result["trip_id"], user["uid"])
+    participant_ids = result.pop("participant_ids", [])
     try:
         await notification_service.notify_member_joined(
             trip_id=result["trip_id"],
             joined_user_name=user.get("name", "New member"),
-            all_participant_ids=list(trip.participants.keys()),
+            all_participant_ids=participant_ids,
             joined_user_id=user["uid"],
         )
     except Exception:

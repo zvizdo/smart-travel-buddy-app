@@ -1,5 +1,6 @@
 """Node endpoints: list, create, branch, update, delete, participant assignment, actions."""
 
+from collections import Counter
 from datetime import UTC, datetime
 
 from backend.src.auth.firebase_auth import get_current_user
@@ -306,19 +307,19 @@ async def assign_participants(
         if pid not in trip.participants:
             raise ValueError(f"User {pid} is not a trip participant")
 
-    # Validate node is downstream of a divergence point
+    # Validate node is downstream of a divergence point. Pre-compute out-degree
+    # for every node so the parent-divergence check stays O(E) instead of
+    # O(in_edges × E) — the prior nested-sum pattern made this quadratic on
+    # large plans.
     all_edges_raw = await dag_service._edge_repo.list_by_plan(trip_id, plan_id)
+    out_degree_by_node = Counter(e["from_node_id"] for e in all_edges_raw)
     in_edges = [e for e in all_edges_raw if e["to_node_id"] == node_id]
-    has_divergent_parent = False
-    for edge in in_edges:
-        parent_id = edge["from_node_id"]
-        parent_out = sum(1 for e in all_edges_raw if e["from_node_id"] == parent_id)
-        if parent_out > 1:
-            has_divergent_parent = True
-            break
+    has_divergent_parent = any(
+        out_degree_by_node.get(edge["from_node_id"], 0) > 1 for edge in in_edges
+    )
 
     # Also allow assignment on nodes that are themselves divergence points or have no edges
-    out_degree = sum(1 for e in all_edges_raw if e["from_node_id"] == node_id)
+    out_degree = out_degree_by_node.get(node_id, 0)
     if not has_divergent_parent and out_degree <= 1 and in_edges:
         raise ValueError(
             "Cannot assign participants to this node — it is not on a divergent path"

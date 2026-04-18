@@ -66,7 +66,7 @@ interface NodeData {
   departure_time_estimated?: boolean;
   duration_estimated?: boolean;
   timing_conflict?: string | null;
-  overnight_hold?: boolean;
+  timing_conflict_severity?: "info" | "advisory" | "error" | null;
   hold_reason?: "night_drive" | "max_drive_hours" | null;
   is_start?: boolean;
   is_end?: boolean;

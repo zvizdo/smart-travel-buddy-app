@@ -67,6 +67,11 @@ class TripService(SharedTripService):
         if target_user_id not in trip.participants:
             raise LookupError(f"User {target_user_id} is not a participant of this trip")
 
+        target_name = trip.participants[target_user_id].display_name
+        remaining_participant_ids = [
+            uid for uid in trip.participants if uid != target_user_id
+        ]
+
         # Last-admin guard
         if trip.participants[target_user_id].role == TripRole.ADMIN:
             admin_count = sum(
@@ -128,6 +133,8 @@ class TripService(SharedTripService):
             "removed_user_id": target_user_id,
             "self_removal": actor_user_id == target_user_id,
             "nodes_cleaned": nodes_cleaned,
+            "target_name": target_name,
+            "remaining_participant_ids": remaining_participant_ids,
         }
 
     async def change_participant_role(
@@ -160,9 +167,20 @@ class TripService(SharedTripService):
                     "Cannot demote the last admin. Promote another participant to admin first."
                 )
 
+        target_name = trip.participants[target_user_id].display_name
+        actor_participant = trip.participants.get(actor_user_id)
+        actor_name = actor_participant.display_name if actor_participant else "Unknown"
+        all_participant_ids = list(trip.participants.keys())
+
         await self._trip_repo.update_trip(trip_id, {
             f"participants.{target_user_id}.role": new_role_enum.value,
             "updated_at": datetime.now(UTC).isoformat(),
         })
 
-        return {"user_id": target_user_id, "new_role": new_role_enum.value}
+        return {
+            "user_id": target_user_id,
+            "new_role": new_role_enum.value,
+            "target_name": target_name,
+            "actor_name": actor_name,
+            "all_participant_ids": all_participant_ids,
+        }

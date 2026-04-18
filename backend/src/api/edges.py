@@ -178,6 +178,12 @@ async def refresh_edge_route(
         to_name=to_node.get("name"),
         from_place_id=from_node.get("place_id"),
         to_place_id=to_node.get("place_id"),
+        existing_notes=edge.get("notes"),
+        existing_route={
+            "route_polyline": edge.get("route_polyline"),
+            "travel_time_hours": edge.get("travel_time_hours"),
+            "distance_km": edge.get("distance_km"),
+        },
     )
 
     return {"status": "refreshed", "edge_id": edge_id}

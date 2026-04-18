@@ -63,7 +63,11 @@ class InviteService:
 
         trip = await self._trip_repo.get_trip_or_raise(trip_id)
         if user_id in trip.participants:
-            return {"trip_id": trip_id, "role": trip.participants[user_id].role.value}
+            return {
+                "trip_id": trip_id,
+                "role": trip.participants[user_id].role.value,
+                "participant_ids": list(trip.participants.keys()),
+            }
 
         participant = Participant(
             role=invite.role,
@@ -75,4 +79,8 @@ class InviteService:
             "updated_at": datetime.now(UTC).isoformat(),
         })
 
-        return {"trip_id": trip_id, "role": invite.role.value}
+        return {
+            "trip_id": trip_id,
+            "role": invite.role.value,
+            "participant_ids": [*trip.participants.keys(), user_id],
+        }

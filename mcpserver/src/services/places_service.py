@@ -20,9 +20,9 @@ _CATEGORY_TYPES = {
 
 
 class PlacesService:
-    def __init__(self, api_key: str):
+    def __init__(self, http_client: httpx.AsyncClient, api_key: str):
+        self._http = http_client
         self._api_key = api_key
-        self._client = httpx.AsyncClient(timeout=15.0)
 
     async def search_nearby(
         self,
@@ -57,13 +57,14 @@ class PlacesService:
             "maxResultCount": 10,
         }
 
-        resp = await self._client.post(
+        resp = await self._http.post(
             _SEARCH_NEARBY_URL,
             json=body,
             headers={
                 "X-Goog-Api-Key": self._api_key,
                 "X-Goog-FieldMask": _FIELD_MASK,
             },
+            timeout=15.0,
         )
         resp.raise_for_status()
         return self._format_results(resp.json())
@@ -89,13 +90,14 @@ class PlacesService:
                 }
             }
 
-        resp = await self._client.post(
+        resp = await self._http.post(
             _SEARCH_TEXT_URL,
             json=body,
             headers={
                 "X-Goog-Api-Key": self._api_key,
                 "X-Goog-FieldMask": _FIELD_MASK,
             },
+            timeout=15.0,
         )
         resp.raise_for_status()
         return self._format_results(resp.json())
@@ -115,6 +117,3 @@ class PlacesService:
                 "address": place.get("formattedAddress", ""),
             })
         return results
-
-    async def close(self) -> None:
-        await self._client.aclose()

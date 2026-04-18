@@ -58,34 +58,36 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def _build_departure_map(nodes: list[dict], edges: list[dict]) -> dict[str, str]:
+def _build_departure_map(nodes: list[dict], edges: list[dict]) -> dict[str, datetime]:
     """Best-effort departure time for each node, for Routes API traffic-aware routing.
 
-    First run the raw graph through `enrich_dag_times` (with default settings) 
+    First run the raw graph through `enrich_dag_times` (with default settings)
     to obtain accurate inferred timestamps.
     Fallback chain per node: departure_time → arrival_time → trip start time.
+    Returns ``datetime`` objects parsed from the ISO strings that Firestore
+    dict documents carry (``enrich_dag_times`` operates on those dicts).
     """
     enriched_nodes = enrich_dag_times(nodes, edges)
 
-    result: dict[str, str] = {}
-    trip_start: str | None = None
+    result: dict[str, datetime] = {}
+    trip_start: datetime | None = None
 
     in_degree_ids: set[str] = {e["to_node_id"] for e in edges}
     for n in enriched_nodes:
         if n["id"] not in in_degree_ids and n.get("departure_time"):
-            trip_start = n["departure_time"]
+            trip_start = datetime.fromisoformat(n["departure_time"])
             break
     if not trip_start:
         for n in enriched_nodes:
             dt = n.get("departure_time") or n.get("arrival_time")
             if dt:
-                trip_start = dt
+                trip_start = datetime.fromisoformat(dt)
                 break
 
     for n in enriched_nodes:
         dt = n.get("departure_time") or n.get("arrival_time")
         if dt:
-            result[n["id"]] = dt
+            result[n["id"]] = datetime.fromisoformat(dt)
         elif trip_start:
             result[n["id"]] = trip_start
 
@@ -153,7 +155,7 @@ class DAGService:
         from_latlng: dict | None = None,
         to_latlng: dict | None = None,
         existing_edges: list[dict] | None = None,
-        departure_time: str | None = None,
+        departure_time: datetime | None = None,
         from_name: str | None = None,
         to_name: str | None = None,
         from_place_id: str | None = None,
@@ -383,7 +385,7 @@ class DAGService:
                     and TravelMode(travel_mode) not in (TravelMode.FLIGHT, TravelMode.FERRY)
                     and self._route_service is not None
                 ):
-                    dep = departure_time or arrival_time
+                    dep = resolved_departure or resolved_arrival
                     if dep is None:
                         # New node not yet committed — can't look it up.
                         # Fall back to trip root departure via the map.
@@ -558,6 +560,51 @@ class DAGService:
                             ),
                         })
 
+        # K=1 reconnection (linear A→X→B becomes A→B): fetch the new edge's
+        # route synchronously so the batch writes a fully-populated edge doc.
+        # Avoids the post-commit background patch that would otherwise show a
+        # missing polyline + shimmer flash for ~1-3s after the delete returns.
+        # K>1 stays backgrounded — multiple synchronous Routes API calls would
+        # blow up tail latency on the delete handler.
+        if (
+            len(new_edges_to_create) == 1
+            and len(polyline_jobs) == 1
+            and self._route_service is not None
+        ):
+            sync_edge = new_edges_to_create[0]
+            sync_job = polyline_jobs[0]
+            try:
+                route_data = await self._route_service.get_route_data(
+                    sync_job["from_latlng"],
+                    sync_job["to_latlng"],
+                    sync_job["travel_mode"],
+                    sync_job["departure_time"],
+                    from_name=sync_job["from_name"],
+                    to_name=sync_job["to_name"],
+                    from_place_id=sync_job.get("from_place_id"),
+                    to_place_id=sync_job.get("to_place_id"),
+                )
+            except Exception:
+                logger.warning(
+                    "K=1 sync polyline fetch failed for edge %s; "
+                    "falling back to background",
+                    sync_edge.id,
+                    exc_info=True,
+                )
+                route_data = None
+
+            if route_data is not None:
+                if route_data.polyline:
+                    sync_edge.route_polyline = route_data.polyline
+                if route_data.travel_time_hours is not None:
+                    sync_edge.travel_time_hours = route_data.travel_time_hours
+                if route_data.distance_km is not None:
+                    sync_edge.distance_km = route_data.distance_km
+                # Reflect the populated fields in the response payload.
+                reconnected_edges[-1] = sync_edge.model_dump(mode="json")
+                # Skip the now-redundant background fetch.
+                polyline_jobs.clear()
+
         # Collect action refs for subcollection cleanup.
         action_refs = []
         if self._action_repo is not None:
@@ -694,8 +741,8 @@ class DAGService:
         # --- Compute phase (reads only, no writes) ---
         existing_edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
 
-        dep_branch = source.departure_time or source.arrival_time
-        dep_merge = departure_time or arrival_time
+        dep_branch: datetime | None = source.departure_time or source.arrival_time
+        dep_merge: datetime | None = resolved_departure or resolved_arrival
         if dep_branch is None or (connect_to_node_id and dep_merge is None):
             all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
             dep_map = _build_departure_map(all_nodes, existing_edges)
@@ -946,6 +993,15 @@ class DAGService:
 
         await self._node_repo.update_node(trip_id, plan_id, node_id, node_dict)
 
+        # Build the post-update snapshot once and reuse it for both the
+        # polyline recompute and the impact-preview diff. Avoids the two
+        # extra Firestore reads (nodes + edges) that the recompute used to
+        # do internally.
+        all_nodes_after = [
+            dict(node_dict) if n["id"] == node_id else n
+            for n in all_nodes_before
+        ]
+
         if "lat_lng" in updates:
             old_lat = node.lat_lng.lat if node.lat_lng else None
             old_lng = node.lat_lng.lng if node.lat_lng else None
@@ -953,13 +1009,10 @@ class DAGService:
             new_lng = updates["lat_lng"].get("lng")
             if new_lat != old_lat or new_lng != old_lng:
                 await self._recalculate_connected_polylines(
-                    trip_id, plan_id, node_id, {"lat": new_lat, "lng": new_lng}
+                    trip_id, plan_id, node_id, {"lat": new_lat, "lng": new_lng},
+                    existing_nodes=all_nodes_after,
+                    existing_edges=all_edges,
                 )
-
-        all_nodes_after = [
-            dict(node_dict) if n["id"] == node_id else n
-            for n in all_nodes_before
-        ]
 
         impact_preview = self._diff_enrichment(
             all_nodes_before, all_nodes_after, all_edges, trip_settings or {}
@@ -1020,7 +1073,7 @@ class DAGService:
                     "message": after_conflict,
                 })
 
-            if after_node.get("overnight_hold") and not before_node.get("overnight_hold"):
+            if after_node.get("hold_reason") and not before_node.get("hold_reason"):
                 new_overnight_holds.append({
                     "id": node_id_,
                     "name": after_node.get("name", ""),
@@ -1039,15 +1092,25 @@ class DAGService:
         plan_id: str,
         node_id: str,
         new_latlng: dict,
+        existing_nodes: list[dict] | None = None,
+        existing_edges: list[dict] | None = None,
     ) -> None:
         """Fire background polyline recalculation for all edges connected to a node.
 
         Called when a node's location changes. Skips flight/ferry edges.
+
+        ``existing_nodes`` / ``existing_edges`` let callers that already
+        loaded the plan snapshot (e.g. ``update_node_with_impact_preview``)
+        skip the redundant Firestore reads.
         """
         if not self._route_service:
             return
 
-        all_edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
+        all_edges = (
+            existing_edges
+            if existing_edges is not None
+            else await self._edge_repo.list_by_plan(trip_id, plan_id)
+        )
         connected = [
             e for e in all_edges
             if e["from_node_id"] == node_id or e["to_node_id"] == node_id
@@ -1058,7 +1121,11 @@ class DAGService:
         # Batch-fetch every distinct other-endpoint node in a single
         # list_by_plan call, then look up lat/lng from the in-memory map.
         # Previously this did one get_node_or_raise per connected edge.
-        all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
+        all_nodes = (
+            existing_nodes
+            if existing_nodes is not None
+            else await self._node_repo.list_by_plan(trip_id, plan_id)
+        )
         node_latlng_by_id: dict[str, dict | None] = {}
         node_name_by_id: dict[str, str | None] = {}
         node_place_id_by_id: dict[str, str | None] = {}
@@ -1196,7 +1263,7 @@ class DAGService:
         # chain as _build_departure_map so flex nodes without explicit
         # times still get a date-aware route (avoids seasonal-road
         # closures like Yellowstone's US-191).
-        dep = from_node.departure_time or from_node.arrival_time
+        dep: datetime | None = from_node.departure_time or from_node.arrival_time
         if dep is None:
             all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
             dep_map = _build_departure_map(all_nodes, existing_edges)
@@ -1407,14 +1474,14 @@ class DAGService:
         )
 
         if self._route_service:
-            dep_a = from_node.departure_time or from_node.arrival_time
+            dep_a: datetime | None = from_node.departure_time or from_node.arrival_time
             if dep_a is None:
                 all_nodes = await self._node_repo.list_by_plan(trip_id, plan_id)
                 all_edges = await self._edge_repo.list_by_plan(trip_id, plan_id)
                 dep_a = _build_departure_map(all_nodes, all_edges).get(
                     original.from_node_id
                 )
-            dep_b = departure_time or arrival_time or dep_a
+            dep_b = resolved_departure or resolved_arrival or dep_a
             if edge_a.route_polyline is None and mode_a not in (TravelMode.FLIGHT, TravelMode.FERRY):
                 self._spawn_background(
                     self._route_service.fetch_and_patch_polyline(
@@ -1598,7 +1665,7 @@ class DAGService:
                 edge_place_id_pairs, strict=True,
             ):
                 if e.route_polyline is None and e.travel_mode != TravelMode.FERRY:
-                    dep = departure_map.get(e.from_node_id) or departure_time or arrival_time
+                    dep = departure_map.get(e.from_node_id) or resolved_departure or resolved_arrival
                     self._spawn_background(
                         self._route_service.fetch_and_patch_polyline(
                             trip_id, plan_id, e.id,

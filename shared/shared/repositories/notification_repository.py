@@ -22,11 +22,14 @@ class NotificationRepository(BaseRepository):
         self, trip_id: str, user_id: str, unread_only: bool = False
     ) -> list[dict[str, Any]]:
         coll = self._collection(trip_id=trip_id)
-        q = coll.where(filter=FieldFilter("target_user_ids", "array_contains", user_id))
+        q = (
+            coll.where(filter=FieldFilter("target_user_ids", "array_contains", user_id))
+            .order_by("created_at", direction="DESCENDING")
+            .limit(50)
+        )
         docs = [doc.to_dict() async for doc in q.stream()]
         if unread_only:
             docs = [d for d in docs if user_id not in d.get("read_by", [])]
-        docs.sort(key=lambda d: d.get("created_at", ""), reverse=True)
         return docs
 
     async def mark_read(

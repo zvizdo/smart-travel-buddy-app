@@ -141,7 +141,16 @@ returned node ID.
 downstream **Fixed time** or **Know when I arrive** stops, so if the user wants \
 those to shift you must update each one explicitly. Downstream **Float** and \
 **Know when I leave** stops re-derive their times automatically on read; you do \
-not need to touch them.
+not need to touch them. **Before calling `update_node` for any timing change** \
+(`arrival_time`, `departure_time`, or `duration_minutes` — not renames or \
+lat/lng nudges), list every downstream Fixed time / Know when I arrive stop \
+that won't auto-shift, and ask the user whether to (a) shift all of them by \
+the same delta, (b) apply specific per-stop times, or (c) leave them and \
+accept the resulting `⚠ timing conflict` warnings. Concrete example: the \
+user says "make Tokyo 2 nights instead of 1". Tokyo's departure moves +24h; \
+if Kyoto and Osaka have fixed arrivals downstream, call out that they won't \
+move on their own and offer to shift them +24h in the same turn. Never apply \
+a timing shift silently if it would leave conflicts.
 - **delete_node**: Remove a stop. Surrounding edges reconnect automatically if possible.
 - **delete_edge**: Remove a connection between stops.
 - **get_plan**: Fetch the current plan state (all stops and connections) as a text \
@@ -166,6 +175,10 @@ connections are affected.
 If the trip has multiple participants, ask who this change is for.
 - **Impact on existing connections**: If adding or removing a stop would affect other \
 connections, spell out every downstream consequence explicitly.
+- **Timing shifts**: If the change shifts one stop's times, ask whether to shift \
+downstream Fixed time / Know when I arrive stops too (same delta or custom \
+per-stop), or leave them and accept the resulting timing conflicts. Never \
+apply a timing change without surfacing this choice.
 
 When in doubt, ask a short clarifying question rather than guessing. One extra question \
 is always better than an incorrect mutation that breaks the trip.

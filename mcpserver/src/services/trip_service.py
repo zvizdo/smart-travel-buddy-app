@@ -144,15 +144,6 @@ class TripService(SharedTripService):
             clear_max_drive_hours=clear_max_drive_hours,
         )
 
-    # ---- Helpers -------------------------------------------------------------
-
-    def _verify_participant(self, trip: dict, user_id: str) -> str:
-        """Verify user is a participant and return their role."""
-        participants = trip.get("participants", {})
-        if user_id not in participants:
-            raise PermissionError("Not a participant of this trip")
-        return participants[user_id]["role"]
-
     # ---- MCP-specific read methods ------------------------------------------
 
     async def get_trips(self, user_id: str) -> list[dict]:
@@ -170,7 +161,7 @@ class TripService(SharedTripService):
 
     async def get_trip_plans(self, trip_id: str, user_id: str) -> dict:
         trip_data = await self._trip_repo.get_or_raise(trip_id)
-        self._verify_participant(trip_data, user_id)
+        self.verify_participant(trip_data, user_id)
 
         plans = await self._plan_repo.list_by_trip(trip_id)
         nodes_per_plan = await asyncio.gather(
@@ -196,7 +187,7 @@ class TripService(SharedTripService):
         self, trip_id: str, user_id: str, plan_id: str | None = None
     ) -> dict:
         trip_data = await self._trip_repo.get_or_raise(trip_id)
-        self._verify_participant(trip_data, user_id)
+        self.verify_participant(trip_data, user_id)
 
         plan_id = plan_id or trip_data.get("active_plan_id")
         if not plan_id:
@@ -231,7 +222,7 @@ class TripService(SharedTripService):
                 "lng": n.get("lat_lng", {}).get("lng"),
                 "arrival_time": n.get("arrival_time"),
                 "departure_time": n.get("departure_time"),
-                "duration_hours": n.get("duration_hours"),
+                "duration_minutes": n.get("duration_minutes"),
                 "timezone": n.get("timezone"),
                 "participant_ids": n.get("participant_ids"),
                 "actions": [

@@ -111,8 +111,7 @@ async def _resolve_trip_and_role(
     user_id = get_user_id(ctx)
     app: AppContext = ctx.lifespan_context
 
-    trip_data = await app.trip_service._trip_repo.get_or_raise(trip_id)
-    role = app.trip_service._verify_participant(trip_data, user_id)
+    trip_data, role = await app.trip_service.resolve_participant(trip_id, user_id)
     return user_id, trip_data, role
 
 
@@ -137,7 +136,7 @@ async def resolve_trip_plan(
     """
     user_id, trip_data, role = await _resolve_trip_and_role(ctx, trip_id)
     app: AppContext = ctx.lifespan_context
-    app.trip_service._require_editor(role)
+    app.trip_service.require_editor(role)
     resolved_plan_id = _resolve_plan(trip_data, plan_id)
     return user_id, resolved_plan_id, trip_data.get("name", trip_id)
 
@@ -169,7 +168,7 @@ async def resolve_trip_admin(
     """
     user_id, trip_data, role = await _resolve_trip_and_role(ctx, trip_id)
     app: AppContext = ctx.lifespan_context
-    app.trip_service._require_admin(role)
+    app.trip_service.require_admin(role)
     return user_id, trip_data.get("name", trip_id)
 
 

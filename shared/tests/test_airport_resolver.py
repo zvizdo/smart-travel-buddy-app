@@ -1,7 +1,7 @@
 """Tests for airport_resolver: IATA resolution via Places API + fli matching."""
 
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -91,18 +91,13 @@ def test_no_match_generic_words_only():
 # ---- extract_flight_date ----
 
 
-def test_extract_date_from_iso():
-    assert extract_flight_date("2026-06-15T10:00:00Z") == "2026-06-15"
+def test_extract_date_from_datetime():
+    assert extract_flight_date(datetime(2026, 6, 15, 10, 0, tzinfo=UTC)) == "2026-06-15"
 
 
 def test_extract_date_fallback():
     expected = (date.today() + timedelta(days=14)).isoformat()
     assert extract_flight_date(None) == expected
-
-
-def test_extract_date_fallback_on_empty():
-    expected = (date.today() + timedelta(days=14)).isoformat()
-    assert extract_flight_date("") == expected
 
 
 # ---- haversine_m ----

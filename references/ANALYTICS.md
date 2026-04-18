@@ -173,10 +173,25 @@ Hook subscribes to `usePathname()` and fires `screen_view` on each change.
 Instead of raw paths, it parses logical **screen names** for cleaner 
 reporting in the GA4 dashboard:
 
-- `screen_name` — a clean identifier (e.g., `trip_map`, `profile`, `trips_list`)
+- `screen_name` — a clean identifier (see mapping below)
 - `page_path` — the original raw pathname
 - `trip_id` — extracted from `/trips/:tripId`
 - `subroute` — extracted from `/trips/:tripId/:subroute` (e.g. `import`, `settings`)
+
+**Pathname → screen_name mapping** (from `getScreenContext` in `use-route-tracking.ts`):
+
+| Pathname | screen_name |
+|---|---|
+| `/` | `trips_list` |
+| `/sign-in` | `sign_in` |
+| `/profile` | `profile` |
+| `/trips/new` | `new_trip` |
+| `/invite/...` | `invite_claim` |
+| `/trips/:id` | `trip_map` |
+| `/trips/:id/import` | `trip_import` |
+| `/trips/:id/settings` | `trip_settings` |
+| `/trips/:id/:other` | `trip_<other>` |
+| anything else | `unknown_screen` |
 
 Guarded by `lastPathRef` so it fires exactly once per route change, not on
 unrelated re-renders.
@@ -399,7 +414,6 @@ trackDagMutation({
 |---|---|---|
 | `screen_view` | `screen_name`, `page_path`, `trip_id?`, `subroute?` | route-tracking hook (auto) |
 | `signin_initiated` | `provider` | sign-in page |
-| `signout` | — | auth provider |
 | `profile_updated` | `field` | profile page |
 | `analytics_toggled` | `enabled` | profile page |
 | `location_tracking_toggled` | `enabled` | profile page |
@@ -421,7 +435,6 @@ trackDagMutation({
 | `import_build_started` | — | import page |
 | `import_build_completed` | `node_count`, `edge_count`, `duration_ms?` | import page |
 | `import_build_failed` | `reason?` | import page |
-| `import_retry` | — | import page |
 | `agent_opened` | — | agent overlay |
 | `agent_closed` | — | agent overlay |
 | `agent_message_sent` | `length` | agent overlay |
@@ -433,6 +446,18 @@ trackDagMutation({
 | `pulse_initiated` / `pulse_sent` / `pulse_error` | `code?` on error | pulse button |
 | `nav_tab_clicked` | `tab` | bottom nav |
 | `mcp_tool_called` | `tool_name`, `trip_id?`, `plan_id?`, `result` | **MCP server gates** |
+
+### Defined but not yet wired
+
+These helpers exist in `events.ts` but no component currently calls them. They're reserved for future wiring — don't delete when you grep for callsites and find none. Either wire them up at an appropriate callsite or leave them alone.
+
+| Helper | Event | Intended use |
+|---|---|---|
+| `trackSignInCompleted` | `signin_completed` | Auth provider, on successful sign-in resolution |
+| `trackSignOut` | `signout` | Auth provider, on sign-out action |
+| `trackSettingsOpened` | `settings_opened` | Trip settings page on mount |
+| `trackImpactPreviewShown` | `impact_preview_shown` | Node edit form when inline impact diff appears |
+| `trackImportRetry` | `import_retry` | Import page retry button |
 
 ### Intentionally NOT tracked
 - Map camera pans/zooms — too noisy, low signal, would blow param budget.

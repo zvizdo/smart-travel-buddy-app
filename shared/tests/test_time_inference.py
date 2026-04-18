@@ -43,6 +43,108 @@ def test_fixture_case(case: dict) -> None:
         assert conflicted["timing_conflict"] is not None
 
 
+class TestTimingConflictSeverity:
+    """Direct, readable coverage of the severity-banding thresholds.
+
+    Parity with the TS mirror is enforced by the shared JSON fixture; these
+    tests exist so a reader of this file can see the decision table without
+    cross-referencing the fixture.
+    """
+
+    @staticmethod
+    def _case(user_arrival: str, travel_hours: float = 1) -> dict:
+        nodes = [
+            {
+                "id": "a",
+                "name": "A",
+                "type": "place",
+                "timezone": "UTC",
+                "departure_time": "2026-05-01T09:00:00+00:00",
+            },
+            {
+                "id": "b",
+                "name": "B",
+                "type": "activity",
+                "timezone": "UTC",
+                "arrival_time": user_arrival,
+                "departure_time": "2026-05-01T13:00:00+00:00",
+            },
+        ]
+        edges = [
+            {
+                "from_node_id": "a",
+                "to_node_id": "b",
+                "travel_mode": "drive",
+                "travel_time_hours": travel_hours,
+            }
+        ]
+        enriched = enrich_dag_times(nodes, edges, {})
+        return _find(enriched, "b")
+
+    def test_early_under_threshold_is_suppressed(self):
+        # Propagated 10:00, user 10:10 → 10 min early → below the 30-min floor
+        b = self._case("2026-05-01T10:10:00+00:00")
+        assert b["timing_conflict"] is None
+        assert b["timing_conflict_severity"] is None
+
+    def test_early_29m59s_is_still_suppressed(self):
+        b = self._case("2026-05-01T10:29:59+00:00")
+        assert b["timing_conflict"] is None
+        assert b["timing_conflict_severity"] is None
+
+    def test_early_exactly_30m_crosses_into_info(self):
+        b = self._case("2026-05-01T10:30:00+00:00")
+        assert b["timing_conflict_severity"] == "info"
+        assert b["timing_conflict"] is not None
+
+    def test_early_in_info_band(self):
+        # 45 min early
+        b = self._case("2026-05-01T10:45:00+00:00")
+        assert b["timing_conflict_severity"] == "info"
+
+    def test_early_just_under_2h_stays_info(self):
+        # 1h59m early
+        b = self._case("2026-05-01T11:59:00+00:00")
+        assert b["timing_conflict_severity"] == "info"
+
+    def test_early_exactly_2h_crosses_into_advisory(self):
+        b = self._case("2026-05-01T12:00:00+00:00")
+        assert b["timing_conflict_severity"] == "advisory"
+
+    def test_early_well_over_2h_is_advisory(self):
+        # 3h early — clearly unintentional buffer
+        b = self._case("2026-05-01T13:00:00+00:00", travel_hours=1)
+        assert b["timing_conflict_severity"] == "advisory"
+
+    def test_late_by_2_minutes_is_error(self):
+        # Propagated 10:00, user 09:58 → 2 min late
+        b = self._case("2026-05-01T09:58:00+00:00")
+        assert b["timing_conflict_severity"] == "error"
+
+    def test_late_by_30_minutes_is_error(self):
+        b = self._case("2026-05-01T09:30:00+00:00")
+        assert b["timing_conflict_severity"] == "error"
+
+    def test_within_tolerance_is_null(self):
+        # 30 seconds — below the 60s noise floor for both directions
+        b = self._case("2026-05-01T10:00:30+00:00")
+        assert b["timing_conflict"] is None
+        assert b["timing_conflict_severity"] is None
+
+    def test_severity_paired_with_message_when_emitted(self):
+        # Wherever a conflict message is set, severity must also be set,
+        # and vice versa. Covers the invariant the UI relies on.
+        for user_arrival in (
+            "2026-05-01T10:30:00+00:00",  # info
+            "2026-05-01T12:00:00+00:00",  # advisory
+            "2026-05-01T09:30:00+00:00",  # error
+        ):
+            b = self._case(user_arrival)
+            assert (b["timing_conflict"] is None) == (
+                b["timing_conflict_severity"] is None
+            ), f"desync at {user_arrival}: {b['timing_conflict']=} {b['timing_conflict_severity']=}"
+
+
 class TestInputImmutability:
     def test_original_nodes_not_mutated(self):
         nodes = [
@@ -260,7 +362,6 @@ class TestMaxDriveHoursCap:
         end = _find(enriched, "end")
         # mid accumulates 6h from start leg; its outgoing 6h would push to 12 > 10 → passive warning on end.
         assert mid["drive_cap_warning"] is False
-        assert end["overnight_hold"] is False
         assert end.get("drive_cap_warning") is True
         assert end["hold_reason"] == "max_drive_hours"
 
@@ -282,4 +383,3 @@ class TestCycleFallback:
             assert n["arrival_time_estimated"] is False
             assert n["departure_time_estimated"] is False
             assert n["timing_conflict"] is None
-            assert n["overnight_hold"] is False

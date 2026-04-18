@@ -587,9 +587,9 @@ class TestDeleteNodeRouteData:
     @pytest.mark.asyncio
     async def test_reconnect_passes_from_to_latlng(self):
         """Deleting B from A->B->C: the reconnected A->C edge must receive
-        both nodes' lat_lng so the route service can fetch a real polyline."""
-        import asyncio
-
+        both nodes' lat_lng so the route service can fetch a real polyline.
+        K=1 reconnections fetch synchronously (audit #7) so we assert on
+        ``get_route_data`` rather than the background-task entry point."""
         nodes = [
             {**_make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
              "lat_lng": {"lat": 48.86, "lng": 2.35}},
@@ -604,6 +604,7 @@ class TestDeleteNodeRouteData:
         ]
 
         mock_route_service = AsyncMock()
+        mock_route_service.get_route_data = AsyncMock(return_value=None)
         mock_route_service.fetch_and_patch_polyline = AsyncMock()
 
         svc = _make_service()
@@ -616,23 +617,20 @@ class TestDeleteNodeRouteData:
         svc._node_repo.update_node = AsyncMock()
 
         result = await svc.delete_node("trip1", "plan1", "B")
-        await asyncio.sleep(0)  # let background task run
 
         assert result["reconnected_edge"] is not None
         assert result["reconnected_edge"]["from_node_id"] == "A"
         assert result["reconnected_edge"]["to_node_id"] == "C"
 
-        mock_route_service.fetch_and_patch_polyline.assert_awaited_once()
-        call_kwargs = mock_route_service.fetch_and_patch_polyline.call_args
-        assert call_kwargs.kwargs["from_latlng"] == {"lat": 48.86, "lng": 2.35}
-        assert call_kwargs.kwargs["to_latlng"] == {"lat": 43.71, "lng": 7.26}
+        mock_route_service.get_route_data.assert_awaited_once()
+        call_args = mock_route_service.get_route_data.call_args
+        assert call_args.args[0] == {"lat": 48.86, "lng": 2.35}
+        assert call_args.args[1] == {"lat": 43.71, "lng": 7.26}
 
     @pytest.mark.asyncio
     async def test_reconnect_passes_departure_time(self):
         """The reconnected edge should receive the from-node's departure time
-        for traffic-aware routing."""
-        import asyncio
-
+        for traffic-aware routing. K=1 path fetches synchronously."""
         nodes = [
             {**_make_node_dict("A", "Paris",
                                arrival="2026-06-01T10:00:00+00:00",
@@ -649,6 +647,7 @@ class TestDeleteNodeRouteData:
         ]
 
         mock_route_service = AsyncMock()
+        mock_route_service.get_route_data = AsyncMock(return_value=None)
         mock_route_service.fetch_and_patch_polyline = AsyncMock()
 
         svc = _make_service()
@@ -661,10 +660,9 @@ class TestDeleteNodeRouteData:
         svc._node_repo.update_node = AsyncMock()
 
         await svc.delete_node("trip1", "plan1", "B")
-        await asyncio.sleep(0)
 
-        call_kwargs = mock_route_service.fetch_and_patch_polyline.call_args
-        assert call_kwargs.kwargs["departure_time"] == "2026-06-02T08:00:00+00:00"
+        call_args = mock_route_service.get_route_data.call_args
+        assert call_args.args[3] == datetime(2026, 6, 2, 8, 0, tzinfo=UTC)
 
     @pytest.mark.asyncio
     async def test_reconnect_no_route_fetch_without_route_service(self):
@@ -701,9 +699,7 @@ class TestDeleteNodeRouteData:
     async def test_reconnect_uses_enriched_departure(self):
         """When the from-node has no explicit departure_time, enrichment
         derives it from arrival_time + duration_minutes; the route request
-        should use that enriched departure."""
-        import asyncio
-
+        should use that enriched departure. K=1 path fetches synchronously."""
         nodes = [
             {**_make_node_dict("A", "Paris", duration_minutes=480),
              "lat_lng": {"lat": 48.86, "lng": 2.35},
@@ -720,6 +716,7 @@ class TestDeleteNodeRouteData:
         ]
 
         mock_route_service = AsyncMock()
+        mock_route_service.get_route_data = AsyncMock(return_value=None)
         mock_route_service.fetch_and_patch_polyline = AsyncMock()
 
         svc = _make_service()
@@ -732,11 +729,97 @@ class TestDeleteNodeRouteData:
         svc._node_repo.update_node = AsyncMock()
 
         await svc.delete_node("trip1", "plan1", "B")
-        await asyncio.sleep(0)
 
         # A.arrival=10:00 + duration=480min → enriched departure 18:00
-        call_kwargs = mock_route_service.fetch_and_patch_polyline.call_args
-        assert call_kwargs.kwargs["departure_time"] == "2026-06-01T18:00:00+00:00"
+        call_args = mock_route_service.get_route_data.call_args
+        assert call_args.args[3] == datetime(2026, 6, 1, 18, 0, tzinfo=UTC)
+
+    @pytest.mark.asyncio
+    async def test_delete_node_k1_fetches_polyline_synchronously(self):
+        """Audit #7: K=1 reconnect must populate the new edge with the
+        fetched polyline before the batch commits, and must NOT queue a
+        background polyline-patch job."""
+        from shared.services.route_service import RouteData
+
+        nodes = [
+            {**_make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon", arrival="2026-06-02T10:00:00+00:00"),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+            {**_make_node_dict("C", "Nice", arrival="2026-06-03T10:00:00+00:00"),
+             "lat_lng": {"lat": 43.71, "lng": 7.26}},
+        ]
+        edges = [
+            _make_edge_dict("A", "B", 4),
+            _make_edge_dict("B", "C", 5),
+        ]
+
+        mock_route_service = AsyncMock()
+        mock_route_service.get_route_data = AsyncMock(return_value=RouteData(
+            polyline="encoded_polyline_xyz",
+            duration_seconds=7200,    # 2.0h
+            distance_meters=180_000,  # 180.0km
+        ))
+        mock_route_service.fetch_and_patch_polyline = AsyncMock()
+
+        svc = _make_service()
+        svc._route_service = mock_route_service
+        svc._spawn_background = MagicMock()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+
+        result = await svc.delete_node("trip1", "plan1", "B")
+
+        # Sync fetch happened exactly once; no background job spawned.
+        mock_route_service.get_route_data.assert_awaited_once()
+        svc._spawn_background.assert_not_called()
+
+        # The reconnected edge's response payload carries the fetched data.
+        reconnected = result["reconnected_edge"]
+        assert reconnected["route_polyline"] == "encoded_polyline_xyz"
+        assert reconnected["travel_time_hours"] == 2.0
+        assert reconnected["distance_km"] == 180.0
+
+    @pytest.mark.asyncio
+    async def test_delete_node_k_gt_1_still_backgrounds(self):
+        """Audit #7: K>1 reconnections (multiple incoming + 1 outgoing)
+        keep the background-fetch path so the delete handler stays fast."""
+        # X→T, Y→T, T→Z. Deleting T → 2 reconnections (X→Z, Y→Z) → K=2.
+        nodes = [
+            {**_make_node_dict("X", "X", arrival="2026-06-01T10:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("Y", "Y", arrival="2026-06-01T11:00:00+00:00"),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+            {**_make_node_dict("T", "T", arrival="2026-06-02T10:00:00+00:00"),
+             "lat_lng": {"lat": 44.00, "lng": 5.00}},
+            {**_make_node_dict("Z", "Z", arrival="2026-06-03T10:00:00+00:00"),
+             "lat_lng": {"lat": 43.71, "lng": 7.26}},
+        ]
+        edges = [
+            _make_edge_dict("X", "T", 2),
+            _make_edge_dict("Y", "T", 3),
+            _make_edge_dict("T", "Z", 4),
+        ]
+
+        mock_route_service = AsyncMock()
+        mock_route_service.get_route_data = AsyncMock()  # must NOT be called
+        mock_route_service.fetch_and_patch_polyline = AsyncMock()
+
+        svc = _make_service()
+        svc._route_service = mock_route_service
+        svc._spawn_background = MagicMock()
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+
+        result = await svc.delete_node("trip1", "plan1", "T")
+
+        # No synchronous fetch; both reconnections went to background.
+        mock_route_service.get_route_data.assert_not_awaited()
+        assert svc._spawn_background.call_count == 2
+
+        # Reconnected edges in the response carry no polyline yet.
+        for re in result["reconnected_edges"]:
+            assert re.get("route_polyline") is None
 
 
 # ── Cleanup stale participant_ids ──────────────────────────────────
@@ -828,10 +911,10 @@ class TestBuildDepartureMap:
 
         result = _build_departure_map(nodes, edges)
 
-        assert result["root"] == "2026-07-25T18:00:00+00:00"
+        assert result["root"] == datetime(2026, 7, 25, 18, 0, tzinfo=UTC)
         # root dep 18:00 + 2h travel → flex arrival 20:00 + 120min duration
         # → enriched flex departure 22:00
-        assert result["flex"] == "2026-07-25T22:00:00+00:00"
+        assert result["flex"] == datetime(2026, 7, 25, 22, 0, tzinfo=UTC)
 
     def test_node_with_arrival_uses_arrival(self):
         nodes = [
@@ -846,7 +929,7 @@ class TestBuildDepartureMap:
         result = _build_departure_map(nodes, edges)
 
         # B.arrival=12:00 + duration=120min → enriched departure 14:00
-        assert result["B"] == "2026-07-26T14:00:00+00:00"
+        assert result["B"] == datetime(2026, 7, 26, 14, 0, tzinfo=UTC)
 
     def test_all_flex_nodes_returns_empty(self):
         """When no node has any time at all, map should be empty."""
@@ -868,10 +951,10 @@ TRIP_ROOT_DEPARTURE = "2026-07-25T18:00:00+00:00"
 # A.dep=18:00 + 6h travel → B.arrival=00:00 next day + 120min duration
 # → B.dep=02:00 next day. This is what enrich_dag_times produces for
 # flex downstream of a timed source.
-FLEX_B_ENRICHED_DEPARTURE = "2026-07-26T02:00:00+00:00"
+FLEX_B_ENRICHED_DEPARTURE = datetime(2026, 7, 26, 2, 0, tzinfo=UTC)
 # Enriched departure for flex node C: B.dep=02:00 + 2h travel
 # → C.arrival=04:00 + 60min duration → C.dep=05:00.
-FLEX_C_ENRICHED_DEPARTURE = "2026-07-26T05:00:00+00:00"
+FLEX_C_ENRICHED_DEPARTURE = datetime(2026, 7, 26, 5, 0, tzinfo=UTC)
 
 
 def _make_node_model(
@@ -1181,6 +1264,57 @@ class TestDepartureTimeFallbackCreateStandaloneEdge:
         assert call_kwargs.kwargs["departure_time"] == FLEX_B_ENRICHED_DEPARTURE
 
 
+class TestStandaloneEdgeDatetimeContract:
+    """Lock in the datetime contract at the DAGService → RouteService boundary.
+
+    Before this was enforced, callers could pass either a datetime (from
+    Pydantic Node fields) or an ISO string (from _build_departure_map),
+    and the mismatch only surfaced at the httpx JSON-encoding boundary as
+    INTERNAL_ERROR — masked by mcpserver's tool_error_guard. Fixing the
+    type contract means any regression back to string must fail this test.
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_standalone_edge_forwards_datetime_to_route_service(self):
+        """from_node.departure_time is a pydantic datetime; it must reach
+        get_route_data as a datetime, not a pre-serialized string."""
+        dep_dt = datetime(2026, 5, 1, 10, 0, tzinfo=UTC)
+        from_model = _make_node_model(
+            "A", "Tokyo", lat=35.67, lng=139.65,
+            departure_time=dep_dt,
+            duration_minutes=1440,
+        )
+        to_model = _make_node_model(
+            "B", "Kyoto", lat=35.01, lng=135.77,
+            duration_minutes=2880,
+        )
+
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+        svc._node_repo.get_node_or_raise = AsyncMock(
+            side_effect=lambda _t, _p, nid: from_model if nid == "A" else to_model
+        )
+        svc._node_repo.list_by_plan = AsyncMock(return_value=[])
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=[])
+        svc._edge_repo.create_edge = AsyncMock()
+
+        await svc.create_standalone_edge(
+            trip_id="trip1", plan_id="plan1",
+            from_node_id="A", to_node_id="B",
+            travel_mode="transit",
+        )
+
+        call_args = mock_rs.get_route_data.call_args
+        forwarded = call_args[0][3] if len(call_args.args) > 3 else call_args.kwargs.get("departure_time")
+        assert isinstance(forwarded, datetime), (
+            f"expected datetime, got {type(forwarded).__name__}: {forwarded!r}. "
+            "Re-introducing .isoformat() at the dag_service layer will silently "
+            "break httpx JSON encoding in production — keep the conversion at "
+            "the _call_routes_api wire boundary only."
+        )
+        assert forwarded == dep_dt
+
+
 class TestDepartureTimeFallbackSplitEdge:
     """split_edge should fall back to trip root departure when the from_node
     of the original edge is flex."""
@@ -1231,3 +1365,255 @@ class TestDepartureTimeFallbackSplitEdge:
         dep_b = calls[1].kwargs.get("departure_time")
         assert dep_a == FLEX_B_ENRICHED_DEPARTURE
         assert dep_b == FLEX_B_ENRICHED_DEPARTURE
+
+
+# ── Read-amplification regression tests ──────────────────────────
+# Pin the optimization that lets ``update_node_with_impact_preview`` reuse
+# the pre-fetched nodes/edges snapshot when calling
+# ``_recalculate_connected_polylines``. A regression here re-introduces two
+# Firestore reads (nodes + edges) per location-changing node edit on the
+# REST path, plus one extra get_node_or_raise per connected edge.
+class TestUpdateNodeImpactPreviewReadCount:
+    @pytest.mark.asyncio
+    async def test_lat_lng_change_reads_nodes_and_edges_once_each(self):
+        """A location edit must call list_by_plan exactly once on each repo,
+        regardless of how many connected edges fan out from the edited node.
+        Pre-fix: list_by_plan was called twice (once for the impact preview,
+        once again inside _recalculate_connected_polylines)."""
+        nodes = [
+            {**_make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon", duration_minutes=120),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+            {**_make_node_dict("C", "Nice", duration_minutes=120),
+             "lat_lng": {"lat": 43.71, "lng": 7.26}},
+        ]
+        edges = [
+            _make_edge_dict("A", "B", 4),
+            _make_edge_dict("B", "C", 5),
+        ]
+        svc = _make_service()
+        _setup_route_service(svc)
+
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=Node(**nodes[1]))
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        await svc.update_node_with_impact_preview(
+            "trip1", "plan1", "B",
+            {"lat_lng": {"lat": 46.00, "lng": 5.00}},
+            trip_settings={},
+        )
+        await asyncio.sleep(0)
+
+        # The whole point: exactly one list call per repo, even though the
+        # location change triggers a polyline recompute that historically
+        # re-fetched both lists.
+        assert svc._node_repo.list_by_plan.await_count == 1
+        assert svc._edge_repo.list_by_plan.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_non_location_change_skips_polyline_fetches(self):
+        """Name-only edits should still only read nodes+edges once each — the
+        polyline branch is skipped entirely, but the impact preview snapshot
+        is unconditional."""
+        nodes = [
+            {**_make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon", duration_minutes=120),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+        ]
+        edges = [_make_edge_dict("A", "B", 4)]
+        svc = _make_service()
+        _setup_route_service(svc)
+
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=Node(**nodes[1]))
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        await svc.update_node_with_impact_preview(
+            "trip1", "plan1", "B",
+            {"name": "Lyon Centre"},
+            trip_settings={},
+        )
+
+        assert svc._node_repo.list_by_plan.await_count == 1
+        assert svc._edge_repo.list_by_plan.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_polyline_recompute_uses_new_lat_lng_from_snapshot(self):
+        """The post-update snapshot we hand to _recalculate_connected_polylines
+        must contain the edited node's NEW coordinates — otherwise the route
+        fetch goes from old coords to other-endpoint and the polyline is wrong.
+        """
+        nodes = [
+            {**_make_node_dict("A", "Paris",
+                               arrival="2026-06-01T10:00:00+00:00",
+                               departure="2026-06-01T18:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon", duration_minutes=120),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+        ]
+        edges = [_make_edge_dict("A", "B", 4)]
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=Node(**nodes[1]))
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        new_coords = {"lat": 46.20, "lng": 6.15}
+        await svc.update_node_with_impact_preview(
+            "trip1", "plan1", "B",
+            {"lat_lng": new_coords},
+            trip_settings={},
+        )
+        await asyncio.sleep(0)
+
+        # B is the to_node on edge A->B; the recompute must pass B's NEW
+        # coords as to_latlng. A's coords are unchanged.
+        mock_rs.fetch_and_patch_polyline.assert_awaited_once()
+        call = mock_rs.fetch_and_patch_polyline.call_args
+        assert call.kwargs["from_latlng"] == {"lat": 48.86, "lng": 2.35}
+        assert call.kwargs["to_latlng"] == new_coords
+
+    @pytest.mark.asyncio
+    async def test_unchanged_lat_lng_skips_polyline_recompute(self):
+        """If the new lat_lng equals the old, no polyline recompute fires —
+        no extra Firestore reads and no background route fetch."""
+        nodes = [
+            {**_make_node_dict("A", "Paris", arrival="2026-06-01T10:00:00+00:00"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon", duration_minutes=120),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+        ]
+        edges = [_make_edge_dict("A", "B", 4)]
+        svc = _make_service()
+        mock_rs = _setup_route_service(svc)
+
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=Node(**nodes[1]))
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        # Same coords as B in the snapshot.
+        await svc.update_node_with_impact_preview(
+            "trip1", "plan1", "B",
+            {"lat_lng": {"lat": 45.76, "lng": 4.84}},
+            trip_settings={},
+        )
+
+        mock_rs.fetch_and_patch_polyline.assert_not_called()
+        # And we still only did the one snapshot read for the impact preview.
+        assert svc._node_repo.list_by_plan.await_count == 1
+        assert svc._edge_repo.list_by_plan.await_count == 1
+
+
+class TestRecalculatePolylinesSnapshotPassthrough:
+    """Pin the contract on `_recalculate_connected_polylines`:
+    when callers pass `existing_nodes` / `existing_edges`, the method must
+    NOT issue its own Firestore reads. When callers omit them, lazy fetch
+    still works (the path used by `update_node_only`)."""
+
+    @pytest.mark.asyncio
+    async def test_with_snapshots_skips_repo_reads(self):
+        nodes = [
+            {**_make_node_dict("A", "Paris"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon"),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+        ]
+        edges = [_make_edge_dict("A", "B", 4)]
+        svc = _make_service()
+        _setup_route_service(svc)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        await svc._recalculate_connected_polylines(
+            "trip1", "plan1", "B",
+            new_latlng={"lat": 46.00, "lng": 5.00},
+            existing_nodes=nodes,
+            existing_edges=edges,
+        )
+        await asyncio.sleep(0)
+
+        svc._node_repo.list_by_plan.assert_not_called()
+        svc._edge_repo.list_by_plan.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_without_snapshots_lazy_fetches(self):
+        """``update_node_only`` doesn't pre-fetch; the recompute method has
+        to fall back to its own list_by_plan calls."""
+        nodes = [
+            {**_make_node_dict("A", "Paris"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon"),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+        ]
+        edges = [_make_edge_dict("A", "B", 4)]
+        svc = _make_service()
+        _setup_route_service(svc)
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        await svc._recalculate_connected_polylines(
+            "trip1", "plan1", "B",
+            new_latlng={"lat": 46.00, "lng": 5.00},
+        )
+        await asyncio.sleep(0)
+
+        assert svc._node_repo.list_by_plan.await_count == 1
+        assert svc._edge_repo.list_by_plan.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_route_service_returns_immediately_without_reads(self):
+        """No route service ⇒ method short-circuits before touching repos
+        even if snapshots are absent. Guards against ever turning the early
+        return into a fetch-then-skip ordering."""
+        nodes = [{**_make_node_dict("A", "Paris"),
+                  "lat_lng": {"lat": 48.86, "lng": 2.35}}]
+        edges: list[dict] = []
+        svc = _make_service()
+        assert svc._route_service is None
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        await svc._recalculate_connected_polylines(
+            "trip1", "plan1", "A", new_latlng={"lat": 0, "lng": 0}
+        )
+
+        svc._node_repo.list_by_plan.assert_not_called()
+        svc._edge_repo.list_by_plan.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_node_only_uses_lazy_fetch_path(self):
+        """End-to-end: ``update_node_only`` (MCP / agent path) does NOT
+        pre-fetch a snapshot, so it still relies on the lazy-fetch fallback
+        inside _recalculate_connected_polylines. Pin the read counts so a
+        future refactor doesn't accidentally double-read here either."""
+        nodes = [
+            {**_make_node_dict("A", "Paris"),
+             "lat_lng": {"lat": 48.86, "lng": 2.35}},
+            {**_make_node_dict("B", "Lyon"),
+             "lat_lng": {"lat": 45.76, "lng": 4.84}},
+        ]
+        edges = [_make_edge_dict("A", "B", 4)]
+        svc = _make_service()
+        _setup_route_service(svc)
+        svc._node_repo.get_node_or_raise = AsyncMock(return_value=Node(**nodes[1]))
+        svc._node_repo.update_node = AsyncMock()
+        svc._node_repo.list_by_plan = AsyncMock(return_value=nodes)
+        svc._edge_repo.list_by_plan = AsyncMock(return_value=edges)
+
+        await svc.update_node_only(
+            "trip1", "plan1", "B",
+            {"lat_lng": {"lat": 46.00, "lng": 5.00}},
+        )
+        await asyncio.sleep(0)
+
+        # Lazy fetch path: each list called exactly once by the recompute.
+        assert svc._node_repo.list_by_plan.await_count == 1
+        assert svc._edge_repo.list_by_plan.await_count == 1

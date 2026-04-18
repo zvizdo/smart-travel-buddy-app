@@ -18,6 +18,7 @@ interface TimelineNodeBlockProps {
   holdReason?: "night_drive" | "max_drive_hours" | null;
   driveCap?: boolean;
   timingConflict?: string | null;
+  timingConflictSeverity?: "info" | "advisory" | "error" | null;
   spansDays?: number;
   selected: boolean;
   dimmed: boolean;
@@ -122,6 +123,7 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   holdReason,
   driveCap,
   timingConflict,
+  timingConflictSeverity,
   spansDays,
   selected,
   dimmed,
@@ -152,6 +154,7 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   const departurePrefix = departureEstimated ? "~" : "";
   const anyEstimated = arrivalEstimated || departureEstimated;
   const showConflict = !!timingConflict;
+  const conflictSeverity = timingConflictSeverity ?? "error";
   const showDriveCap = !!driveCap;
   const showSpanChip = (spansDays ?? 0) > 0;
   
@@ -201,11 +204,19 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
               className="shrink-0 inline-flex items-center"
               title={timingConflict ?? "Timing conflict"}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#b31b25" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
+              {conflictSeverity === "info" ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="16" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12.01" y2="8" />
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={conflictSeverity === "advisory" ? "#92400e" : "#b31b25"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              )}
             </span>
           )}
           {showDriveCap && !showConflict && (
@@ -290,6 +301,7 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   prev.holdReason === next.holdReason &&
   prev.driveCap === next.driveCap &&
   prev.timingConflict === next.timingConflict &&
+  prev.timingConflictSeverity === next.timingConflictSeverity &&
   prev.spansDays === next.spansDays &&
   prev.hasTimingConflict === next.hasTimingConflict &&
   prev.isShared === next.isShared &&

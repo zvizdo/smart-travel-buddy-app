@@ -17,6 +17,12 @@ const REST_NODE_TYPES = new Set(["hotel", "city"]);
 const REST_DURATION_MINUTES = 360; // 6h
 const DRIVE_MODES = new Set(["drive", "walk"]);
 const CONFLICT_TOLERANCE_SECONDS = 60;
+// Mirrors shared/shared/dag/time_inference.py. See that module's docstring
+// for why early buffers under 30m are suppressed.
+const EARLY_SUPPRESS_MINUTES = 30;
+const EARLY_ADVISORY_MINUTES = 120;
+
+export type TimingConflictSeverity = "info" | "advisory" | "error";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -64,7 +70,7 @@ export interface EnrichedNode extends RawNode {
   is_start: boolean;
   is_end: boolean;
   timing_conflict: string | null;
-  overnight_hold: boolean;
+  timing_conflict_severity: TimingConflictSeverity | null;
   hold_reason: "night_drive" | "max_drive_hours" | null;
   drive_cap_warning: boolean;
 }
@@ -349,25 +355,6 @@ function intervalOverlapsWindow(
   return false;
 }
 
-function shiftToWindowEnd(
-  departureMs: number,
-  window: NoDriveWindow,
-  tz: string,
-): number {
-  const local = toLocalParts(departureMs, tz);
-  if (!local) return departureMs;
-
-  const morningHour = window.end_hour;
-  let morningMs = wallToUtcMs(local.year, local.month, local.day, morningHour, 0, tz);
-
-  // If we're already past this morning's end-hour, jump to tomorrow.
-  if (departureMs >= morningMs) {
-    const next = addLocalDays(local.year, local.month, local.day, 1);
-    morningMs = wallToUtcMs(next.year, next.month, next.day, morningHour, 0, tz);
-  }
-  return morningMs;
-}
-
 // ---------------------------------------------------------------------------
 // Algorithm
 // ---------------------------------------------------------------------------
@@ -390,7 +377,7 @@ function draftNode(node: RawNode, adj: Adjacency): EnrichedNode {
     is_start: !adj.reverse.has(node.id),
     is_end: !adj.forward.has(node.id),
     timing_conflict: null,
-    overnight_hold: false,
+    timing_conflict_severity: null,
     hold_reason: null,
     drive_cap_warning: false,
   };
@@ -495,10 +482,38 @@ function checkArrivalConflict(
   );
   if (deltaSeconds <= CONFLICT_TOLERANCE_SECONDS) return;
   const direction = propagated.getTime() < userArrival.getTime() ? "early" : "late";
+  const deltaMinutes = deltaSeconds / 60;
+  let severity: TimingConflictSeverity;
+  if (direction === "early") {
+    if (deltaMinutes < EARLY_SUPPRESS_MINUTES) return;
+    severity = deltaMinutes < EARLY_ADVISORY_MINUTES ? "info" : "advisory";
+  } else {
+    severity = "error";
+  }
   draft.timing_conflict =
     `Propagated arrival ${toIsoString(propagated)} is ` +
     `${formatDelta(deltaSeconds)} ${direction} vs user arrival ` +
     `${toIsoString(userArrival)}`;
+  draft.timing_conflict_severity = severity;
+}
+
+const _dateOnlyFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function getDateOnlyFormatter(tz: string): Intl.DateTimeFormat | null {
+  const cached = _dateOnlyFormatters.get(tz);
+  if (cached) return cached;
+  try {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+    });
+    _dateOnlyFormatters.set(tz, fmt);
+    return fmt;
+  } catch {
+    return null;
+  }
 }
 
 export function isRestNode(draft: EnrichedNode): boolean {
@@ -507,13 +522,8 @@ export function isRestNode(draft: EnrichedNode): boolean {
   const arr = parseDt(draft.arrival_time);
   const dep = parseDt(draft.departure_time);
   if (arr && dep) {
-    try {
-      const tz = draft.timezone || "UTC";
-      const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "numeric", day: "numeric" });
-      if (fmt.format(arr) !== fmt.format(dep)) return true;
-    } catch (e) {
-      // Ignore if invalid timezone
-    }
+    const fmt = getDateOnlyFormatter(draft.timezone || "UTC");
+    if (fmt && fmt.format(arr) !== fmt.format(dep)) return true;
 
     const mins = (dep.getTime() - arr.getTime()) / 60000;
     if (mins >= REST_DURATION_MINUTES) return true;
@@ -603,7 +613,7 @@ export function enrichDagTimes(
             rules.maxDriveHours != null &&
             accHours + travelHours > rules.maxDriveHours
           ) {
-            holdReason = holdReason ?? "max_drive_hours";
+            holdReason = "max_drive_hours";
           }
 
           if (tzIsValid && rules.window && departureDt) {
@@ -617,6 +627,7 @@ export function enrichDagTimes(
                 tzName as string,
               )
             ) {
+              // Night-drive takes precedence when both rules fire on the same edge.
               holdReason = "night_drive";
             }
           }

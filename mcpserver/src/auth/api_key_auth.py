@@ -32,10 +32,34 @@ _CACHE_TTL_SECONDS = 300  # 5 minutes
 _CACHE_MAX_ENTRIES = 1000
 
 # Rate limiting: track failed auth attempts keyed on the full HMAC hash so
-# two distinct API keys never share a rate-limit bucket.
+# two distinct API keys never share a rate-limit bucket. The threat model
+# is HMAC-SHA256 output brute-force — infeasible over a 2^256 space — so
+# per-hash bucketing is sufficient; no global or IP-based dimension needed.
 _fail_tracker: dict[str, list[float]] = {}
 _RATE_LIMIT_WINDOW = 60  # seconds
 _RATE_LIMIT_MAX_FAILURES = 10
+_FAIL_TRACKER_MAX_ENTRIES = 1000
+
+
+def _record_failure(key_hash: str, now: float) -> None:
+    """Append a failure timestamp for ``key_hash``, bounding tracker size.
+
+    An attacker sending N distinct bogus bearer tokens would otherwise grow
+    ``_fail_tracker`` by N entries (each ~200B), so ~10M requests ≈ 2GB →
+    Cloud Run OOM. Mirror ``_cache``'s size-check-then-evict pattern: drop
+    entries whose newest timestamp is already outside the rate-limit window
+    (can never trigger rate-limit again), and if still at capacity, evict
+    the entry with the oldest most-recent timestamp (closest to aging out).
+    """
+    if key_hash not in _fail_tracker and len(_fail_tracker) >= _FAIL_TRACKER_MAX_ENTRIES:
+        cutoff = now - _RATE_LIMIT_WINDOW
+        stale = [k for k, ts in _fail_tracker.items() if not ts or max(ts) < cutoff]
+        for k in stale:
+            del _fail_tracker[k]
+        if len(_fail_tracker) >= _FAIL_TRACKER_MAX_ENTRIES:
+            oldest = min(_fail_tracker, key=lambda k: max(_fail_tracker[k]))
+            del _fail_tracker[oldest]
+    _fail_tracker.setdefault(key_hash, []).append(now)
 
 
 class RateLimitError(PermissionError):
@@ -91,7 +115,7 @@ async def resolve_user_from_api_key(
         break
 
     if matched_doc is None:
-        _fail_tracker.setdefault(key_hash, []).append(now)
+        _record_failure(key_hash, now)
         raise PermissionError("Invalid or revoked API key")
 
     # Extract user_id from document path: "users/{userId}/api_keys/{keyId}"

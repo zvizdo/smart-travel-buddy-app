@@ -66,16 +66,21 @@ async def promote_plan(trip_id: str, plan_id: str, ctx: Context) -> dict:
         trip_id: The trip identifier.
         plan_id: The plan to promote to active.
 
-    Returns: Promotion result with the previous active plan ID (if any).
+    Returns: ``{plan_id, status, previous_active_plan_id}``.
     """
     user_id, _ = await resolve_trip_admin(ctx, trip_id)
     app: AppContext = ctx.lifespan_context
 
-    return await app.plan_service.promote_plan(
+    result = await app.plan_service.promote_plan(
         trip_id=trip_id,
         plan_id=plan_id,
         promoted_by=user_id,
     )
+    # Rename previous_active → previous_active_plan_id for naming consistency
+    # with the rest of the MCP contract.
+    if "previous_active" in result:
+        result["previous_active_plan_id"] = result.pop("previous_active")
+    return result
 
 
 @mcp.tool()
@@ -92,7 +97,7 @@ async def delete_plan(trip_id: str, plan_id: str, ctx: Context) -> dict:
         trip_id: The trip identifier.
         plan_id: The plan to delete. Must not be the active plan.
 
-    Returns: The deleted plan ID.
+    Returns: ``{deleted: true, plan_id}``.
     """
     # Gate A — editor. Pass the target plan_id through so the helper doesn't
     # need an active plan fallback; the service layer re-verifies the plan exists.
@@ -100,4 +105,4 @@ async def delete_plan(trip_id: str, plan_id: str, ctx: Context) -> dict:
     app: AppContext = ctx.lifespan_context
 
     await app.plan_service.delete_plan(trip_id=trip_id, plan_id=plan_id)
-    return {"deleted_plan_id": plan_id}
+    return {"deleted": True, "plan_id": plan_id}

@@ -92,6 +92,8 @@ async def add_action(
         place_category: Optional free-form category (e.g. "restaurant", "museum").
 
     For type='note' or 'todo', the place_* fields must be left unset.
+
+    Returns: ``{action: {id, type, content, node_id, created_at}}``.
     """
     user_id, resolved_plan_id, _ = await resolve_trip_participant(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context
@@ -111,7 +113,7 @@ async def add_action(
         place_category=place_category,
     )
 
-    return await app.trip_service.add_action(
+    result = await app.trip_service.add_action(
         user_id=user_id,
         trip_id=trip_id,
         plan_id=resolved_plan_id,
@@ -120,6 +122,13 @@ async def add_action(
         content=content,
         place_data=place_data,
     )
+    # Unwrap service's flat shape into the standard `{action: {id, ...}}`
+    # envelope. Rename action_id → id so nested-record callers can read
+    # action.id consistently across add_node / add_edge / add_action.
+    action = dict(result)
+    if "action_id" in action:
+        action["id"] = action.pop("action_id")
+    return {"action": action}
 
 
 @mcp.tool()
@@ -211,13 +220,20 @@ async def delete_action(
         node_id: The stop the action is attached to.
         action_id: The action to delete (obtain via `list_actions` or `get_trip_context`).
         plan_id: Optional plan to target. Defaults to the trip's active plan.
+
+    Returns: ``{deleted: true, action_id, node_id}``.
     """
     _, resolved_plan_id, _ = await resolve_trip_participant(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context
 
-    return await app.trip_service.delete_action(
+    result = await app.trip_service.delete_action(
         trip_id=trip_id,
         plan_id=resolved_plan_id,
         node_id=node_id,
         action_id=action_id,
     )
+    return {
+        "deleted": True,
+        "action_id": result.get("action_id", action_id),
+        "node_id": result.get("node_id", node_id),
+    }

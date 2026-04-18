@@ -127,7 +127,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         notification_service=None,
         action_repo=action_repo,
     )
-    places_service = PlacesService(config["google_maps_api_key"])
+    places_service = PlacesService(http_client, config["google_maps_api_key"])
     analytics_service = AnalyticsService(
         http_client,
         measurement_id=os.environ.get("GA_MEASUREMENT_ID"),
@@ -147,7 +147,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             http_client=http_client,
         )
     finally:
-        await places_service.close()
         await http_client.aclose()
 
 

@@ -19,19 +19,20 @@ Design notes:
 - Mixed-bound nodes combine a user-set arrival OR departure with a
   duration. The missing side is computed, never overwritten.
 - A "no-drive window" (default 22:00→06:00 local) and a max-drive-hours
-  cap (default 10 h / day) prevent naive cascades from scheduling
-  overnight drives. When either rule fires, the offending node pads its
-  departure to next-morning ``window.end_hour`` and flags
-  ``overnight_hold`` with a reason so the UI can surface an "add hotel?"
-  affordance. Drive-hours reset at any ``type ∈ {'hotel','city'}`` node
-  or at any node with ``duration_minutes >= 360`` (6 h) — users commonly
-  mark "stay in Vienna" as a city node with the hotel attached as an
-  action.
+  cap (default 10 h / day) flag drives that cross the window or exceed
+  the cap. When either rule fires, the child node at the far end of the
+  offending edge gets ``drive_cap_warning = True`` and ``hold_reason``
+  set to ``"night_drive"`` or ``"max_drive_hours"`` — a passive warning
+  the UI can surface as an "add hotel?" affordance. When both rules fire
+  on the same edge, ``night_drive`` takes precedence. Drive-hours reset
+  at any ``type ∈ {'hotel','city'}`` node or at any node with
+  ``duration_minutes >= 360`` (6 h) — users commonly mark "stay in
+  Vienna" as a city node with the hotel attached as an action.
 """
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from shared.dag._internals import build_adjacency, parse_dt, toposort
@@ -41,6 +42,12 @@ _REST_NODE_TYPES = frozenset({"hotel", "city"})
 _REST_DURATION_MINUTES = 360  # 6 hours
 _DRIVE_MODES = frozenset({"drive", "walk"})
 _CONFLICT_TOLERANCE_SECONDS = 60
+# Arriving early is usually fine; only surface once the buffer gets big enough
+# to matter. Anything below this is suppressed entirely. Above it, an info
+# chip shows the slack. Past EARLY_ADVISORY_MINUTES the gap is large enough
+# that it's likely unintentional (missing intermediate stop, upstream typo).
+_EARLY_SUPPRESS_MINUTES = 30
+_EARLY_ADVISORY_MINUTES = 120
 
 
 @dataclass(frozen=True)
@@ -81,8 +88,14 @@ def enrich_dag_times(
       outgoing edges).
     - ``timing_conflict`` — human readable message when a user-set time
       disagrees with what propagation would produce, otherwise ``None``.
-    - ``overnight_hold`` / ``hold_reason`` — set when the no-drive window
-      or max-drive-hours cap forced the node to park overnight.
+      Pairs with ``timing_conflict_severity`` (``"info"`` | ``"advisory"``
+      | ``"error"`` | ``None``): ``error`` = you'll be late, ``advisory`` =
+      unusually large early buffer (≥2h), ``info`` = modest early buffer
+      (30m–2h). Anything under 30m early is suppressed entirely to avoid
+      false-positive noise that trains users to ignore the badge.
+    - ``drive_cap_warning`` / ``hold_reason`` — set on the child of any
+      edge whose drive crosses the no-drive window or exceeds the
+      per-day cap. Night takes precedence when both rules fire.
 
     If ``edges`` contains a cycle, the pass is a no-op: each node keeps
     its user-set values, ``duration_minutes`` defaults to 30 when missing,
@@ -158,11 +171,12 @@ def enrich_dag_times(
                     rules.max_drive_hours_per_day is not None
                     and acc_drive_hours[node_id] + travel_hours > rules.max_drive_hours_per_day
                 ):
-                    hold_reason = hold_reason or "max_drive_hours"
-                
+                    hold_reason = "max_drive_hours"
+
                 if tz is not None and rules.no_drive_window is not None and departure is not None:
                     projected_arrival = departure + timedelta(hours=travel_hours)
                     if _overlaps_window(departure, projected_arrival, rules.no_drive_window, tz):
+                        # Night-drive takes precedence when both rules fire on the same edge.
                         hold_reason = "night_drive"
 
             if hold_reason is not None:
@@ -216,7 +230,7 @@ def _draft_node(
     draft["is_start"] = node_id not in reverse_adj
     draft["is_end"] = node_id not in forward_adj
     draft["timing_conflict"] = None
-    draft["overnight_hold"] = False
+    draft["timing_conflict_severity"] = None
     draft["hold_reason"] = None
     draft["drive_cap_warning"] = False
     return draft
@@ -242,7 +256,7 @@ def _propagate_arrival(
         parent_departure = parse_dt(parent.get("departure_time"))
         if parent_departure is None:
             return None
-        travel_hours = float(edge.get("travel_time_hours") or 0)
+        travel_hours = _effective_travel_hours(edge)
         candidate = parent_departure + timedelta(hours=travel_hours)
         if best is None or candidate > best:
             best = candidate
@@ -268,11 +282,19 @@ def _check_arrival_conflict(
     if delta <= _CONFLICT_TOLERANCE_SECONDS:
         return
     direction = "early" if propagated < user_arrival else "late"
+    delta_minutes = delta / 60
+    if direction == "early":
+        if delta_minutes < _EARLY_SUPPRESS_MINUTES:
+            return
+        severity = "info" if delta_minutes < _EARLY_ADVISORY_MINUTES else "advisory"
+    else:
+        severity = "error"
     draft["timing_conflict"] = (
         f"Propagated arrival {propagated.isoformat()} is "
         f"{_format_delta(delta)} {direction} vs user arrival "
         f"{user_arrival.isoformat()}"
     )
+    draft["timing_conflict_severity"] = severity
 
 
 def _format_delta(seconds: float) -> str:
@@ -353,23 +375,6 @@ def _window_intervals(
     start = datetime.combine(day, time(hour=window.start_hour), tzinfo=tz)
     end = datetime.combine(day, time(hour=window.end_hour), tzinfo=tz)
     return [(start, end)]
-
-
-def _shift_to_window_end(
-    departure: datetime,
-    window: _NoDriveWindow,
-    tz: ZoneInfo,
-) -> datetime:
-    """Shift ``departure`` forward to the next day's window end (morning)."""
-    local = departure.astimezone(tz)
-    base_day = local.date()
-    morning_hour = window.end_hour
-
-    # If we're already past this morning's window end, move to tomorrow.
-    morning = datetime.combine(base_day, time(hour=morning_hour), tzinfo=tz)
-    if local >= morning:
-        morning = datetime.combine(base_day + timedelta(days=1), time(hour=morning_hour), tzinfo=tz)
-    return morning.astimezone(UTC)
 
 
 def _is_rest_node(draft: dict) -> bool:

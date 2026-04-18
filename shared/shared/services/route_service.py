@@ -28,11 +28,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+# Field mask covers DRIVE/WALK plus TRANSIT-specific fields. The Routes API
+# rejects masks that reference fields incompatible with the requested
+# travelMode, but it accepts masks that request MORE than a mode produces —
+# superset is safe. `routes.legs.steps.transitDetails` is needed so the API
+# materialises a transit response body; without it, TRANSIT requests can
+# come back with an empty `routes` array.
 _FIELD_MASK = (
     "routes.polyline.encodedPolyline,"
     "routes.duration,"
     "routes.distanceMeters,"
-    "routes.legs.steps.navigationInstruction"
+    "routes.legs.steps.navigationInstruction,"
+    "routes.legs.steps.travelMode,"
+    "routes.legs.steps.transitDetails"
 )
 
 _TRAVEL_MODE_MAP = {
@@ -51,6 +59,18 @@ _FLIGHT_ESTIMATE_PREFIX = "Flight estimate:"
 _LEGACY_SENTINEL_RE = re.compile(
     r"\s*\[flight-estimate\].*?\[/flight-estimate\]\s*", re.DOTALL,
 )
+
+# Sentinel for the optional ``existing_notes`` parameter: ``None`` is a real
+# value (the edge has no notes), so we need a distinct "not provided" marker
+# that triggers a fetch from Firestore. Anything `is _NOTES_UNSET` means the
+# caller didn't pass notes; any other value (including ``None``) is trusted.
+_NOTES_UNSET: object = object()
+
+# Same pattern for ``existing_route``. Background callers (freshly-created
+# edges with no stored route fields yet) leave it unset and we write
+# everything we fetch. Foreground refresh callers that already loaded the
+# edge pass the stored route so we can skip writes whose value is unchanged.
+_ROUTE_UNSET: object = object()
 
 
 def _merge_flight_estimate_note(
@@ -135,7 +155,7 @@ class RouteService:
         from_latlng: dict | None,
         to_latlng: dict | None,
         travel_mode: str,
-        departure_time: str | None = None,
+        departure_time: datetime | None = None,
         from_name: str | None = None,
         to_name: str | None = None,
         from_place_id: str | None = None,
@@ -225,7 +245,7 @@ class RouteService:
         origin: dict,
         destination: dict,
         api_mode: str,
-        departure_time: str | None,
+        departure_time: datetime | None,
     ) -> RouteData | None:
         """Low-level Routes API call. Returns RouteData or None."""
         try:
@@ -243,12 +263,20 @@ class RouteService:
                 "travelMode": api_mode,
                 "languageCode": "en",
             }
-            if api_mode in ("DRIVE", "TRANSIT"):
+            if api_mode == "DRIVE":
+                # routingPreference is DRIVE-only. TRANSIT rejects
+                # TRAFFIC_AWARE_OPTIMAL and returns an empty `routes` array
+                # when it sees the field, which is how this class of failure
+                # used to surface as `{travel_time_hours: 0.0}` edges.
                 if departure_time:
                     body["routingPreference"] = "TRAFFIC_AWARE_OPTIMAL"
-                    body["departureTime"] = departure_time
+                    body["departureTime"] = departure_time.isoformat()
                 else:
                     body["routingPreference"] = "TRAFFIC_UNAWARE"
+            elif api_mode == "TRANSIT" and departure_time:
+                # Transit still benefits from departureTime for schedule
+                # lookup, but must not send routingPreference.
+                body["departureTime"] = departure_time.isoformat()
             headers = {
                 "Authorization": f"Bearer {token}",
                 "X-Goog-FieldMask": _FIELD_MASK,
@@ -284,9 +312,9 @@ class RouteService:
 
         routes = data.get("routes")
         if not routes:
-            logger.debug(
-                "Routes API returned no routes for %r -> %r (mode=%s)",
-                origin, destination, api_mode,
+            logger.warning(
+                "Routes API returned no %s routes for %r -> %r",
+                api_mode, origin, destination,
             )
             return None
 
@@ -334,7 +362,7 @@ class RouteService:
         self,
         from_latlng: dict | None,
         to_latlng: dict | None,
-        departure_time: str | None,
+        departure_time: datetime | None,
     ) -> RouteData | None:
         """Resolve airports and search flights to get real duration.
 
@@ -436,17 +464,24 @@ class RouteService:
         to_latlng: dict | None,
         travel_mode: str,
         edge_repo,
-        departure_time: str | None = None,
+        departure_time: datetime | None = None,
         from_name: str | None = None,
         to_name: str | None = None,
         from_place_id: str | None = None,
         to_place_id: str | None = None,
+        existing_notes: str | None = _NOTES_UNSET,  # type: ignore[assignment]
+        existing_route: dict | None = _ROUTE_UNSET,  # type: ignore[assignment]
     ) -> None:
         """Fetch route data and patch the edge document.
 
         Intended to be run as a background task. Always writes to the edge
         (including on failure) so the frontend's onSnapshot can detect
         completion and clear the "recalculating" shimmer.
+
+        ``existing_route`` (when provided) is a dict of the currently stored
+        ``{route_polyline, travel_time_hours, distance_km}`` values. When the
+        freshly-fetched route data matches, those fields are dropped from the
+        write — only ``route_updated_at`` is bumped so the shimmer clears.
         """
         try:
             route_data = await self.get_route_data(
@@ -465,21 +500,37 @@ class RouteService:
                 if route_data.distance_km is not None:
                     updates["distance_km"] = route_data.distance_km
 
+            # Drop fields whose new value matches the caller-supplied stored
+            # value. Skips the redundant per-edge writes that fire on every
+            # node-move recalculation when the polyline is unchanged.
+            if existing_route is not _ROUTE_UNSET and existing_route is not None:
+                stored_map = {
+                    "route_polyline": existing_route.get("route_polyline"),
+                    "travel_time_hours": existing_route.get("travel_time_hours"),
+                    "distance_km": existing_route.get("distance_km"),
+                }
+                for field, stored in stored_map.items():
+                    if field in updates and updates[field] == stored:
+                        del updates[field]
+
             # Notes handling diverges by mode:
             # - Flights: merge the sentinel-wrapped estimate into existing notes
             #   so road advisories / manual notes survive refreshes.
             # - Other modes: current behavior (overwrite only when route_data
             #   carried fresh advisory notes).
             if travel_mode == "flight":
-                existing_edge = await edge_repo.get_or_raise(
-                    edge_id, trip_id=trip_id, plan_id=plan_id,
-                )
-                existing_notes = existing_edge.get("notes")
+                if existing_notes is _NOTES_UNSET:
+                    existing_edge = await edge_repo.get_or_raise(
+                        edge_id, trip_id=trip_id, plan_id=plan_id,
+                    )
+                    current_notes = existing_edge.get("notes")
+                else:
+                    current_notes = existing_notes
                 merged = _merge_flight_estimate_note(
-                    existing_notes,
+                    current_notes,
                     route_data.notes if route_data else None,
                 )
-                if merged != existing_notes:
+                if merged != current_notes:
                     updates["notes"] = merged
             elif route_data and route_data.notes:
                 updates["notes"] = route_data.notes
@@ -519,7 +570,7 @@ class RouteService:
         to_latlng: dict | None,
         travel_mode: str,
         edge_repo,
-        departure_time: str | None = None,
+        departure_time: datetime | None = None,
         from_name: str | None = None,
         to_name: str | None = None,
         from_place_id: str | None = None,

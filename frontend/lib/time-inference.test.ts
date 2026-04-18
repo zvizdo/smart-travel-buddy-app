@@ -171,6 +171,41 @@ describe("enrichDagTimes — TS-specific invariants", () => {
     expect(enriched.map((n) => n.id)).toEqual(["z", "a", "m"]);
   });
 
+  it("night-drive takes precedence over max-drive-hours when both fire", () => {
+    const nodes: RawNode[] = [
+      {
+        id: "start",
+        name: "Start",
+        type: "city",
+        timezone: "UTC",
+        departure_time: "2026-05-01T20:00:00+00:00",
+      },
+      {
+        id: "end",
+        name: "End",
+        type: "place",
+        timezone: "UTC",
+        duration_minutes: 30,
+      },
+    ];
+    const edges: RawEdge[] = [
+      {
+        from_node_id: "start",
+        to_node_id: "end",
+        travel_mode: "drive",
+        travel_time_hours: 7,
+      },
+    ];
+    const settings: TripSettingsLike = {
+      no_drive_window: { start_hour: 22, end_hour: 6 },
+      max_drive_hours_per_day: 5.0,
+    };
+    const enriched = enrichDagTimes(nodes, edges, settings);
+    const end = findNode(enriched, "end");
+    expect(end.drive_cap_warning).toBe(true);
+    expect(end.hold_reason).toBe("night_drive");
+  });
+
   it("cycle returns raw nodes with defaults, no estimation", () => {
     const nodes: RawNode[] = [
       {
@@ -204,5 +239,115 @@ describe("enrichDagTimes — TS-specific invariants", () => {
     expect(a.duration_estimated).toBe(true);
     expect(b.duration_minutes).toBe(30);
     expect(b.duration_estimated).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Timing conflict severity — mirror of TestTimingConflictSeverity in
+// shared/tests/test_time_inference.py. Parity across runtimes is enforced
+// by the shared JSON fixture; these tests exist so a TS reader can see the
+// decision table without cross-referencing Python.
+// ---------------------------------------------------------------------------
+
+describe("enrichDagTimes — timing conflict severity", () => {
+  function runCase(
+    userArrival: string,
+    travelHours = 1,
+  ): EnrichedNode {
+    const nodes: RawNode[] = [
+      {
+        id: "a",
+        name: "A",
+        type: "place",
+        timezone: "UTC",
+        departure_time: "2026-05-01T09:00:00+00:00",
+      },
+      {
+        id: "b",
+        name: "B",
+        type: "activity",
+        timezone: "UTC",
+        arrival_time: userArrival,
+        departure_time: "2026-05-01T13:00:00+00:00",
+      },
+    ];
+    const edges: RawEdge[] = [
+      {
+        from_node_id: "a",
+        to_node_id: "b",
+        travel_mode: "drive",
+        travel_time_hours: travelHours,
+      },
+    ];
+    return findNode(enrichDagTimes(nodes, edges, {}), "b");
+  }
+
+  it("10 min early is suppressed", () => {
+    const b = runCase("2026-05-01T10:10:00+00:00");
+    expect(b.timing_conflict).toBeNull();
+    expect(b.timing_conflict_severity).toBeNull();
+  });
+
+  it("29m59s early is still suppressed", () => {
+    const b = runCase("2026-05-01T10:29:59+00:00");
+    expect(b.timing_conflict).toBeNull();
+    expect(b.timing_conflict_severity).toBeNull();
+  });
+
+  it("exactly 30m early crosses into info", () => {
+    const b = runCase("2026-05-01T10:30:00+00:00");
+    expect(b.timing_conflict_severity).toBe("info");
+    expect(b.timing_conflict).not.toBeNull();
+  });
+
+  it("45m early is info", () => {
+    const b = runCase("2026-05-01T10:45:00+00:00");
+    expect(b.timing_conflict_severity).toBe("info");
+  });
+
+  it("1h59m early stays info", () => {
+    const b = runCase("2026-05-01T11:59:00+00:00");
+    expect(b.timing_conflict_severity).toBe("info");
+  });
+
+  it("exactly 2h early crosses into advisory", () => {
+    const b = runCase("2026-05-01T12:00:00+00:00");
+    expect(b.timing_conflict_severity).toBe("advisory");
+  });
+
+  it("3h early is advisory", () => {
+    const b = runCase("2026-05-01T13:00:00+00:00");
+    expect(b.timing_conflict_severity).toBe("advisory");
+  });
+
+  it("2 min late is error", () => {
+    const b = runCase("2026-05-01T09:58:00+00:00");
+    expect(b.timing_conflict_severity).toBe("error");
+  });
+
+  it("30 min late is error", () => {
+    const b = runCase("2026-05-01T09:30:00+00:00");
+    expect(b.timing_conflict_severity).toBe("error");
+  });
+
+  it("30 s off is within tolerance (null)", () => {
+    const b = runCase("2026-05-01T10:00:30+00:00");
+    expect(b.timing_conflict).toBeNull();
+    expect(b.timing_conflict_severity).toBeNull();
+  });
+
+  it("message and severity are set together or both null", () => {
+    for (const userArrival of [
+      "2026-05-01T10:30:00+00:00", // info
+      "2026-05-01T12:00:00+00:00", // advisory
+      "2026-05-01T09:30:00+00:00", // error
+      "2026-05-01T10:10:00+00:00", // suppressed
+    ]) {
+      const b = runCase(userArrival);
+      expect(
+        (b.timing_conflict === null) === (b.timing_conflict_severity === null),
+        `desync at ${userArrival}: conflict=${b.timing_conflict}, severity=${b.timing_conflict_severity}`,
+      ).toBe(true);
+    }
   });
 });

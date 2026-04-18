@@ -25,6 +25,8 @@ export const PX_PER_HOUR: Record<TimelineZoomLevel, number> = {
   6: 120,
 };
 
+export type TimingConflictSeverity = "info" | "advisory" | "error";
+
 export interface PositionedNode {
   nodeId: string;
   yOffsetPx: number;
@@ -40,6 +42,7 @@ export interface PositionedNode {
   holdReason: "night_drive" | "max_drive_hours" | null;
   driveCap: boolean;
   timingConflict: string | null;
+  timingConflictSeverity: TimingConflictSeverity | null;
   spansDays: number;
   isShared?: boolean;
   sharedNodeRole?: "diverge" | "merge" | null;
@@ -103,7 +106,7 @@ interface NodeData {
   departure_time_estimated?: boolean;
   duration_estimated?: boolean;
   timing_conflict?: string | null;
-  overnight_hold?: boolean;
+  timing_conflict_severity?: TimingConflictSeverity | null;
   hold_reason?: "night_drive" | "max_drive_hours" | null;
   drive_cap_warning?: boolean;
   is_start?: boolean;
@@ -133,6 +136,7 @@ interface ResolvedTime {
   departureEstimated: boolean;
   durationEstimated: boolean;
   timingConflict: string | null;
+  timingConflictSeverity: TimingConflictSeverity | null;
   overnightHold: boolean;
   holdReason: "night_drive" | "max_drive_hours" | null;
   driveCap: boolean;
@@ -356,7 +360,8 @@ export function computeTimelineLayout(
       departureEstimated: node.departure_time_estimated ?? false,
       durationEstimated: node.duration_estimated ?? false,
       timingConflict: node.timing_conflict ?? null,
-      overnightHold: node.overnight_hold ?? false,
+      timingConflictSeverity: node.timing_conflict_severity ?? null,
+      overnightHold: node.hold_reason != null,
       holdReason: node.hold_reason ?? null,
       driveCap: node.drive_cap_warning ?? false,
     });
@@ -481,6 +486,7 @@ export function computeTimelineLayout(
       holdReason: resolved.holdReason,
       driveCap: resolved.driveCap,
       timingConflict: resolved.timingConflict,
+      timingConflictSeverity: resolved.timingConflictSeverity,
       spansDays,
     };
   }

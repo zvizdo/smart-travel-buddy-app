@@ -185,6 +185,7 @@ export const TimelineLane = memo(function TimelineLane({
                 holdReason={pos.holdReason}
                 driveCap={pos.driveCap}
                 timingConflict={pos.timingConflict}
+                timingConflictSeverity={pos.timingConflictSeverity}
                 spansDays={pos.spansDays}
                 selected={selectedNodeId === nodeId}
                 dimmed={isDimmed}

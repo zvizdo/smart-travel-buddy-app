@@ -1,5 +1,7 @@
 """User endpoints: profile, API key management."""
 
+import asyncio
+
 from backend.src.auth.firebase_auth import get_current_user
 from backend.src.deps import (
     get_location_repo,
@@ -66,10 +68,11 @@ async def update_profile(
     # location data while reporting success.
     if body.location_tracking_enabled is False:
         trips = await trip_service.list_trips(user["uid"])
-        for trip in trips:
-            await location_repo.delete(
-                user["uid"], trip_id=trip["id"]
-            )
+        if trips:
+            await asyncio.gather(*[
+                location_repo.delete(user["uid"], trip_id=trip["id"])
+                for trip in trips
+            ])
 
     return result
 

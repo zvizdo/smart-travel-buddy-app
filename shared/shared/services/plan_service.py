@@ -211,6 +211,11 @@ class PlanService:
 
         await _commit(db.transaction())
 
+        # Transaction wrote through the raw doc ref, bypassing the repo's
+        # cache-invalidating wrappers. Drop the cached trip so the next
+        # read sees the updated active_plan_id.
+        self._trip_repo.invalidate(trip_id)
+
         # Notify all participants (optional — only when a notification service was injected)
         if self._notification_service is not None:
             participant_ids = list(trip.participants.keys())

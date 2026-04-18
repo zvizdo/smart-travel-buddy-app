@@ -170,6 +170,9 @@ async def delete_node(
         trip_id: The trip identifier.
         node_id: ID of the node to delete.
         plan_id: Optional plan version. Defaults to active plan.
+
+    Returns: ``{deleted: true, node_id, deleted_edge_count, reconnected_edges,
+        participant_ids_cleaned}``.
     """
     _, resolved_plan_id, _ = await resolve_trip_plan(ctx, trip_id, plan_id)
     app: AppContext = ctx.lifespan_context
@@ -179,4 +182,10 @@ async def delete_node(
         plan_id=resolved_plan_id,
         node_id=node_id,
     )
-    return result
+    return {
+        "deleted": True,
+        "node_id": result.get("deleted_node_id", node_id),
+        "deleted_edge_count": result.get("deleted_edge_count", 0),
+        "reconnected_edges": result.get("reconnected_edges", []),
+        "participant_ids_cleaned": result.get("participant_ids_cleaned", 0),
+    }
