@@ -89,8 +89,6 @@ cd frontend && pnpm test
 
 ## Deployment
 
-Three Cloud Run services in `europe-west1`, GCP project `as-dev-anze` (frontend, backend, MCP server).
-
 ### Deploy script
 
 ```bash
