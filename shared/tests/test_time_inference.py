@@ -366,6 +366,126 @@ class TestMaxDriveHoursCap:
         assert end["hold_reason"] == "max_drive_hours"
 
 
+class TestPerParentArrivals:
+    """Merge-node per-parent arrivals. Parity enforced by the shared fixture
+    (``merge_node_with_divergent_parent_arrivals`` +
+    ``merge_node_parents_arrive_within_tolerance``). These tests add
+    Python-side coverage of the tolerance boundary and the single-parent
+    suppression."""
+
+    @staticmethod
+    def _merge_case(a_dep: str, b_dep: str) -> dict:
+        nodes = [
+            {
+                "id": "n_a",
+                "name": "A",
+                "type": "place",
+                "timezone": "UTC",
+                "departure_time": a_dep,
+            },
+            {
+                "id": "n_b",
+                "name": "B",
+                "type": "place",
+                "timezone": "UTC",
+                "departure_time": b_dep,
+            },
+            {"id": "n_c", "name": "Merge", "type": "place", "timezone": "UTC"},
+        ]
+        edges = [
+            {
+                "from_node_id": "n_a",
+                "to_node_id": "n_c",
+                "travel_mode": "drive",
+                "travel_time_hours": 1,
+            },
+            {
+                "from_node_id": "n_b",
+                "to_node_id": "n_c",
+                "travel_mode": "drive",
+                "travel_time_hours": 1,
+            },
+        ]
+        enriched = enrich_dag_times(nodes, edges, {})
+        return _find(enriched, "n_c")
+
+    def test_59_second_divergence_suppresses_per_parent_arrivals(self):
+        # Parents differ by 59 s → below the 60 s tolerance → no field emitted.
+        c = self._merge_case(
+            "2026-05-01T11:59:01+00:00", "2026-05-01T12:00:00+00:00"
+        )
+        assert "per_parent_arrivals" not in c
+
+    def test_61_second_divergence_emits_per_parent_arrivals(self):
+        # Parents differ by 61 s → just above tolerance → field emitted.
+        c = self._merge_case(
+            "2026-05-01T11:58:59+00:00", "2026-05-01T12:00:00+00:00"
+        )
+        assert "per_parent_arrivals" in c
+        assert len(c["per_parent_arrivals"]) == 2
+
+    def test_single_parent_never_emits_per_parent_arrivals(self):
+        nodes = [
+            {
+                "id": "start",
+                "name": "S",
+                "type": "place",
+                "timezone": "UTC",
+                "departure_time": "2026-05-01T09:00:00+00:00",
+            },
+            {"id": "end", "name": "E", "type": "place", "timezone": "UTC"},
+        ]
+        edges = [
+            {
+                "from_node_id": "start",
+                "to_node_id": "end",
+                "travel_mode": "drive",
+                "travel_time_hours": 1,
+            }
+        ]
+        enriched = enrich_dag_times(nodes, edges, {})
+        assert "per_parent_arrivals" not in _find(enriched, "end")
+
+    def test_edge_id_used_as_key_when_present(self):
+        # When edges carry explicit ``id`` fields, per_parent_arrivals keys
+        # by that id rather than the ``from->to`` fallback.
+        nodes = [
+            {
+                "id": "n_a",
+                "name": "A",
+                "type": "place",
+                "timezone": "UTC",
+                "departure_time": "2026-05-01T09:00:00+00:00",
+            },
+            {
+                "id": "n_b",
+                "name": "B",
+                "type": "place",
+                "timezone": "UTC",
+                "departure_time": "2026-05-01T12:00:00+00:00",
+            },
+            {"id": "n_c", "name": "Merge", "type": "place", "timezone": "UTC"},
+        ]
+        edges = [
+            {
+                "id": "e_one",
+                "from_node_id": "n_a",
+                "to_node_id": "n_c",
+                "travel_mode": "drive",
+                "travel_time_hours": 1,
+            },
+            {
+                "id": "e_two",
+                "from_node_id": "n_b",
+                "to_node_id": "n_c",
+                "travel_mode": "drive",
+                "travel_time_hours": 1,
+            },
+        ]
+        c = _find(enrich_dag_times(nodes, edges, {}), "n_c")
+        assert set(c["per_parent_arrivals"].keys()) == {"e_one", "e_two"}
+
+
 class TestCycleFallback:
     def test_cycle_returns_raw_nodes_with_defaults(self):
         nodes = [

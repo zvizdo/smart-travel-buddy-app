@@ -73,6 +73,14 @@ export interface EnrichedNode extends RawNode {
   timing_conflict_severity: TimingConflictSeverity | null;
   hold_reason: "night_drive" | "max_drive_hours" | null;
   drive_cap_warning: boolean;
+  /**
+   * Per-incoming-edge arrival times for merge nodes (≥2 parents) whose
+   * parent arrivals differ by more than CONFLICT_TOLERANCE_SECONDS. Key
+   * is ``edge.id`` when present, else ``"{from_node_id}->{to_node_id}"``
+   * (must match the Python emitter). Absent for non-merge nodes or when
+   * all parent arrivals agree within tolerance.
+   */
+  per_parent_arrivals?: Record<string, string>;
 }
 
 export interface EnrichedEdge extends RawEdge {
@@ -405,21 +413,32 @@ function effectiveTravelHours(edge: RawEdge): number {
 function propagateArrival(
   parents: RawEdge[] | undefined,
   drafts: Map<string, EnrichedNode>,
-): Date | null {
-  if (!parents || parents.length === 0) return null;
+): [Date | null, Record<string, string> | null] {
+  if (!parents || parents.length === 0) return [null, null];
   let best: Date | null = null;
+  const perParent = new Map<string, Date>();
   for (const edge of parents) {
     const parent = drafts.get(edge.from_node_id);
     if (!parent) continue;
     const parentDeparture = parseDt(parent.departure_time);
-    if (!parentDeparture) return null;
+    if (!parentDeparture) return [null, null];
     const travelMs = effectiveTravelHours(edge) * 3_600_000;
     const candidate = new Date(parentDeparture.getTime() + travelMs);
+    const key =
+      (typeof edge.id === "string" && edge.id) ||
+      `${edge.from_node_id}->${edge.to_node_id}`;
+    perParent.set(key, candidate);
     if (!best || candidate.getTime() > best.getTime()) {
       best = candidate;
     }
   }
-  return best;
+  if (perParent.size < 2) return [best, null];
+  const times = [...perParent.values()].map((d) => d.getTime());
+  const spanSeconds = (Math.max(...times) - Math.min(...times)) / 1000;
+  if (spanSeconds <= CONFLICT_TOLERANCE_SECONDS) return [best, null];
+  const out: Record<string, string> = {};
+  for (const [k, v] of perParent) out[k] = toIsoString(v);
+  return [best, out];
 }
 
 /** Enrich raw edges — fill in estimated travel time when the stored value is missing/zero. */
@@ -560,7 +579,7 @@ export function enrichDagTimes(
     const parents = adj.reverse.get(nodeId);
 
     // (a) Effective arrival
-    const propagated = propagateArrival(parents, drafts);
+    const [propagated, perParentArrivals] = propagateArrival(parents, drafts);
     const userArrival = parseDt(draft.arrival_time);
     if (userArrival) {
       if (propagated) {
@@ -569,6 +588,10 @@ export function enrichDagTimes(
     } else if (propagated) {
       draft.arrival_time = toIsoString(propagated);
       draft.arrival_time_estimated = true;
+    }
+
+    if (perParentArrivals) {
+      draft.per_parent_arrivals = perParentArrivals;
     }
 
     // (b) Effective departure

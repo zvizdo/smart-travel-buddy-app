@@ -3,7 +3,10 @@
 import { Fragment, memo } from "react";
 import { TimelineNodeBlock } from "./timeline-node-block";
 import { TimelineEdgeConnector } from "./timeline-edge-connector";
-import type { LaneLayout, PositionedEdge } from "@/lib/timeline-layout";
+import type {
+  LaneLayout,
+  PositionedEdge,
+} from "@/lib/timeline-layout";
 
 interface TimelineLaneProps {
   lane: LaneLayout;
@@ -148,14 +151,11 @@ export const TimelineLane = memo(function TimelineLane({
           ? edgeLookup.get(`${edgeToNext.fromNodeId}->${edgeToNext.toNodeId}`)
           : undefined;
 
-        // Check for gap region after this node
-        const gapAfter = lane.gapRegions.find((g) => g.afterNodeId === nodeId);
-        const gapHeight = gapAfter ? gapAfter.compressedHeightPx : 0;
         const nodeBottom = pos.yOffsetPx + pos.heightPx;
 
         return (
           <Fragment key={nodeId}>
-            {/* Merge chip — before the node block */}
+            {/* Merge chip */}
             {pos.sharedNodeRole === "merge" && (
               <div className="absolute left-3 right-3 flex justify-center" style={{ top: pos.yOffsetPx - 18 }}>
                 <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-low">
@@ -169,12 +169,15 @@ export const TimelineLane = memo(function TimelineLane({
             )}
 
             {/* Node block */}
-            <div className="absolute left-3 right-3" style={{ top: pos.yOffsetPx }}>
+            <div
+              className="absolute left-3 right-3"
+              style={{ top: pos.yOffsetPx }}
+            >
               <TimelineNodeBlock
                 nodeId={nodeId}
                 name={node.name}
                 type={node.type}
-                arrivalTime={node.arrival_time}
+                arrivalTime={pos.laneArrivalTime ?? node.arrival_time}
                 departureTime={node.departure_time}
                 timezone={node.timezone ?? undefined}
                 heightPx={pos.heightPx}
@@ -205,7 +208,7 @@ export const TimelineLane = memo(function TimelineLane({
               />
             </div>
 
-            {/* Diverge chip — after the node block */}
+            {/* Diverge chip */}
             {pos.sharedNodeRole === "diverge" && (
               <div className="absolute left-3 right-3 flex justify-center" style={{ top: pos.yOffsetPx + pos.heightPx + 2 }}>
                 <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-low">
@@ -220,29 +223,9 @@ export const TimelineLane = memo(function TimelineLane({
               </div>
             )}
 
-            {/* Gap indicator */}
-            {gapAfter && (
-              <div
-                className="absolute left-3 right-3 flex items-center justify-center rounded-lg bg-surface-low/60 border-y border-dashed border-surface-dim"
-                style={{ top: nodeBottom, height: gapHeight }}
-              >
-                <div className="flex items-center gap-1.5">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-outline-variant">
-                    <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
-                  </svg>
-                  <span className="text-[10px] font-medium text-on-surface-variant">
-                    ~{gapAfter.realDurationHours >= 24
-                      ? `${Math.round(gapAfter.realDurationHours / 24)} days idle`
-                      : `${Math.round(gapAfter.realDurationHours)}h idle`
-                    }
-                  </span>
-                </div>
-              </div>
-            )}
-
             {/* Edge connector */}
             {edgeToNext && rawEdge && (
-              <div className="absolute left-3 right-3" style={{ top: nodeBottom + gapHeight }}>
+              <div className="absolute left-3 right-3" style={{ top: nodeBottom }}>
                 <TimelineEdgeConnector
                   edgeId={edgeToNext.edgeId}
                   travelMode={rawEdge.travel_mode}
@@ -250,7 +233,7 @@ export const TimelineLane = memo(function TimelineLane({
                   travelTimeEstimated={rawEdge.travel_time_estimated}
                   distanceKm={rawEdge.distance_km}
                   distanceUnit={distanceUnit}
-                  connectorHeightPx={Math.max(40, edgeToNext.connectorHeightPx - gapHeight)}
+                  connectorHeightPx={edgeToNext.connectorHeightPx}
                   hasTimingWarning={edgeToNext.hasTimingWarning}
                   hasNote={!!rawEdge.notes}
                   selected={selectedEdgeId === edgeToNext.edgeId}
@@ -262,6 +245,7 @@ export const TimelineLane = memo(function TimelineLane({
                 />
               </div>
             )}
+
           </Fragment>
         );
       })}
@@ -324,5 +308,9 @@ export const TimelineLane = memo(function TimelineLane({
   prev.selectedEdgeId === next.selectedEdgeId &&
   prev.dimmedNodeIds === next.dimmedNodeIds &&
   prev.nodes === next.nodes &&
-  prev.edges === next.edges
+  prev.edges === next.edges &&
+  prev.canEdit === next.canEdit &&
+  prev.datetimeFormat === next.datetimeFormat &&
+  prev.dateFormat === next.dateFormat &&
+  prev.distanceUnit === next.distanceUnit
 );
