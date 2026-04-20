@@ -1,8 +1,34 @@
 /**
- * Timeline layout algorithm.
+ * Timeline layout algorithm — Sweep-and-Stretch.
  *
- * Pure function that computes vertical positions for nodes and edges
- * from raw Firestore data. No React dependencies.
+ * Single global time→Y map shared across every lane. Lanes render via
+ * absolute positioning from lookups into this map, so a vertical slice at
+ * any Y represents the same wall-clock time in every lane by construction.
+ *
+ * Algorithm:
+ *   1. Collect all unique "pinning" timestamps from every lane:
+ *      - Per-lane arrival (per_parent_arrivals override when set)
+ *      - Node departure (shared)
+ *      - Midnight boundaries in the primary timezone (strictly inside trip)
+ *   2. Build intervals between consecutive timestamps. Baseline height =
+ *      deltaMin × basePxPerMin (zoom-dependent).
+ *   3. Compress "idle" intervals (no node active) longer than 8 h to a
+ *      compact fixed height — empty calendar days and long downtime both
+ *      collapse so the scroll length is proportional to activity, not
+ *      wall-clock.
+ *   4. Apply "stretch" claims — ≥ constraints that grow intervals in their
+ *      range proportionally:
+ *        * node-span [arr, dep] ≥ MIN_NODE
+ *        * edge-span [from.dep || from.arr, to.arr] ≥ MIN_CONNECTOR
+ *        * consecutive-pair [A.arr, B.arr] ≥ MIN_NODE + (edge ? MIN_CONNECTOR : 0)
+ *      Pair claims are the structural no-overlap guarantee: two consecutive
+ *      lane nodes can never stack on top of each other, at any zoom.
+ *   5. Accumulate interval heights into a `time_to_Y_map`.
+ *   6. Position nodes/edges via map lookups. Shared nodes (trip start/end,
+ *      merge points with equal parent arrivals) land at identical Y in
+ *      every lane. Merge nodes with `per_parent_arrivals` use the lane's
+ *      per-parent arrival as the block TOP Y; the BOTTOM (joint departure)
+ *      still aligns across lanes.
  */
 
 import { type PathResult } from "@/lib/path-computation";
@@ -14,7 +40,7 @@ import { formatUserName } from "@/lib/user-display";
 
 export type TimelineZoomLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
-/** Pixels per hour for each zoom level. Level 2 is the default (8 px/h). */
+/** Baseline pixels per hour for each zoom level. Level 2 is the default. */
 export const PX_PER_HOUR: Record<TimelineZoomLevel, number> = {
   0: 2,
   1: 4,
@@ -46,6 +72,17 @@ export interface PositionedNode {
   spansDays: number;
   isShared?: boolean;
   sharedNodeRole?: "diverge" | "merge" | null;
+  /**
+   * Per-lane arrival ISO for a shared merge node whose parent arrivals
+   * diverge (emitted as ``per_parent_arrivals`` by ``enrichDagTimes``).
+   * When set, the block's top Y has been shifted upward to this lane's
+   * real arrival time (so a lane that arrived the previous evening
+   * shows the overnight stay) and renderers should use this string for
+   * the lane's arrival label instead of ``node.arrival_time`` (which
+   * remains the joint-start ``max()`` across all parents).
+   */
+  laneArrivalTime?: string | null;
+  laneIncomingEdgeId?: string | null;
 }
 
 export interface PositionedEdge {
@@ -62,19 +99,13 @@ export interface LaneLayout {
   nodeSequence: string[];
   positionedNodes: Map<string, PositionedNode>;
   positionedEdges: Map<string, PositionedEdge>;
-  gapRegions: GapRegion[];
-}
-
-export interface GapRegion {
-  afterNodeId: string;
-  compressedHeightPx: number;
-  realDurationHours: number;
 }
 
 export interface DateMarker {
   yOffsetPx: number;
   label: string;
   isToday: boolean;
+  kind: "midnight";
 }
 
 export interface TimelineLayout {
@@ -86,7 +117,7 @@ export interface TimelineLayout {
 }
 
 // ---------------------------------------------------------------------------
-// Interfaces for input data (mirrors page.tsx types)
+// Input types (mirror Firestore shapes)
 // ---------------------------------------------------------------------------
 
 interface NodeData {
@@ -99,9 +130,6 @@ interface NodeData {
   duration_minutes?: number | null;
   participant_ids?: string[] | null;
   timezone?: string | null;
-  // Enrichment flags populated by `enrichDagTimes`. Optional for callers
-  // that pass raw Firestore data (tests); production always runs through
-  // `useEnrichedNodes` first so these are present.
   arrival_time_estimated?: boolean;
   departure_time_estimated?: boolean;
   duration_estimated?: boolean;
@@ -111,6 +139,7 @@ interface NodeData {
   drive_cap_warning?: boolean;
   is_start?: boolean;
   is_end?: boolean;
+  per_parent_arrivals?: Record<string, string> | null;
   [key: string]: unknown;
 }
 
@@ -123,10 +152,6 @@ interface EdgeData {
   distance_km: number | null;
   [key: string]: unknown;
 }
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 interface ResolvedTime {
   arrival: Date | null;
@@ -142,10 +167,32 @@ interface ResolvedTime {
   driveCap: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
 const MIN_NODE_HEIGHT_PX = 56;
+/**
+ * Minimum height for a node block that renders a third advisory row
+ * (drive-cap / night-drive / rest-stop). The 56 px base fits icon + name
+ * + time row; the extra ~20 px reserves space for the advisory line so
+ * the label doesn't paint past the rounded border of the block. The
+ * rendered block's `minHeight` in ``TimelineNodeBlock`` stays at 56 px,
+ * but the layout engine's claims and heightPx floor lift to this value
+ * for any node with ``drive_cap_warning: true``.
+ */
+const MIN_NODE_HEIGHT_WITH_ADVISORY_PX = 76;
 const MIN_CONNECTOR_HEIGHT_PX = 40;
-const GAP_THRESHOLD_HOURS = 8;
-const GAP_COMPRESSED_HEIGHT_PX = 40;
+/**
+ * Compressed height for idle stretches — any interval where no lane has a
+ * node active and whose duration exceeds IDLE_COMPRESSION_THRESHOLD_MS.
+ * Empty calendar days (no arrival or departure falling on them, no node
+ * spanning through) count as idle and collapse to this height, so a
+ * 10-day idle between two nodes renders as ~10 compact rows rather than
+ * thousands of pixels of empty scroll.
+ */
+const IDLE_COMPRESSED_PX = 40;
+const IDLE_COMPRESSION_THRESHOLD_MS = 8 * 60 * 60 * 1000; // 8 h
 const ORPHAN_SPACING_PX = 72;
 const BOTTOM_PADDING_PX = 80;
 const START_OFFSET_PX = 48;
@@ -180,48 +227,24 @@ function findEdgeBetween(edges: EdgeData[], fromId: string, toId: string): EdgeD
 }
 
 /**
- * Compute gap compression offsets for a sorted sequence of timed nodes.
- * Returns a per-node cumulative compression offset (to subtract from raw Y)
- * plus the list of compressed gap regions.
- *
- * Used by both the multi-lane global pass and the single-lane per-lane pass.
+ * Find the edge that ends at ``nodeId`` whose source is in ``laneNodeIdSet`` —
+ * the lane's own incoming edge for a (possibly merge) node. Returns ``null``
+ * when no such edge exists (e.g. node is a root in this lane).
  */
-function compressGaps(
-  timedNodes: { id: string; arrival: Date; departure: Date | null }[],
+function laneIncomingEdge(
+  nodeId: string,
+  laneNodeIdSet: Set<string>,
   edges: EdgeData[],
-  pxPerHour: number,
-): { compressionOffsets: Map<string, number>; gapRegions: GapRegion[] } {
-  const compressionOffsets = new Map<string, number>();
-  const gapRegions: GapRegion[] = [];
-  let cumulativeCompression = 0;
-
-  for (let i = 0; i < timedNodes.length; i++) {
-    compressionOffsets.set(timedNodes[i].id, cumulativeCompression);
-
-    if (i >= timedNodes.length - 1) continue;
-    const curr = timedNodes[i];
-    const next = timedNodes[i + 1];
-    const currEnd = curr.departure ?? curr.arrival;
-    const gapHours = (next.arrival.getTime() - currEnd.getTime()) / 3_600_000;
-    const edge = findEdgeBetween(edges, curr.id, next.id);
-    const travelHours = edge?.travel_time_hours ?? 0;
-    const idleHours = gapHours - travelHours;
-
-    if (idleHours > GAP_THRESHOLD_HOURS) {
-      const savedPx = idleHours * pxPerHour - GAP_COMPRESSED_HEIGHT_PX;
-      cumulativeCompression += savedPx;
-      gapRegions.push({
-        afterNodeId: curr.id,
-        compressedHeightPx: GAP_COMPRESSED_HEIGHT_PX,
-        realDurationHours: idleHours,
-      });
-    }
+): { edge: EdgeData; edgeKey: string } | null {
+  for (const e of edges) {
+    if (e.to_node_id !== nodeId) continue;
+    if (!laneNodeIdSet.has(e.from_node_id)) continue;
+    const edgeKey = e.id || `${e.from_node_id}->${nodeId}`;
+    return { edge: e, edgeKey };
   }
-
-  return { compressionOffsets, gapRegions };
+  return null;
 }
 
-/** Topological sort via Kahn's algorithm. Returns node IDs in order. */
 function topoSort(nodeIds: string[], edges: EdgeData[]): string[] {
   const inDeg = new Map<string, number>();
   const adj = new Map<string, string[]>();
@@ -271,10 +294,6 @@ function isToday(date: Date, timezone: string): boolean {
   return isSameDay(date, new Date(), timezone);
 }
 
-/**
- * Number of calendar day boundaries a node crosses between its arrival and
- * departure in the given zone. Same-day stays = 0, overnight = 1, etc.
- */
 function daysSpanned(
   arrival: Date,
   departure: Date | null,
@@ -296,6 +315,67 @@ function daysSpanned(
   const aDay = toDayMs(arrival);
   const dDay = toDayMs(departure);
   return Math.max(0, Math.round((dDay - aDay) / 86_400_000));
+}
+
+// ---------------------------------------------------------------------------
+// Sweep-and-Stretch primitives
+// ---------------------------------------------------------------------------
+
+interface LaneEvent {
+  nodeId: string;
+  arrivalMs: number;
+  departureMs: number | null;
+  override?: { iso: string; edgeId: string };
+}
+
+interface Interval {
+  startMs: number;
+  endMs: number;
+  deltaMin: number;
+  heightPx: number;
+  /**
+   * True when at least one node's [arrival, departure] fully covers this
+   * interval in some lane — used by idle compression to know when to leave
+   * the interval at baseline.
+   */
+  active: boolean;
+}
+
+interface StretchClaim {
+  startMs: number;
+  endMs: number;
+  minPx: number;
+}
+
+/**
+ * Compute the Y for an arbitrary millisecond via the pre-computed
+ * interval heights. Pinned timestamps read from ``timeToY`` directly;
+ * anything between pins interpolates linearly inside the containing
+ * interval (pxPerMinute is constant within a single interval, so this is
+ * exact, not an approximation).
+ */
+function makeTimeToY(
+  intervals: Interval[],
+  timeToY: Map<number, number>,
+  tailY: number,
+) {
+  return function resolveY(ms: number): number {
+    const pinned = timeToY.get(ms);
+    if (pinned != null) return pinned;
+    if (intervals.length === 0) return START_OFFSET_PX;
+    if (ms <= intervals[0].startMs) return START_OFFSET_PX;
+    if (ms >= intervals[intervals.length - 1].endMs) return tailY;
+    for (const iv of intervals) {
+      if (ms >= iv.startMs && ms <= iv.endMs) {
+        const span = iv.endMs - iv.startMs;
+        if (span <= 0) return timeToY.get(iv.startMs) ?? START_OFFSET_PX;
+        const frac = (ms - iv.startMs) / span;
+        const yStart = timeToY.get(iv.startMs) ?? START_OFFSET_PX;
+        return yStart + frac * iv.heightPx;
+      }
+    }
+    return tailY;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -328,21 +408,16 @@ export function computeTimelineLayout(
 
   const adj = buildAdjacency(edges);
   const revAdj = buildReverseAdjacency(edges);
-  const pxPerHour = PX_PER_HOUR[zoomLevel];
 
   // -----------------------------------------------------------------------
-  // Step 1: Determine active lanes
+  // Lane determination
   // -----------------------------------------------------------------------
-  const laneDefinitions = determineLanes(nodes, edges, pathResult, pathMode, currentUserId, participantNames);
+  const laneDefinitions = determineLanes(
+    nodes, edges, pathResult, pathMode, currentUserId, participantNames,
+  );
 
   // -----------------------------------------------------------------------
-  // Step 2: Read timing fields directly from nodes.
-  //
-  // Enrichment is upstream now (`useEnrichedNodes` → `enrichDagTimes`) so
-  // the timeline layout only needs to consume already-enriched nodes. It no
-  // longer interpolates anything itself — if `arrival_time` is still null
-  // after enrichment, the node really has no derivable time and should be
-  // bucketed as untimed.
+  // Resolve arrival / departure dates & enrichment flags per node
   // -----------------------------------------------------------------------
   const resolvedTimes = new Map<string, ResolvedTime>();
   const missingTimeNodeIds = new Set<string>();
@@ -367,14 +442,15 @@ export function computeTimelineLayout(
     });
   }
 
-  // -----------------------------------------------------------------------
-  // Step 3-7: Compute positions per lane
-  // -----------------------------------------------------------------------
   const timingConflictEdgeIds = new Set<string>();
 
-  // Collect only nodes that appear in at least one lane — nodes outside all
-  // lanes (e.g. a 3rd root not assigned to any participant) must not affect
-  // the earliest-time anchor or cause empty space.
+  /** Advisory-aware min height (drive-cap nodes render a 3rd row). */
+  function minHeightFor(nodeId: string): number {
+    return resolvedTimes.get(nodeId)?.driveCap
+      ? MIN_NODE_HEIGHT_WITH_ADVISORY_PX
+      : MIN_NODE_HEIGHT_PX;
+  }
+
   const laneNodeIdSet = new Set<string>();
   for (const laneDef of laneDefinitions) {
     for (const nodeId of laneDef.nodeIds) laneNodeIdSet.add(nodeId);
@@ -386,88 +462,18 @@ export function computeTimelineLayout(
     if (resolved?.arrival) allTimedArrivals.push(resolved.arrival.getTime());
   }
 
-  const earliestMs = allTimedArrivals.length > 0 ? Math.min(...allTimedArrivals) : 0;
   const allNodesUntimed = allTimedArrivals.length === 0;
   const isMultiLane = laneDefinitions.length > 1;
 
-  // -----------------------------------------------------------------------
-  // Compute shared node IDs across lanes (for participant-based lanes too)
-  // -----------------------------------------------------------------------
   const globalSharedNodeIds = new Set<string>();
   if (isMultiLane) {
-    const nodeAppearanceCount = new Map<string, number>();
+    const count = new Map<string, number>();
     for (const laneDef of laneDefinitions) {
       for (const nodeId of laneDef.nodeIds) {
-        nodeAppearanceCount.set(nodeId, (nodeAppearanceCount.get(nodeId) ?? 0) + 1);
+        count.set(nodeId, (count.get(nodeId) ?? 0) + 1);
       }
     }
-    for (const [nodeId, count] of nodeAppearanceCount) {
-      if (count > 1) globalSharedNodeIds.add(nodeId);
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Multi-lane: compute global Y positions so lanes align on the same timeline
-  // -----------------------------------------------------------------------
-  const globalNodePositions = new Map<string, { yOffsetPx: number; heightPx: number }>();
-  const globalGapRegions: GapRegion[] = [];
-
-  if (isMultiLane && !allNodesUntimed) {
-    // Collect all unique timed nodes across all lanes
-    const allTimedNodes: { id: string; arrival: Date; departure: Date | null }[] = [];
-    const seen = new Set<string>();
-    for (const laneDef of laneDefinitions) {
-      for (const nodeId of laneDef.nodeIds) {
-        if (seen.has(nodeId)) continue;
-        seen.add(nodeId);
-        const resolved = resolvedTimes.get(nodeId)!;
-        if (resolved.arrival) {
-          allTimedNodes.push({ id: nodeId, arrival: resolved.arrival, departure: resolved.departure });
-        }
-      }
-    }
-    allTimedNodes.sort((a, b) => a.arrival.getTime() - b.arrival.getTime());
-
-    // Compute raw Y + height for each node
-    const rawPositions = new Map<string, { y: number; height: number }>();
-    for (const node of allTimedNodes) {
-      const rawY = START_OFFSET_PX + ((node.arrival.getTime() - earliestMs) / 3_600_000) * pxPerHour;
-      let heightPx = MIN_NODE_HEIGHT_PX;
-      if (node.departure) {
-        const durationHours = (node.departure.getTime() - node.arrival.getTime()) / 3_600_000;
-        heightPx = Math.max(MIN_NODE_HEIGHT_PX, durationHours * pxPerHour);
-      }
-      rawPositions.set(node.id, { y: rawY, height: heightPx });
-    }
-
-    // Compute global gap compression
-    const { compressionOffsets, gapRegions: globalGaps } = compressGaps(
-      allTimedNodes,
-      edges,
-      pxPerHour,
-    );
-    globalGapRegions.push(...globalGaps);
-
-    // Apply compression and enforce minimum spacing
-    let prevBottom = 0;
-    for (let i = 0; i < allTimedNodes.length; i++) {
-      const nodeId = allTimedNodes[i].id;
-      const { y: rawY, height: heightPx } = rawPositions.get(nodeId)!;
-      const compression = compressionOffsets.get(nodeId) ?? 0;
-      let yOffset = rawY - compression;
-
-      if (i > 0) {
-        const prevNodeId = allTimedNodes[i - 1].id;
-        const edge = findEdgeBetween(edges, prevNodeId, nodeId);
-        const minConnector = edge ? MIN_CONNECTOR_HEIGHT_PX : 0;
-        const hasGap = globalGapRegions.some((g) => g.afterNodeId === prevNodeId);
-        const gapExtra = hasGap ? GAP_COMPRESSED_HEIGHT_PX : 0;
-        yOffset = Math.max(yOffset, prevBottom + minConnector + gapExtra);
-      }
-
-      globalNodePositions.set(nodeId, { yOffsetPx: yOffset, heightPx });
-      prevBottom = yOffset + heightPx;
-    }
+    for (const [nodeId, c] of count) if (c > 1) globalSharedNodeIds.add(nodeId);
   }
 
   const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -491,6 +497,257 @@ export function computeTimelineLayout(
     };
   }
 
+  // -----------------------------------------------------------------------
+  // Per-lane per-parent-arrival overrides (for merge nodes whose parent
+  // arrivals diverged). Pre-computed so each lane's event list uses the
+  // lane-specific arrival time from the start.
+  // -----------------------------------------------------------------------
+  interface LaneOverride {
+    laneArrivalMs: number;
+    laneArrivalIso: string;
+    laneIncomingEdgeId: string;
+  }
+  const laneOverrides = new Map<string, Map<string, LaneOverride>>();
+  for (const laneDef of laneDefinitions) {
+    const setOfLaneNodes = new Set(laneDef.nodeIds);
+    const overrideMap = new Map<string, LaneOverride>();
+    for (const nodeId of laneDef.nodeIds) {
+      const node = nodeMap.get(nodeId);
+      if (!node?.per_parent_arrivals) continue;
+      const resolved = resolvedTimes.get(nodeId);
+      if (!resolved?.arrival) continue;
+      const incoming = laneIncomingEdge(nodeId, setOfLaneNodes, edges);
+      if (!incoming) continue;
+      const laneIso = node.per_parent_arrivals[incoming.edgeKey];
+      if (!laneIso || laneIso === node.arrival_time) continue;
+      const laneMs = Date.parse(laneIso);
+      if (Number.isNaN(laneMs)) continue;
+      if (laneMs >= resolved.arrival.getTime()) continue;
+      overrideMap.set(nodeId, {
+        laneArrivalMs: laneMs,
+        laneArrivalIso: laneIso,
+        laneIncomingEdgeId: incoming.edge.id,
+      });
+    }
+    if (overrideMap.size > 0) laneOverrides.set(laneDef.laneId, overrideMap);
+  }
+
+  // -----------------------------------------------------------------------
+  // Primary timezone for calendar-day math
+  // -----------------------------------------------------------------------
+  let primaryTz: string | null = null;
+  for (const laneDef of laneDefinitions) {
+    for (const nodeId of laneDef.nodeIds) {
+      const node = nodeMap.get(nodeId);
+      const resolved = resolvedTimes.get(nodeId);
+      if (resolved?.arrival && node?.timezone) {
+        primaryTz = node.timezone;
+        break;
+      }
+    }
+    if (primaryTz) break;
+  }
+  const tz = primaryTz ?? browserTz;
+
+  // -----------------------------------------------------------------------
+  // Build per-lane event list using lane-specific arrivals.
+  // -----------------------------------------------------------------------
+  const laneEvents = new Map<string, LaneEvent[]>();
+  for (const laneDef of laneDefinitions) {
+    const overrideMap = laneOverrides.get(laneDef.laneId);
+    const events: LaneEvent[] = [];
+    for (const nodeId of laneDef.nodeIds) {
+      const resolved = resolvedTimes.get(nodeId);
+      if (!resolved?.arrival) continue;
+      const override = overrideMap?.get(nodeId);
+      const arrivalMs = override?.laneArrivalMs ?? resolved.arrival.getTime();
+      const departureMs = resolved.departure?.getTime() ?? null;
+      events.push({
+        nodeId,
+        arrivalMs,
+        departureMs,
+        override: override
+          ? { iso: override.laneArrivalIso, edgeId: override.laneIncomingEdgeId }
+          : undefined,
+      });
+    }
+    events.sort((a, b) => a.arrivalMs - b.arrivalMs);
+    laneEvents.set(laneDef.laneId, events);
+  }
+
+  // -----------------------------------------------------------------------
+  // Collect unique timestamps. Add midnights strictly inside trip bounds
+  // so empty days become discrete intervals (each compressed + gets a
+  // date marker).
+  // -----------------------------------------------------------------------
+  let earliestMs = Number.POSITIVE_INFINITY;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const events of laneEvents.values()) {
+    for (const e of events) {
+      if (e.arrivalMs < earliestMs) earliestMs = e.arrivalMs;
+      const endMs = e.departureMs ?? e.arrivalMs;
+      if (endMs > latestMs) latestMs = endMs;
+    }
+  }
+  if (!isFinite(earliestMs) || !isFinite(latestMs)) {
+    earliestMs = 0;
+    latestMs = 0;
+  }
+  if (latestMs <= earliestMs) latestMs = earliestMs + 60 * 60 * 1000; // 1h fallback
+
+  const timestampSet = new Set<number>();
+  timestampSet.add(earliestMs);
+  timestampSet.add(latestMs);
+  for (const events of laneEvents.values()) {
+    for (const e of events) {
+      timestampSet.add(e.arrivalMs);
+      if (e.departureMs != null) timestampSet.add(e.departureMs);
+    }
+  }
+
+  const tripStartMidnight = midnightMsForTimeInTz(earliestMs, tz);
+  let midnightCursor = tripStartMidnight;
+  let safety = 0;
+  while (midnightCursor <= latestMs && safety++ < 365) {
+    if (midnightCursor > earliestMs && midnightCursor < latestMs) {
+      timestampSet.add(midnightCursor);
+    }
+    midnightCursor = nextMidnightInTz(midnightCursor, tz);
+  }
+
+  const timestamps = [...timestampSet].sort((a, b) => a - b);
+
+  // -----------------------------------------------------------------------
+  // Build intervals with baseline height, then compress idle stretches.
+  // -----------------------------------------------------------------------
+  const baseRate = PX_PER_HOUR[zoomLevel] / 60; // px per minute
+  const intervals: Interval[] = [];
+  if (!allNodesUntimed && timestamps.length >= 2) {
+    for (let i = 0; i < timestamps.length - 1; i++) {
+      const startMs = timestamps[i];
+      const endMs = timestamps[i + 1];
+      const deltaMin = (endMs - startMs) / 60_000;
+
+      let active = false;
+      for (const events of laneEvents.values()) {
+        for (const e of events) {
+          const eStart = e.arrivalMs;
+          const eEnd = e.departureMs ?? e.arrivalMs;
+          if (eStart <= startMs && eEnd >= endMs && eStart < eEnd) {
+            active = true;
+            break;
+          }
+        }
+        if (active) break;
+      }
+
+      let heightPx = deltaMin * baseRate;
+      const isIdle = !active;
+      const isLongEnough = (endMs - startMs) >= IDLE_COMPRESSION_THRESHOLD_MS;
+      if (isIdle && isLongEnough) {
+        heightPx = Math.min(heightPx, IDLE_COMPRESSED_PX);
+      }
+
+      intervals.push({ startMs, endMs, deltaMin, heightPx, active });
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Collect stretch claims.
+  // -----------------------------------------------------------------------
+  const claims: StretchClaim[] = [];
+
+  // Node span: [arr, dep] ≥ min-node-height when a departure exists.
+  for (const events of laneEvents.values()) {
+    for (const e of events) {
+      if (e.departureMs != null && e.departureMs > e.arrivalMs) {
+        claims.push({
+          startMs: e.arrivalMs,
+          endMs: e.departureMs,
+          minPx: minHeightFor(e.nodeId),
+        });
+      }
+    }
+  }
+
+  // Edge + consecutive-pair claims.
+  for (const [, events] of laneEvents) {
+    for (let i = 0; i < events.length - 1; i++) {
+      const a = events[i];
+      const b = events[i + 1];
+      if (b.arrivalMs <= a.arrivalMs) continue;
+      const edge = findEdgeBetween(edges, a.nodeId, b.nodeId);
+      const edgeStartMs = a.departureMs ?? a.arrivalMs;
+      if (edge && b.arrivalMs > edgeStartMs) {
+        claims.push({
+          startMs: edgeStartMs,
+          endMs: b.arrivalMs,
+          minPx: MIN_CONNECTOR_HEIGHT_PX,
+        });
+      }
+      // The pair claim is the no-overlap guarantee: A's min height + the
+      // MIN_CONNECTOR fit strictly between A's and B's arrival times.
+      claims.push({
+        startMs: a.arrivalMs,
+        endMs: b.arrivalMs,
+        minPx: minHeightFor(a.nodeId) + (edge ? MIN_CONNECTOR_HEIGHT_PX : 0),
+      });
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Satisfy each claim by growing intervals in its range proportionally
+  // to their current duration. Adding height only helps other claims
+  // (they're all ≥ constraints), so order is irrelevant.
+  // -----------------------------------------------------------------------
+  for (const claim of claims) {
+    const affected: number[] = [];
+    for (let i = 0; i < intervals.length; i++) {
+      const iv = intervals[i];
+      if (iv.startMs >= claim.startMs && iv.endMs <= claim.endMs) {
+        affected.push(i);
+      }
+    }
+    if (affected.length === 0) continue;
+
+    let totalHeight = 0;
+    let totalDuration = 0;
+    for (const idx of affected) {
+      totalHeight += intervals[idx].heightPx;
+      totalDuration += intervals[idx].deltaMin;
+    }
+    if (totalHeight >= claim.minPx) continue;
+    const deficit = claim.minPx - totalHeight;
+    if (totalDuration > 0) {
+      for (const idx of affected) {
+        intervals[idx].heightPx += deficit * (intervals[idx].deltaMin / totalDuration);
+      }
+    } else {
+      const per = deficit / affected.length;
+      for (const idx of affected) intervals[idx].heightPx += per;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Accumulate heights → time_to_Y_map.
+  // -----------------------------------------------------------------------
+  const timeToYMap = new Map<number, number>();
+  let cursorY = START_OFFSET_PX;
+  if (intervals.length > 0) {
+    timeToYMap.set(intervals[0].startMs, cursorY);
+    for (const iv of intervals) {
+      cursorY += iv.heightPx;
+      timeToYMap.set(iv.endMs, cursorY);
+    }
+  } else if (timestamps.length > 0) {
+    timeToYMap.set(timestamps[0], cursorY);
+  }
+  const tailY = cursorY;
+  const timeToY = makeTimeToY(intervals, timeToYMap, tailY);
+
+  // -----------------------------------------------------------------------
+  // Build lanes via time_to_Y lookups.
+  // -----------------------------------------------------------------------
   const lanes: LaneLayout[] = [];
 
   for (let li = 0; li < laneDefinitions.length; li++) {
@@ -498,8 +755,8 @@ export function computeTimelineLayout(
     const laneNodeIds = laneDef.nodeIds;
     const positionedNodes = new Map<string, PositionedNode>();
     const positionedEdges = new Map<string, PositionedEdge>();
-    const gapRegions: GapRegion[] = [];
     const sharedSet = laneDef.sharedNodeIds ?? globalSharedNodeIds;
+    const overrideMap = laneOverrides.get(laneDef.laneId);
 
     function getSharedProps(nodeId: string) {
       const isShared = sharedSet.has(nodeId);
@@ -513,17 +770,16 @@ export function computeTimelineLayout(
       return { isShared, sharedNodeRole };
     }
 
-    // Sort nodes by resolved arrival, fallback to topological order
     const sortedNodeIds = sortNodesByTime(laneNodeIds, resolvedTimes, edges);
 
     if (allNodesUntimed) {
-      // All missing times — stack at equal spacing
       for (let i = 0; i < sortedNodeIds.length; i++) {
         const nodeId = sortedNodeIds[i];
         const resolved = resolvedTimes.get(nodeId)!;
+        const yOffsetPx = i * ORPHAN_SPACING_PX;
         positionedNodes.set(nodeId, {
           nodeId,
-          yOffsetPx: i * ORPHAN_SPACING_PX,
+          yOffsetPx,
           heightPx: MIN_NODE_HEIGHT_PX,
           laneIndex: li,
           hasMissingTime: true,
@@ -533,8 +789,6 @@ export function computeTimelineLayout(
           ...getSharedProps(nodeId),
         });
       }
-
-      // Add edges between sequential nodes
       for (let i = 0; i < sortedNodeIds.length - 1; i++) {
         const edge = findEdgeBetween(edges, sortedNodeIds[i], sortedNodeIds[i + 1]);
         if (edge) {
@@ -547,146 +801,70 @@ export function computeTimelineLayout(
           });
         }
       }
-
       lanes.push({
         laneId: laneDef.laneId,
         participantLabel: laneDef.label,
         nodeSequence: sortedNodeIds,
         positionedNodes,
         positionedEdges,
-        gapRegions,
       });
       continue;
     }
 
-    // Separate timed and untimed nodes
     const timedNodeIds: string[] = [];
     const untimedNodeIds: string[] = [];
     for (const nodeId of sortedNodeIds) {
       const resolved = resolvedTimes.get(nodeId)!;
-      if (resolved.arrival) {
-        timedNodeIds.push(nodeId);
-      } else {
-        untimedNodeIds.push(nodeId);
-      }
+      if (resolved.arrival) timedNodeIds.push(nodeId);
+      else untimedNodeIds.push(nodeId);
     }
 
-    // Step 3-6: Compute positions for timed nodes
-    let currentY = 0;
-
-    if (isMultiLane) {
-      // Multi-lane: use pre-computed global positions for alignment
-      for (let i = 0; i < timedNodeIds.length; i++) {
-        const nodeId = timedNodeIds[i];
-        const resolved = resolvedTimes.get(nodeId)!;
-        const globalPos = globalNodePositions.get(nodeId);
-
-        if (globalPos) {
-          positionedNodes.set(nodeId, {
-            nodeId,
-            yOffsetPx: globalPos.yOffsetPx,
-            heightPx: globalPos.heightPx,
-            laneIndex: li,
-            hasMissingTime: resolved.hasMissing,
-            resolvedArrival: resolved.arrival,
-            resolvedDeparture: resolved.departure,
-            ...getEnrichmentProps(nodeId, resolved),
-            ...getSharedProps(nodeId),
-          });
-          currentY = globalPos.yOffsetPx + globalPos.heightPx;
-        }
+    let laneBottomY = START_OFFSET_PX;
+    for (const nodeId of timedNodeIds) {
+      const resolved = resolvedTimes.get(nodeId)!;
+      const override = overrideMap?.get(nodeId);
+      const arrivalMs = override?.laneArrivalMs ?? resolved.arrival!.getTime();
+      const yOffsetPx = timeToY(arrivalMs);
+      const minHeight = minHeightFor(nodeId);
+      let heightPx = minHeight;
+      if (resolved.departure) {
+        const departureMs = resolved.departure.getTime();
+        const natural = timeToY(departureMs) - yOffsetPx;
+        heightPx = Math.max(minHeight, natural);
       }
-
-      // Copy relevant global gap regions into this lane
-      const laneNodeSet = new Set(laneNodeIds);
-      for (const gap of globalGapRegions) {
-        if (laneNodeSet.has(gap.afterNodeId)) {
-          gapRegions.push(gap);
-        }
-      }
-    } else {
-      // Single-lane: original per-lane computation with gap compression
-      const nodeYPositions = new Map<string, { y: number; height: number }>();
-
-      for (let i = 0; i < timedNodeIds.length; i++) {
-        const nodeId = timedNodeIds[i];
-        const resolved = resolvedTimes.get(nodeId)!;
-        const arrival = resolved.arrival!;
-        const departure = resolved.departure;
-
-        const rawY = START_OFFSET_PX + ((arrival.getTime() - earliestMs) / 3_600_000) * pxPerHour;
-        let heightPx = MIN_NODE_HEIGHT_PX;
-        if (departure) {
-          const durationHours = (departure.getTime() - arrival.getTime()) / 3_600_000;
-          heightPx = Math.max(MIN_NODE_HEIGHT_PX, durationHours * pxPerHour);
-        }
-        nodeYPositions.set(nodeId, { y: rawY, height: heightPx });
-      }
-
-      // Gap compression
-      const laneTimedNodes = timedNodeIds.map((id) => {
-        const resolved = resolvedTimes.get(id)!;
-        return { id, arrival: resolved.arrival!, departure: resolved.departure };
+      positionedNodes.set(nodeId, {
+        nodeId,
+        yOffsetPx,
+        heightPx,
+        laneIndex: li,
+        hasMissingTime: resolved.hasMissing,
+        resolvedArrival: resolved.arrival,
+        resolvedDeparture: resolved.departure,
+        ...getEnrichmentProps(nodeId, resolved),
+        ...getSharedProps(nodeId),
+        ...(override
+          ? {
+              laneArrivalTime: override.laneArrivalIso,
+              laneIncomingEdgeId: override.laneIncomingEdgeId,
+              arrivalEstimated: true,
+            }
+          : {}),
       });
-      const { compressionOffsets, gapRegions: laneGaps } = compressGaps(
-        laneTimedNodes,
-        edges,
-        pxPerHour,
-      );
-      gapRegions.push(...laneGaps);
-
-      // Apply positions with compression and enforce minimums
-      let prevBottom = 0;
-      for (let i = 0; i < timedNodeIds.length; i++) {
-        const nodeId = timedNodeIds[i];
-        const { y: rawY, height: heightPx } = nodeYPositions.get(nodeId)!;
-        const resolved = resolvedTimes.get(nodeId)!;
-        const compression = compressionOffsets.get(nodeId) ?? 0;
-
-        let yOffset = rawY - compression;
-
-        if (i > 0) {
-          const prevNodeId = timedNodeIds[i - 1];
-          const edge = findEdgeBetween(edges, prevNodeId, nodeId);
-          const minConnector = edge ? MIN_CONNECTOR_HEIGHT_PX : 0;
-          const hasGap = gapRegions.some((g) => g.afterNodeId === prevNodeId);
-          const gapExtra = hasGap ? GAP_COMPRESSED_HEIGHT_PX : 0;
-          const minY = prevBottom + minConnector + gapExtra;
-          yOffset = Math.max(yOffset, minY);
-        }
-
-        positionedNodes.set(nodeId, {
-          nodeId,
-          yOffsetPx: yOffset,
-          heightPx,
-          laneIndex: li,
-          hasMissingTime: resolved.hasMissing,
-          resolvedArrival: resolved.arrival,
-          resolvedDeparture: resolved.departure,
-          ...getEnrichmentProps(nodeId, resolved),
-          ...getSharedProps(nodeId),
-        });
-
-        prevBottom = yOffset + heightPx;
-        currentY = prevBottom;
-      }
+      laneBottomY = Math.max(laneBottomY, yOffsetPx + heightPx);
     }
 
-    // Step 7: Compute connector heights + Step 8: Timing warnings
+    // Connectors: between consecutive timed nodes in this lane.
     for (let i = 0; i < timedNodeIds.length - 1; i++) {
       const fromId = timedNodeIds[i];
       const toId = timedNodeIds[i + 1];
       const edge = findEdgeBetween(edges, fromId, toId);
       if (!edge) continue;
-
       const fromPos = positionedNodes.get(fromId)!;
       const toPos = positionedNodes.get(toId)!;
       const connectorHeightPx = Math.max(
         MIN_CONNECTOR_HEIGHT_PX,
         toPos.yOffsetPx - (fromPos.yOffsetPx + fromPos.heightPx),
       );
-
-      // Timing warning check
       let hasTimingWarning = false;
       const fromNode = nodeMap.get(fromId);
       const toNode = nodeMap.get(toId);
@@ -702,7 +880,6 @@ export function computeTimelineLayout(
           timingConflictEdgeIds.add(edge.id);
         }
       }
-
       positionedEdges.set(edge.id, {
         edgeId: edge.id,
         fromNodeId: fromId,
@@ -712,22 +889,19 @@ export function computeTimelineLayout(
       });
     }
 
-    // Also add edges not between sequential timed nodes (diagonal edges in DAG)
+    // Diagonal / non-sequential edges within the lane.
     for (const edge of edges) {
       if (positionedEdges.has(edge.id)) continue;
       const fromInLane = laneNodeIds.includes(edge.from_node_id);
       const toInLane = laneNodeIds.includes(edge.to_node_id);
       if (!fromInLane || !toInLane) continue;
-
       const fromPos = positionedNodes.get(edge.from_node_id);
       const toPos = positionedNodes.get(edge.to_node_id);
       if (!fromPos || !toPos) continue;
-
       const connectorHeightPx = Math.max(
         MIN_CONNECTOR_HEIGHT_PX,
         toPos.yOffsetPx - (fromPos.yOffsetPx + fromPos.heightPx),
       );
-
       let hasTimingWarning = false;
       const fromNode = nodeMap.get(edge.from_node_id);
       const toNode = nodeMap.get(edge.to_node_id);
@@ -743,7 +917,6 @@ export function computeTimelineLayout(
           timingConflictEdgeIds.add(edge.id);
         }
       }
-
       positionedEdges.set(edge.id, {
         edgeId: edge.id,
         fromNodeId: edge.from_node_id,
@@ -753,13 +926,14 @@ export function computeTimelineLayout(
       });
     }
 
-    // Add untimed nodes at the end
+    // Untimed nodes appended at the bottom of the lane.
     for (let i = 0; i < untimedNodeIds.length; i++) {
       const nodeId = untimedNodeIds[i];
       const resolved = resolvedTimes.get(nodeId)!;
+      const yOffsetPx = laneBottomY + 24 + i * ORPHAN_SPACING_PX;
       positionedNodes.set(nodeId, {
         nodeId,
-        yOffsetPx: currentY + 24 + i * ORPHAN_SPACING_PX,
+        yOffsetPx,
         heightPx: MIN_NODE_HEIGHT_PX,
         laneIndex: li,
         hasMissingTime: true,
@@ -776,16 +950,40 @@ export function computeTimelineLayout(
       nodeSequence: [...timedNodeIds, ...untimedNodeIds],
       positionedNodes,
       positionedEdges,
-      gapRegions,
     });
   }
 
   // -----------------------------------------------------------------------
-  // Step 9: Compute date markers
+  // Date markers — one per calendar day that intersects the trip.
+  // First day anchored to trip start (not midnight before it), subsequent
+  // days anchored to their midnight Y from timeToY.
   // -----------------------------------------------------------------------
-  const dateMarkers = computeDateMarkers(lanes, resolvedTimes, nodeMap);
+  const dateMarkers: DateMarker[] = [];
+  if (!allNodesUntimed && intervals.length > 0) {
+    // Trip start marker (first day of trip)
+    dateMarkers.push({
+      yOffsetPx: START_OFFSET_PX,
+      label: formatDayLabel(new Date(earliestMs), tz),
+      isToday: isToday(new Date(earliestMs), tz),
+      kind: "midnight",
+    });
+    // Each subsequent midnight in the trip
+    let cursor = nextMidnightInTz(tripStartMidnight, tz);
+    safety = 0;
+    while (cursor <= latestMs && safety++ < 365) {
+      if (cursor > earliestMs) {
+        dateMarkers.push({
+          yOffsetPx: Math.round(timeToY(cursor)),
+          label: formatDayLabel(new Date(cursor), tz),
+          isToday: isToday(new Date(cursor), tz),
+          kind: "midnight",
+        });
+      }
+      cursor = nextMidnightInTz(cursor, tz);
+    }
+  }
 
-  // Compute total height
+  // Total height
   let maxBottom = 0;
   for (const lane of lanes) {
     for (const pos of lane.positionedNodes.values()) {
@@ -822,23 +1020,16 @@ function determineLanes(
   currentUserId: string | null,
   participantNames?: Map<string, string>,
 ): LaneDefinition[] {
-  // Edge case: no nodes
   const allNodeIds = nodes.map((n) => n.id);
   if (allNodeIds.length === 0) return [];
 
-  // "mine" mode — show a single lane scoped to the current user's path only
   if (pathMode === "mine" && currentUserId && pathResult) {
     const myPath = pathResult.paths.get(currentUserId);
     if (myPath && myPath.length > 0) {
-      return [{
-        laneId: currentUserId,
-        label: null,
-        nodeIds: myPath,
-      }];
+      return [{ laneId: currentUserId, label: null, nodeIds: myPath }];
     }
   }
 
-  // "all" mode — always use topology-based to show all possible options
   if (pathMode === "all") {
     if (dagHasBranches(nodes, edges)) {
       const topoLanes = computeTopologyLanes(nodes, edges, participantNames);
@@ -846,19 +1037,9 @@ function determineLanes(
     }
   }
 
-  // Fallback: single lane with all nodes
-  return [{
-    laneId: "__all__",
-    label: null,
-    nodeIds: allNodeIds,
-  }];
+  return [{ laneId: "__all__", label: null, nodeIds: allNodeIds }];
 }
 
-// ---------------------------------------------------------------------------
-// Topology-based lane helpers
-// ---------------------------------------------------------------------------
-
-/** Check if the DAG has any structural branches (divergence or multiple roots). */
 function dagHasBranches(nodes: NodeData[], edges: EdgeData[]): boolean {
   const adj = buildAdjacency(edges);
   for (const children of adj.values()) {
@@ -868,10 +1049,6 @@ function dagHasBranches(nodes: NodeData[], edges: EdgeData[]): boolean {
   return nodes.filter((n) => !hasParent.has(n.id)).length > 1;
 }
 
-/**
- * Build lanes from DAG topology — one lane per branch at the first divergence.
- * Each lane includes the shared spine (prefix + suffix) plus branch-exclusive nodes.
- */
 function computeTopologyLanes(
   nodes: NodeData[],
   edges: EdgeData[],
@@ -880,7 +1057,7 @@ function computeTopologyLanes(
   const adj = buildAdjacency(edges);
   const revAdj = buildReverseAdjacency(edges);
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  
+
   const roots = nodes.filter((n) => (revAdj.get(n.id) ?? []).length === 0).map((n) => n.id);
   if (roots.length === 0 && nodes.length > 0) roots.push(nodes[0].id);
 
@@ -916,7 +1093,6 @@ function computeTopologyLanes(
   const branchLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const lanes: LaneDefinition[] = [];
 
-  // Identify nodes that appear in multiple paths
   const pathAppearanceCount = new Map<string, number>();
   for (const path of allPaths) {
     for (const nodeId of path) {
@@ -926,34 +1102,23 @@ function computeTopologyLanes(
 
   for (let i = 0; i < allPaths.length; i++) {
     const path = allPaths[i];
-    // A node is exclusive to this path if it only appears in this one path
     const exclusiveNodes = path.filter((id) => (pathAppearanceCount.get(id) ?? 0) === 1);
     const nodesToLabel = exclusiveNodes.length > 0 ? exclusiveNodes : path;
-    
-    // Label using exclusive nodes so participants on shared nodes don't rename all branches
-    const label = inferBranchLabel(nodesToLabel, nodeMap, participantNames, branchLetters[i % branchLetters.length]);
-    
-    lanes.push({
-      laneId: `topology-${i}`,
-      label,
-      nodeIds: path,
-    });
+    const label = inferBranchLabel(
+      nodesToLabel, nodeMap, participantNames, branchLetters[i % branchLetters.length],
+    );
+    lanes.push({ laneId: `topology-${i}`, label, nodeIds: path });
   }
 
   return lanes;
 }
 
-/**
- * Determine lane label from participant_ids on branch nodes.
- * Falls back to "Option X" if no participants assigned.
- */
 function inferBranchLabel(
   branchNodeIds: string[],
   nodeMap: Map<string, NodeData>,
   participantNames?: Map<string, string>,
   fallbackLetter?: string,
 ): string | null {
-  // Collect participant_ids from branch-exclusive nodes
   const pids = new Set<string>();
   for (const nodeId of branchNodeIds) {
     const node = nodeMap.get(nodeId);
@@ -968,7 +1133,7 @@ function inferBranchLabel(
       const name = participantNames.get(pid);
       if (name) names.push(formatUserName(name, pid));
     }
-    if (names.length > 0) return names.slice(0, 3).join(", ");
+    if (names.length > 0) return names.join(", ");
   }
 
   return fallbackLetter ? `Option ${fallbackLetter}` : null;
@@ -983,7 +1148,6 @@ function sortNodesByTime(
   resolvedTimes: Map<string, ResolvedTime>,
   edges: EdgeData[],
 ): string[] {
-  // Separate timed and untimed
   const timed: { id: string; arrival: Date }[] = [];
   const untimed: string[] = [];
 
@@ -996,80 +1160,57 @@ function sortNodesByTime(
     }
   }
 
-  // Sort timed by arrival
   timed.sort((a, b) => a.arrival.getTime() - b.arrival.getTime());
-
-  // Sort untimed by topological order
   const sortedUntimed = topoSort(untimed, edges);
-
   return [...timed.map((t) => t.id), ...sortedUntimed];
 }
 
 // ---------------------------------------------------------------------------
-// Date marker computation
+// Timezone helpers for midnight math
 // ---------------------------------------------------------------------------
 
-function computeDateMarkers(
-  lanes: LaneLayout[],
-  resolvedTimes: Map<string, ResolvedTime>,
-  nodeMap: Map<string, NodeData>,
-): DateMarker[] {
-  if (lanes.length === 0) return [];
+function formatDayLabel(d: Date, tz: string): string {
+  const dow = new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: tz }).format(d);
+  const day = new Intl.DateTimeFormat("en-US", { day: "numeric", timeZone: tz }).format(d);
+  return `${dow} ${day}`;
+}
 
-  // Collect all positioned nodes across lanes to find date boundaries
-  const allPositionedNodes: Array<{ nodeId: string; yOffsetPx: number }> = [];
-  for (const lane of lanes) {
-    for (const [nodeId, pos] of lane.positionedNodes) {
-      allPositionedNodes.push({ nodeId, yOffsetPx: pos.yOffsetPx });
-    }
-  }
+function midnightMsForTimeInTz(timeMs: number, tz: string): number {
+  const [y, mo, d] = dayTripletInTz(timeMs, tz);
+  return midnightMsForDateInTz(y, mo, d, tz);
+}
 
-  if (allPositionedNodes.length === 0) return [];
+function nextMidnightInTz(currentMidnightMs: number, tz: string): number {
+  const [y, mo, d] = dayTripletInTz(currentMidnightMs, tz);
+  const nextUtc = Date.UTC(y, mo - 1, d + 1, 12, 0, 0);
+  const [ny, nmo, nd] = dayTripletInTz(nextUtc, tz);
+  return midnightMsForDateInTz(ny, nmo, nd, tz);
+}
 
-  // Use the primary lane's node sequence with their timezones
-  const primaryLane = lanes[0];
-  const markers: DateMarker[] = [];
-  const seenDayKeys = new Set<string>();
-  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+function dayTripletInTz(timeMs: number, tz: string): [number, number, number] {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date(timeMs)).split("-");
+  return [Number(parts[0]), Number(parts[1]), Number(parts[2])];
+}
 
-  for (const nodeId of primaryLane.nodeSequence) {
-    const resolved = resolvedTimes.get(nodeId);
-    if (!resolved?.arrival) continue;
+function midnightMsForDateInTz(year: number, month: number, day: number, tz: string): number {
+  const guess = Date.UTC(year, month - 1, day, 0, 0, 0);
+  const firstPass = guess - tzOffsetMs(guess, tz);
+  const offsetAtFirstPass = tzOffsetMs(firstPass, tz);
+  return guess - offsetAtFirstPass;
+}
 
-    const node = nodeMap.get(nodeId);
-    const tz = node?.timezone ?? browserTz;
-    const arrival = resolved.arrival;
-    const pos = primaryLane.positionedNodes.get(nodeId);
-    if (!pos) continue;
-
-    // Generate a day key unique per timezone+date
-    const dayFmt = new Intl.DateTimeFormat("sv-SE", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      timeZone: tz,
-    });
-    const dayKey = `${tz}:${dayFmt.format(arrival)}`;
-
-    if (seenDayKeys.has(dayKey)) continue;
-    seenDayKeys.add(dayKey);
-
-    // Format the date label
-    const dayOfWeek = new Intl.DateTimeFormat("en-US", {
-      weekday: "short",
-      timeZone: tz,
-    }).format(arrival);
-    const dayNum = new Intl.DateTimeFormat("en-US", {
-      day: "numeric",
-      timeZone: tz,
-    }).format(arrival);
-
-    markers.push({
-      yOffsetPx: pos.yOffsetPx,
-      label: `${dayOfWeek} ${dayNum}`,
-      isToday: isToday(arrival, tz),
-    });
-  }
-
-  return markers;
+function tzOffsetMs(utcMs: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(utcMs));
+  const g = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  let h = g("hour");
+  if (h === 24) h = 0;
+  const asIfUtc = Date.UTC(g("year"), g("month") - 1, g("day"), h, g("minute"), g("second"));
+  return asIfUtc - utcMs;
 }

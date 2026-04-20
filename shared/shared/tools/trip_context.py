@@ -197,6 +197,31 @@ def format_trip_context(
             reason = n.get("hold_reason") or "max_drive_hours"
             lines.append(f"  - ⚠ warning: drive limit exceeded ({reason})")
 
+        per_parent = n.get("per_parent_arrivals")
+        if per_parent:
+            lines.append("  - 🔀 per-branch arrivals:")
+            for key in sorted(per_parent.keys()):
+                branch_iso = per_parent[key]
+                branch_time = _format_dt(branch_iso, tz) or branch_iso
+                # Key is either ``from_node_id->to_node_id`` (fallback) or
+                # ``edge.id`` (when edges carry explicit IDs). Resolve the
+                # "from" side to a human-readable node name in both cases.
+                from_id: str | None = None
+                if "->" in key:
+                    from_id = key.split("->", 1)[0]
+                else:
+                    matching_edge = next(
+                        (e for e in edges if e.get("id") == key), None
+                    )
+                    if matching_edge is not None:
+                        from_id = matching_edge.get("from_node_id")
+                from_label = (
+                    node_map.get(from_id, {}).get("name", from_id)
+                    if from_id
+                    else key
+                )
+                lines.append(f"      via {from_label}: ~{branch_time}")
+
         for a in n.get("actions", []):
             action_id_str = f"id: {a['id']}, " if a.get("id") else ""
             lines.append(

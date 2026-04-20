@@ -41,9 +41,16 @@ function findNode(enriched: EnrichedNode[], id: string): EnrichedNode {
 /**
  * Datetime-aware comparison: if both sides parse as dates, compare by
  * epoch ms so `+00:00` vs `Z` variance from either runtime never produces
- * a false failure. Everything else uses strict deep equality.
+ * a false failure. Plain objects compare recursively so additive fields
+ * like `per_parent_arrivals` (a `Record<string, iso_string>`) work. The
+ * expected value `null` matches both `null` and `undefined` — Python's
+ * `.get(key)` returns `None` for missing keys, so the fixture uses
+ * `null` to mean "field absent or null" in either runtime.
  */
 function valuesEqual(actual: unknown, expected: unknown): boolean {
+  if (expected === null || expected === undefined) {
+    return actual === null || actual === undefined;
+  }
   if (
     typeof actual === "string" &&
     typeof expected === "string" &&
@@ -52,6 +59,23 @@ function valuesEqual(actual: unknown, expected: unknown): boolean {
     const a = Date.parse(actual);
     const e = Date.parse(expected);
     if (!Number.isNaN(a) && !Number.isNaN(e)) return a === e;
+  }
+  if (
+    actual !== null &&
+    typeof actual === "object" &&
+    typeof expected === "object" &&
+    !Array.isArray(actual) &&
+    !Array.isArray(expected)
+  ) {
+    const aObj = actual as Record<string, unknown>;
+    const eObj = expected as Record<string, unknown>;
+    const aKeys = Object.keys(aObj);
+    const eKeys = Object.keys(eObj);
+    if (aKeys.length !== eKeys.length) return false;
+    for (const k of eKeys) {
+      if (!valuesEqual(aObj[k], eObj[k])) return false;
+    }
+    return true;
   }
   return Object.is(actual, expected);
 }

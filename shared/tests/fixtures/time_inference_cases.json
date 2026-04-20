@@ -1322,5 +1322,92 @@
         "hold_reason": "night_drive"
       }
     ]
+  },
+  {
+    "name": "merge_node_with_divergent_parent_arrivals",
+    "description": "Two branches merge at n_c arriving at different wall-clock times (1h vs 4h apart). arrival_time stays max(), new per_parent_arrivals records both.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "n_a",
+        "name": "Origin A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T09:00:00+00:00"
+      },
+      {
+        "id": "n_b",
+        "name": "Origin B",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T12:00:00+00:00"
+      },
+      {
+        "id": "n_c",
+        "name": "Merge",
+        "type": "place",
+        "timezone": "UTC"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "n_a", "to_node_id": "n_c", "travel_mode": "drive", "travel_time_hours": 1},
+      {"from_node_id": "n_b", "to_node_id": "n_c", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {
+        "id": "n_c",
+        "arrival_time": "2026-05-01T13:00:00+00:00",
+        "arrival_time_estimated": true,
+        "per_parent_arrivals": {
+          "n_a->n_c": "2026-05-01T10:00:00+00:00",
+          "n_b->n_c": "2026-05-01T13:00:00+00:00"
+        }
+      }
+    ]
+  },
+  {
+    "name": "merge_node_parents_arrive_within_tolerance",
+    "description": "Two branches merge with arrivals 30s apart (within _CONFLICT_TOLERANCE_SECONDS=60). per_parent_arrivals is suppressed.",
+    "trip_settings": {
+      "no_drive_window": null,
+      "max_drive_hours_per_day": null
+    },
+    "nodes": [
+      {
+        "id": "n_a",
+        "name": "Origin A",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T11:59:30+00:00"
+      },
+      {
+        "id": "n_b",
+        "name": "Origin B",
+        "type": "place",
+        "timezone": "UTC",
+        "departure_time": "2026-05-01T12:00:00+00:00"
+      },
+      {
+        "id": "n_c",
+        "name": "Merge",
+        "type": "place",
+        "timezone": "UTC"
+      }
+    ],
+    "edges": [
+      {"from_node_id": "n_a", "to_node_id": "n_c", "travel_mode": "drive", "travel_time_hours": 1},
+      {"from_node_id": "n_b", "to_node_id": "n_c", "travel_mode": "drive", "travel_time_hours": 1}
+    ],
+    "expected": [
+      {
+        "id": "n_c",
+        "arrival_time": "2026-05-01T13:00:00+00:00",
+        "arrival_time_estimated": true,
+        "per_parent_arrivals": null
+      }
+    ]
   }
 ]

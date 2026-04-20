@@ -120,7 +120,7 @@ def enrich_dag_times(
 
         # (a) Effective arrival. Always compute what propagation would say so
         # we can flag conflicts even when the user has pinned a time.
-        propagated = _propagate_arrival(parents, drafts)
+        propagated, per_parent_arrivals = _propagate_arrival(parents, drafts)
         user_arrival = parse_dt(draft.get("arrival_time"))
         if user_arrival is not None:
             if propagated is not None:
@@ -128,6 +128,9 @@ def enrich_dag_times(
         elif propagated is not None:
             draft["arrival_time"] = propagated.isoformat()
             draft["arrival_time_estimated"] = True
+
+        if per_parent_arrivals is not None:
+            draft["per_parent_arrivals"] = per_parent_arrivals
 
         # (b) Effective departure
         user_departure = parse_dt(draft.get("departure_time"))
@@ -239,28 +242,46 @@ def _draft_node(
 def _propagate_arrival(
     parents: list[dict],
     drafts: dict[str, dict],
-) -> datetime | None:
+) -> tuple[datetime | None, dict[str, str] | None]:
     """Compute propagated arrival from resolved parent departures.
 
-    Returns ``None`` when any parent has no effective departure yet — the
-    downstream node stays floating rather than guessing. Merge nodes take
-    the ``max`` over parents (conservative).
+    Returns ``(best_arrival, per_parent_arrivals)`` where:
+
+    - ``best_arrival`` is ``max(parent.departure + edge.travel)`` across
+      parents (the joint-start semantics used by drive-cap, conflict
+      checks, and downstream propagation). ``None`` when any parent has
+      no effective departure yet — the downstream node stays floating
+      rather than guessing.
+    - ``per_parent_arrivals`` is a ``{edge_key: iso_string}`` map emitted
+      only when the node has ≥2 parents whose arrivals differ by more
+      than ``_CONFLICT_TOLERANCE_SECONDS``. ``None`` otherwise. The
+      ``edge_key`` is ``edge["id"]`` when present, else
+      ``"{from_node_id}->{to_node_id}"`` — stable across Python/TS.
     """
     if not parents:
-        return None
+        return None, None
     best: datetime | None = None
+    per_parent: dict[str, datetime] = {}
     for edge in parents:
         parent = drafts.get(edge["from_node_id"])
         if parent is None:
             continue
         parent_departure = parse_dt(parent.get("departure_time"))
         if parent_departure is None:
-            return None
+            return None, None
         travel_hours = _effective_travel_hours(edge)
         candidate = parent_departure + timedelta(hours=travel_hours)
+        key = edge.get("id") or f"{edge['from_node_id']}->{edge['to_node_id']}"
+        per_parent[key] = candidate
         if best is None or candidate > best:
             best = candidate
-    return best
+    if len(per_parent) < 2:
+        return best, None
+    values = list(per_parent.values())
+    span = max(values) - min(values)
+    if span.total_seconds() <= _CONFLICT_TOLERANCE_SECONDS:
+        return best, None
+    return best, {k: v.isoformat() for k, v in per_parent.items()}
 
 
 def _resolve_departure(draft: dict, user_departure: datetime | None) -> datetime | None:

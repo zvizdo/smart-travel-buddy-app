@@ -185,7 +185,7 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
         borderRadius: 12,
       }}
     >
-      <div className="flex flex-col justify-center h-full px-3 py-2 overflow-hidden">
+      <div className="sticky top-16 flex flex-col px-3 py-2 overflow-hidden">
         {/* Line 1: Icon + Name + status pills */}
         <div className="flex items-center gap-1.5 min-w-0">
           <NodeTypeIcon type={type} size={14} />
@@ -311,4 +311,8 @@ export const TimelineNodeBlock = memo(function TimelineNodeBlock({
   prev.dateFormat === next.dateFormat
 );
 
+// Mirrors the layout engine's `MIN_NODE_HEIGHT_PX` so even sub-1h stops
+// render their icon + name + time row legibly. Nodes that also render a
+// drive-cap advisory row get `MIN_NODE_HEIGHT_WITH_ADVISORY_PX` from the
+// layout engine, which exceeds this floor.
 const MIN_HEIGHT = 56;

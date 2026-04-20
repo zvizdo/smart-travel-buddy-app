@@ -208,13 +208,13 @@ export function TimelineView({
 
           {/* Lane area */}
           <div className={`relative flex flex-1 min-w-0 ${layout.lanes.length > 3 ? "overflow-x-auto scroll-snap-x mandatory" : ""}`}>
-            {/* Day divider lines — full-width horizontal at each new day in the
-                primary lane's timezone. Rendered behind the lanes (z-0). */}
+            {/* Midnight divider lines — full-width horizontal at each 00:00
+                in the primary lane's timezone, rendered behind the lanes. */}
             {layout.dateMarkers.map((marker, i) => (
               <div
                 key={`day-divider-${i}`}
                 aria-hidden
-                className="absolute left-0 right-0 pointer-events-none z-0 border-t border-dashed"
+                className="absolute left-0 right-0 pointer-events-none -z-10 border-t border-dashed"
                 style={{
                   top: marker.yOffsetPx,
                   borderColor: marker.isToday
